@@ -236,7 +236,7 @@ calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 		/* Load the file into memory. */
 
 		if ((file_buffer = (char *)malloc(file_size + 16)) == NULL)
-			err(EXIT_FAILURE, "calculate_file_sha: temp_buffer malloc");
+			err(EXIT_FAILURE, "calculate_file_sha: file_buffer malloc");
 
 		if ((fd = open(path, O_RDONLY)) == -1)
 			err(EXIT_FAILURE, "calculate_file_sha: read file (%s): open", path);
@@ -757,13 +757,11 @@ fetch_pack(connector *connection)
 			position += chunk_size - 5;
 		}
 
-		position  = pack_start - connection->response - 1 + 5;
-		pack_size = connection->response_size - position - 27;
-
 		/* Remove anything before the 'PACK'. */
 
 		connection->response_size -= (pack_start - connection->response);
 		memmove(connection->response, pack_start, connection->response_size);
+		pack_size = connection->response_size - 31;
 
 		/* Save the pack data for testing. */
 
