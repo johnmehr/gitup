@@ -958,6 +958,24 @@ unpack_delta_integer(char *data, int *position, int bits)
 
 
 /*
+ * unpack_variable_length_integer
+ *
+ * Function that reconstructs a variable length integer from the data stream.
+ */
+
+static uint32_t
+unpack_variable_length_integer(char *data, int *position)
+{
+	uint32_t result = 0, count = 0;
+
+	do result += (data[*position] & 0x7F) << (7 * count++);
+	while (data[(*position)++] & 0x80);
+
+	return result;
+}
+
+
+/*
  * save_objects
  */
 
