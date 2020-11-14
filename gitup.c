@@ -350,7 +350,9 @@ find_local_files_and_directories(char *path_base, const char *path_target)
 			/* Keep track of the local directories, ignoring path_base. */
 
 			if (strlen(path_target)) {
-				new_node       = (struct file_node *)malloc(sizeof(struct file_node));
+				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+					err(EXIT_FAILURE, "find_local_files_and_directories: malloc");
+
 				new_node->path = strdup(full_path);
 				new_node->sha  = 0;
 
@@ -384,7 +386,9 @@ find_local_files_and_directories(char *path_base, const char *path_target)
 				closedir(directory);
 			}
 		} else {
-			new_node       = (struct file_node *)malloc(sizeof(struct file_node));
+			if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+				err(EXIT_FAILURE, "find_local_files_and_directories: malloc");
+
 			new_node->path = strdup(path_target);
 			new_node->sha  = calculate_file_sha(full_path, file.st_size, file.st_mode);
 			new_node->mode = file.st_mode;
