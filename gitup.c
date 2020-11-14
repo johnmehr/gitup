@@ -976,6 +976,103 @@ unpack_variable_length_integer(char *data, int *position)
 
 
 /*
+ * apply_deltas
+ *
+ * Procedure that applies the changes in all of the ref_delta objects to their
+ * base objects.
+ */
+
+static void
+apply_deltas(connector *connection)
+{
+	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0;
+	char               *start, *new_buffer = NULL;
+	uint32_t            offset = 0, length = 0, old_file_size = 0, new_file_size = 0, new_position = 0;
+	struct object_node *delta, *base, lookup, *new_object;
+
+	for (int o = 0; o < connection->objects; o++) {
+		delta = connection->object[o];
+
+		if (delta->type != 7)
+			continue;
+
+		lookup.sha = delta->ref_delta_sha;
+
+		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
+			err(EXIT_FAILURE, "apply_deltas: can't find %04d -> %s\n", delta->index, delta->ref_delta_sha);
+
+		position      = 0;
+		new_position  = 0;
+		old_file_size = unpack_variable_length_integer(delta->buffer, &position);
+		new_file_size = unpack_variable_length_integer(delta->buffer, &position);
+
+		if ((new_buffer = (char *)malloc(new_file_size + 1)) == NULL)
+			err(EXIT_FAILURE, "apply_deltas: malloc");
+
+		/* Loop through the copy/insert instructions. */
+
+		while (position < delta->data_size) {
+			instruction = (unsigned char)delta->buffer[position++];
+
+			if (instruction & 0x80) {
+				length_bits = (instruction & 0x70) >> 4;
+				offset_bits = (instruction & 0x0F);
+
+				offset = unpack_delta_integer(delta->buffer, &position, offset_bits);
+				length = unpack_delta_integer(delta->buffer, &position, length_bits);
+				start  = base->buffer + offset;
+			} else {
+				offset    = position;
+				length    = instruction;
+				start     = delta->buffer + offset;
+				position += length;
+			}
+
+			if (new_position + length > new_file_size)
+				err(EXIT_FAILURE, "apply_deltas: position overflow -- %u + %u > %u", new_position, length, new_file_size);
+
+			memcpy(new_buffer + new_position, start, length);
+			new_position += length;
+		}
+
+		/* Store the object. */
+
+		store_object(connection, base->type, new_buffer, new_file_size, NULL);
+	}
+}
+
+
+/*
+ * extract_tree_item
+ *
+ * Procedure that extracts mode/path/sha items in a tree and returns them in a new file_node.
+ */
+
+static void
+extract_tree_item(struct file_node *file, char **position) {
+	int path_size = 0;
+
+	/* Extract the file mode. */
+
+	file->mode = strtol(*position, (char **)NULL, 8);
+	*position  = strchr(*position, ' ') + 1;
+
+	/* Extract the file path. */
+
+	path_size = strlen(*position) + 1;
+	snprintf(file->path, path_size, "%s", *position);
+	*position += path_size;
+
+	/* Extract the file SHA checksum. */
+
+	for (int x = 0; x < 20; x++)
+		snprintf(&file->sha[x * 2], 3, "%02x", (unsigned char)*(*position)++);
+
+	file->sha[40] = '\0';
+}
+
+
+/*
  * save_objects
  */
 
