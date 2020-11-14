@@ -923,6 +923,41 @@ unpack_objects(connector *connection)
 
 
 /*
+ * unpack_delta_integer
+ *
+ * Function that reconstructs a 32 bit integer from the data stream.
+ */
+
+static uint32_t
+unpack_delta_integer(char *data, int *position, int bits)
+{
+	uint32_t result = 0, read_bytes = 0, temp = 0, mask = 8;
+
+	/* Determine how many bytes in the stream are needed. */
+
+	do if (bits & mask) read_bytes++;
+	while (mask >>= 1);
+
+	/* Put the bytes in their proper position based on the bit field passed in. */
+
+	if (read_bytes > 0) {
+		temp = read_bytes;
+		mask = 3;
+
+		do {
+			if (bits & (1 << mask))
+				result += ((unsigned char)data[*position + --temp] << (mask * 8));
+		}
+		while (mask-- > 0);
+
+		*position += read_bytes;
+	}
+
+	return result;
+}
+
+
+/*
  * save_objects
  */
 
