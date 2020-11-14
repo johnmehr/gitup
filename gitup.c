@@ -170,7 +170,10 @@ RB_GENERATE(Tree_Objects, object_node, link, object_node_compare)
 static char *
 legible_sha(char *sha_buffer)
 {
-	char *sha = (char *)malloc(41);
+	char *sha = NULL;
+
+	if ((sha = (char *)malloc(41)) == NULL)
+		err(EXIT_FAILURE, "legible_sha: malloc");
 
 	for (int x = 0; x < 20; x++)
 		snprintf(&sha[x * 2], 3, "%02x", (unsigned char)sha_buffer[x]);
