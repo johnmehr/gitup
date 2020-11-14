@@ -738,7 +738,7 @@ fetch_pack(connector *connection)
 
 	/* If a pack file has been specified, attempt to load it. */
 
-	if ((connection->pack_file) && (lstat(connection->pack_file, &pack_file) != -1))
+	if ((connection->pack_file) && (lstat(connection->pack_file, &pack_file) != -1)) {
 		if ((fd = open(connection->pack_file, O_RDONLY)) != -1) {
 			connection->response_size = pack_file.st_size;
 
@@ -747,6 +747,7 @@ fetch_pack(connector *connection)
 
 			pack_size = connection->response_size - 31;
 		}
+	}
 
 	/* If no pack data has been loaded, fetch it from the server. */
 
@@ -785,14 +786,24 @@ fetch_pack(connector *connection)
 
 		/* Save the pack data for testing. */
 
-		snprintf(path, sizeof(path), "./temp/pack");
+		if (connection->keep_pack_file) {
+			char *temp_repository = strdup(connection->repository);
 
-		if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-			err(EXIT_FAILURE, "write file failure %s", path);
+			for (int x = 0; x < strlen(temp_repository); x++)
+				if (temp_repository[x] == '/')
+					temp_repository[x] = '_';
 
-		chmod(path, 0644);
-		write(fd, connection->response, connection->response_size);
-		close(fd);
+			snprintf(path, sizeof(path), "%s/pack%s_%s", connection->path_work, temp_repository, connection->branch);
+
+			if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
+				err(EXIT_FAILURE, "write file failure %s", path);
+
+			chmod(path, 0644);
+			write(fd, connection->response, connection->response_size);
+			close(fd);
+
+			free(temp_repository);
+		}
 	}
 
 	/* Verify the pack data checksum. */
