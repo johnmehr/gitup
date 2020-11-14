@@ -828,12 +828,11 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, cha
 static void
 unpack_objects(connector *connection)
 {
-	int                 objects = 0, buffer_size = 0, total_objects = 0;
-	int                 version = 0, object_type = 0, stream_code = 0, stream_bytes = 0;
-	char               *buffer = NULL, *ref_delta_sha_buffer = NULL;
-	uint32_t            file_size = 0, file_bits = 0, position = 4;
-	unsigned char       zlib_out[16384];
-	struct object_node *new_object = NULL;
+	int            objects = 0, buffer_size = 0, total_objects = 0;
+	int            version = 0, object_type = 0, stream_code = 0, stream_bytes = 0;
+	char          *buffer = NULL, *ref_delta_sha_buffer = NULL;
+	uint32_t       file_size = 0, file_bits = 0, position = 4;
+	unsigned char  zlib_out[16384];
 
 	/* Check the pack version number. */
 
@@ -848,7 +847,7 @@ unpack_objects(connector *connection)
 	for (int x = 0; x < 4; x++, position++)
 		total_objects = (total_objects << 8) + (unsigned char)connection->response[position];
 
-	if (connection->verbosity > 2)
+	if (connection->verbosity > 1)
 		fprintf(stderr, "\npack version: %d, total_objects: %d, pack_size:% d\n\n", version, total_objects, connection->response_size);
 
 	/* Unpack the objects. */
@@ -877,13 +876,15 @@ unpack_objects(connector *connection)
 		/* Extract ref_delta SHA checksum. */
 
 		if (object_type == 7) {
-			ref_delta_sha_buffer = (char *)malloc(21);
+			if ((ref_delta_sha_buffer = (char *)malloc(21)) == NULL)
+				err(EXIT_FAILURE, "unpack_objects: malloc");
+
 			memcpy(ref_delta_sha_buffer, connection->response + position, 20);
 			position += 20;
 		}
 		else ref_delta_sha_buffer = NULL;
 
-		/* Inflate the object. */
+		/* Inflate and store the object. */
 
 		buffer      = NULL;
 		buffer_size = 0;
@@ -916,27 +917,7 @@ unpack_objects(connector *connection)
 		inflateEnd(&stream);
 		position += stream.total_in;
 
-		/* Store the object. */
-
-		if (connection->objects % BUFFER_UNIT_SMALL == 0)
-			if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node **))) == NULL)
-				err(EXIT_FAILURE, "unpack_objects: object realloc");
-
-		new_object                = (struct object_node *)malloc(sizeof(struct object_node));
-		new_object->index         = objects++;
-		new_object->type          = object_type;
-		new_object->sha           = calculate_sha(buffer, buffer_size, object_type);
-		new_object->ref_delta_sha = (ref_delta_sha_buffer ? legible_sha(ref_delta_sha_buffer) : NULL);
-		new_object->buffer        = buffer;
-		new_object->buffer_size   = buffer_size;
-		new_object->data_size     = buffer_size;
-
-		if (connection->verbosity > 2)
-			fprintf(stderr, "###### %04d-%d\t%u\t%s -> %s\n", new_object->index, new_object->type, file_size, new_object->sha, new_object->ref_delta_sha);
-
-		connection->object[connection->objects++] = new_object;
-
-		RB_INSERT(Tree_Objects, &Objects, new_object);
+		store_object(connection, object_type, buffer, buffer_size, ref_delta_sha_buffer);
 	}
 }
 
