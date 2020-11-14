@@ -240,8 +240,10 @@ static char *
 calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 {
 	int   fd;
-	char *file_buffer, *position, *value, *eol, *sha = NULL;
-	char *sha_buffer = (char *)malloc(21);
+	char *file_buffer, *position, *value, *eol, *sha = NULL, *sha_buffer = NULL;
+
+	if ((sha_buffer = (char *)malloc(21)) == NULL)
+		err(EXIT_FAILURE, "calculate_sha: malloc");
 
 	if (S_ISLNK(file_mode)) {
 	} else {
