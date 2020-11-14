@@ -1267,6 +1267,27 @@ load_configuration(connector *connection, char *configuration_file, char *sectio
 
 
 /*
+ * usage
+ *
+ * Procedure that prints a summary of command line options and exits.
+ */
+
+static void
+usage(char *configuration_file)
+{
+	fprintf(stderr, "Usage: gitup <section> [options]\n\n");
+	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
+	fprintf(stderr, "  Options:\n");
+	fprintf(stderr, "    -v  How verbose the output should be (0 = no output, 1 = the default\n");
+	fprintf(stderr, "          normal output, 2 = also show debugging information.\n");
+	fprintf(stderr, "    -V  Display gitup's version number and exit.\n");
+	fprintf(stderr, "\n");
+
+	exit(EXIT_FAILURE);
+}
+
+
+/*
  * main
  *
  * A lightweight, dependency-free program to clone/pull a git repository.
