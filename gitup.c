@@ -1165,6 +1165,73 @@ save_objects(connector *connection)
 
 
 /*
+ * set_configuration_parameters
+ *
+ * Procedure that parses a line of text from the config file, allocates
+ * space and stores the values.
+ */
+
+static void
+set_configuration_parameters(connector *connection, char *buffer, size_t length, const char *section)
+{
+	char *bracketed_section, *item, *line;
+
+	if ((bracketed_section = (char *)malloc(strlen(section) + 4)) == NULL)
+		err(EXIT_FAILURE, "set_configuration bracketed_section malloc");
+
+	snprintf(bracketed_section, strlen(section) + 4, "[%s]\n", section);
+
+	if ((item = strstr(buffer, bracketed_section)) == NULL)
+		err(EXIT_FAILURE, "Cannot find [%s] in gitup.conf", section);
+
+	item += strlen(bracketed_section);
+
+	while ((line = strsep(&item, "\n"))) {
+		if ((strlen(line) == 0) || (line[0] == '['))
+			break;
+
+		if (line[0] == '#')
+			continue;
+
+		if (strstr(line, "host=") == line)
+			connection->host = strdup(line + 5);
+
+		if (strstr(line, "port=") == line)
+			connection->port = strtol(line + 5, (char **)NULL, 10);
+
+		if (strstr(line, "repository=") == line)
+			connection->repository = strdup(line + 11);
+
+		if (strstr(line, "branch=") == line)
+			connection->branch = strdup(line + 7);
+
+		if (strstr(line, "target=") == line)
+			connection->path_target = strdup(line + 7);
+
+		if (strstr(line, "work_directory=") == line)
+			connection->path_work = strdup(line + 15);
+
+		if (strstr(line, "keep_pack_file=") == line)
+			connection->keep_pack_file = strtol(line + 15, (char **)NULL, 10);
+
+		if (strstr(line, "use_pack_file=") == line)
+			connection->use_pack_file = strtol(line + 14, (char **)NULL, 10);
+
+		if (strstr(line, "verbosity=") == line)
+			connection->verbosity = strtol(line + 10, (char **)NULL, 10);
+	}
+
+	/* Put the returns that strsep took out back in for the next run. */
+
+	for (int x = 0; x < length; x++)
+		if (buffer[x] == '\0')
+			buffer[x] = '\n';
+
+	free(bracketed_section);
+}
+
+
+/*
  * main
  *
  * A lightweight, dependency-free program to clone/pull a git repository.
