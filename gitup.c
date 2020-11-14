@@ -615,8 +615,10 @@ build_fetch_request(connector *connection)
 {
 	struct file_node *file;
 	unsigned int      command_size = 0, command_buffer_size = BUFFER_UNIT_LARGE;
-	char             *command = (char *)malloc(BUFFER_UNIT_LARGE);
-	char              want[BUFFER_UNIT_SMALL], have[51];
+	char             *command = NULL, want[BUFFER_UNIT_SMALL], have[51];
+
+	if ((command = (char *)malloc(BUFFER_UNIT_LARGE)) == NULL)
+		err(EXIT_FAILURE, "build_fetch_request: malloc");
 
 	/* Start with the "wants". */
 
@@ -625,12 +627,11 @@ build_fetch_request(connector *connection)
 		"0065want %s no-progress side-band-64k ref-delta agent=git/2.28\n"
 		"0032want %s\n"
 //		"000cdeepen 1"
-//		"0034shallow %s"
+		"0034shallow %s"
 		"0000",
 		connection->commit,
-//		connection->commit,
-		connection->commit
-		);
+		connection->commit,
+		connection->commit);
 
 	/* Pre-determine the length of the command for inclusion in the header. */
 
@@ -651,8 +652,7 @@ build_fetch_request(connector *connection)
 		"%s",
 		connection->repository,
 		command_size,
-		want
-		);
+		want);
 
 	command_size = strlen(command);
 
@@ -691,8 +691,7 @@ get_commit_hash(connector *connection)
 		"Host: github.com\n"
 		"User-Agent: git/2.28\n"
 		"\r\n",
-		connection->repository
-		);
+		connection->repository);
 
 	process_command(connection, command);
 
