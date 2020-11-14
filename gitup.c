@@ -1073,6 +1073,68 @@ extract_tree_item(struct file_node *file, char **position) {
 
 
 /*
+ * save_tree
+ */
+
+static void
+save_tree(connector *connection, char *sha, char *base_path)
+{
+	struct object_node *tree = NULL, *find = NULL, lookup;
+	struct file_node    file;
+	char                full_path[BUFFER_UNIT_SMALL], *position = NULL;
+	int                 fd;
+
+	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
+		err(EXIT_FAILURE, "Cannot create %s", base_path);
+
+	if ((file.path = (char *)malloc(BUFFER_UNIT_SMALL + 1)) == NULL)
+		err(EXIT_FAILURE, "save_tree: malloc");
+
+	if ((file.sha = (char *)malloc(41)) == NULL)
+		err(EXIT_FAILURE, "save_tree: malloc");
+
+	lookup.sha = sha;
+
+	if ((tree = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
+		err(EXIT_FAILURE, "save_objects: tree %s - %s cannot be found", base_path, lookup.sha);
+
+	/* Process the tree items. */
+
+	position = tree->buffer;
+
+	while (position - tree->buffer < tree->data_size) {
+		extract_tree_item(&file, &position);
+
+		snprintf(full_path, sizeof(full_path), "%s/%s", base_path, file.path);
+
+		/* Recursively walk any trees and save any files. */
+
+		if (S_ISDIR(file.mode)) {
+			save_tree(connection, file.sha, full_path);
+		} else {
+			memcpy(lookup.sha, file.sha, 40);
+
+			if ((find = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
+				err(EXIT_FAILURE, "save_objects: file %s - %s cannot be found", full_path, lookup.sha);
+
+			if (connection->verbosity)
+				printf(" + %s\n", full_path);
+
+			if ((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
+				err(EXIT_FAILURE, "save_objects: write file failure %s", full_path);
+
+			chmod(full_path, file.mode);
+			write(fd, find->buffer, find->data_size);
+			close(fd);
+		}
+	}
+
+	free(file.sha);
+	free(file.path);
+	}
+
+
+/*
  * save_objects
  */
 
