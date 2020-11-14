@@ -49,6 +49,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#define GITUP_VERSION "0.1"
 #define BUFFER_UNIT_SMALL 4096
 #define BUFFER_UNIT_LARGE 1048576
 
@@ -74,7 +75,7 @@ typedef struct {
 	int                  socket_descriptor;
 	SSL                 *ssl;
 	SSL_CTX             *ctx;
-	char                *address;
+	char                *host;
 	uint16_t             port;
 	char                *repository;
 	char                *commit;
@@ -86,6 +87,9 @@ typedef struct {
 	int                  objects;
 	char                *pack_file;
 	char                *path_target;
+	char                *path_work;
+	int                  keep_pack_file;
+	int                  use_pack_file;
 	int                  verbosity;
 } connector;
 
@@ -410,7 +414,7 @@ ssl_connect(connector *connection)
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 
-	if ((error = getaddrinfo(connection->address, type, &hints, &start)))
+	if ((error = getaddrinfo(connection->host, type, &hints, &start)))
 		errx(EXIT_FAILURE, "%s", gai_strerror(error));
 
 	connection->socket_descriptor = -1;
@@ -508,11 +512,11 @@ process_command(connector *connection, char *command)
 
 		total_bytes_sent += bytes_sent;
 
-		if (connection->verbosity > 2)
+		if (connection->verbosity > 1)
 			fprintf(stderr, "\r==> bytes sent: %d", total_bytes_sent);
 		}
 
-	if (connection->verbosity > 2)
+	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
 
 	/* Process the response. */
@@ -529,7 +533,7 @@ process_command(connector *connection, char *command)
 		total_bytes_read += bytes_read;
 		connection->response[total_bytes_read] = '\0';
 
-		if (connection->verbosity > 2)
+		if (connection->verbosity > 1)
 			fprintf(stderr, "\r==> bytes read: %d\tbytes_expected:%d\ttotal_bytes_read:%d", bytes_read, bytes_expected, total_bytes_read);
 
 		/* Find the boundary between the header and the data. */
@@ -575,7 +579,7 @@ process_command(connector *connection, char *command)
 	if (strstr(connection->response, "HTTP/1.1 200 OK") != connection->response)
 		err(EXIT_FAILURE, "process_command: read failure:\n%s\n", connection->response);
 
-	if (connection->verbosity > 2)
+	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
 
 	/* Remove the header. */
@@ -649,7 +653,7 @@ build_fetch_request(connector *connection)
 
 	append_string(&command, &command_buffer_size, &command_size, "0009done\n0000");
 
-	if (connection->verbosity > 2)
+	if (connection->verbosity > 1)
 		fprintf(stderr, "%s\n\n", command);
 
 	return command;
@@ -1292,7 +1296,6 @@ usage(char *configuration_file)
  *
  * A lightweight, dependency-free program to clone/pull a git repository.
  */
-
 
 int
 main(int argc, char **argv)
