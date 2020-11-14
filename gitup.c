@@ -710,11 +710,14 @@ get_commit_hash(connector *connection)
 
 	/* Extract and save the commit hash. */
 
-	connection->commit = (char *)malloc(41);
+	if ((connection->commit = (char *)malloc(41)) == NULL)
+		err(EXIT_FAILURE, "get_commit_hash: malloc");
+
 	memcpy(connection->commit, position - 40, 40);
 	connection->commit[40] = '\0';
 
-	printf("Fetching %s %s (%s)\n", connection->repository, connection->branch, connection->commit);
+	if (connection->verbosity)
+		printf("\nFetching %s %s (%s)\n", connection->repository, connection->branch, connection->commit);
 }
 
 
