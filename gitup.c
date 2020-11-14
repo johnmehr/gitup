@@ -194,9 +194,14 @@ static char *
 calculate_sha(char *buffer, uint32_t buffer_size, int type)
 {
 	int   digits = buffer_size, header_width = 0;
-	char *sha = NULL, *sha_buffer = (char *)malloc(21);
-	char *temp_buffer = (char *)malloc(buffer_size + 24);
+	char *sha = NULL, *sha_buffer = NULL, *temp_buffer = NULL;
 	char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs_delta", "ref_delta" };
+
+	if ((sha_buffer = (char *)malloc(21)) == NULL)
+		err(EXIT_FAILURE, "calculate_sha: malloc");
+
+	if ((temp_buffer = (char *)malloc(buffer_size + 24)) == NULL)
+		err(EXIT_FAILURE, "calculate_sha: malloc");
 
 	/* Start with the git "type file-size\0" header. */
 
