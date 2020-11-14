@@ -1232,6 +1232,41 @@ set_configuration_parameters(connector *connection, char *buffer, size_t length,
 
 
 /*
+ * load_configuration
+ *
+ * Procedure that loads the section options from gitup.conf
+ */
+
+static void
+load_configuration(connector *connection, char *configuration_file, char *section)
+{
+	struct stat  file;
+	int          fd;
+	char        *buffer;
+
+	if (stat(configuration_file, &file) == -1)
+		err(EXIT_FAILURE, "Cannot find configuration file");
+
+	if ((buffer = (char *)malloc(file.st_size + 1)) == NULL)
+		err(EXIT_FAILURE, "load_configuration temp_buffer malloc");
+
+	if ((fd = open(configuration_file, O_RDONLY)) == -1)
+		err(EXIT_FAILURE, "Cannot read configuration file %s", configuration_file);
+
+	if (read(fd, buffer, file.st_size) != file.st_size)
+		err(EXIT_FAILURE, "Problem reading configuration file %s", configuration_file);
+
+	buffer[file.st_size] = '\0';
+	close(fd);
+
+	set_configuration_parameters(connection, buffer, file.st_size, "defaults");
+	set_configuration_parameters(connection, buffer, file.st_size, section);
+
+	free(buffer);
+	}
+
+
+/*
  * main
  *
  * A lightweight, dependency-free program to clone/pull a git repository.
