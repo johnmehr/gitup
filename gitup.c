@@ -785,6 +785,41 @@ fetch_pack(connector *connection)
 
 
 /*
+ * store_object
+ *
+ * Procedure that creates a new object and stores it in the array and lookup tree.
+ */
+
+static void
+store_object(connector *connection, int type, char *buffer, int buffer_size, char *ref_delta_sha)
+{
+	struct object_node *object = NULL;
+
+	if (connection->objects % BUFFER_UNIT_SMALL == 0)
+		if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node **))) == NULL)
+			err(EXIT_FAILURE, "store_object: realloc");
+
+	if ((object = (struct object_node *)malloc(sizeof(struct object_node))) == NULL)
+		err(EXIT_FAILURE, "store_object: malloc");
+
+	object->index         = connection->objects;
+	object->type          = type;
+	object->sha           = calculate_sha(buffer, buffer_size, type);
+	object->ref_delta_sha = (ref_delta_sha != NULL ? legible_sha(ref_delta_sha) : NULL);
+	object->buffer        = buffer;
+	object->buffer_size   = buffer_size;
+	object->data_size     = buffer_size;
+
+	if (connection->verbosity > 1)
+		fprintf(stdout, "###### %04d-%d\t%u\t%s -> %s\n", object->index, object->type, object->data_size, object->sha, object->ref_delta_sha);
+
+	connection->object[connection->objects++] = object;
+
+	RB_INSERT(Tree_Objects, &Objects, object);
+}
+
+
+/*
  * unpack_objects
  *
  * Procedure that extracts all of the objects from the pack data.
@@ -952,9 +987,10 @@ main(void)
 		.response_size     = 0,
 		.verbosity         = 3,
 //		.repository        = "/johnmehr/svnup",
+		.repository        = "/johnmehr/gitup",
 //		.repository        = "/johnmehr/test",
-		.repository        = "/freebsd/freebsd-ci",
-		.branch            = "master",
+//		.repository        = "/freebsd/freebsd-ci",
+		.branch            = "main",
 //		.path_target       = "/work/code/gitup/test",
 		.path_target       = "/work/code/gitup/svnup",
 		.pack_file         = "/work/code/gitup/temp/pack",
