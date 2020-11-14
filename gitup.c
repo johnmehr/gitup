@@ -1139,22 +1139,28 @@ save_tree(connector *connection, char *sha, char *base_path)
  */
 
 static void
-save_objects()
+save_objects(connector *connection)
 {
 	struct object_node *object = NULL;
-	char                path[BUFFER_UNIT_SMALL];
+	char               *tree = NULL, full_path[BUFFER_UNIT_SMALL];
 	int                 fd;
 
-	RB_FOREACH(object, Tree_Objects, &Objects) {
-		snprintf(path, sizeof(path), "./temp/b%04d-%d-%s.out", object->index, object->type, object->sha);
+	/* Find the tree object referenced in the first commit. */
 
-		if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-			err(EXIT_FAILURE, "save_objects: write file failure %s", path);
+	if (memcmp(connection->object[0]->buffer, "tree ", 5) != 0)
+		err(EXIT_FAILURE, "save_objects: first object is not a commit");
 
-		chmod(path, 0644);
-		write(fd, object->buffer, object->data_size);
-		close(fd);
-	}
+	if ((tree = (char *)malloc(41)) == NULL)
+		err(EXIT_FAILURE, "save_objects: malloc");
+
+	memcpy(tree, connection->object[0]->buffer + 5, 40);
+	tree[40] = '\0';
+
+	/* Recursively start processing the tree. */
+
+	save_tree(connection, tree, connection->path_target);
+
+	free(tree);
 }
 
 
