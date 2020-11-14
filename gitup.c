@@ -1272,42 +1272,98 @@ load_configuration(connector *connection, char *configuration_file, char *sectio
  * A lightweight, dependency-free program to clone/pull a git repository.
  */
 
+
 int
-main(void)
+main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
+	int                 option = 0;
+	char               *configuration_file = "./gitup.conf";
+	struct stat         pack_file;
 
 	connector connection = {
 		.ssl               = NULL,
 		.ctx               = NULL,
 		.socket_descriptor = 0,
-		.address           = "github.com",
-		.port              = 443,
 		.response_blocks   = 1024,
 		.response_size     = 0,
-		.verbosity         = 3,
-//		.repository        = "/johnmehr/svnup",
-		.repository        = "/johnmehr/gitup",
-//		.repository        = "/johnmehr/test",
-//		.repository        = "/freebsd/freebsd-ci",
-		.branch            = "main",
-//		.path_target       = "/work/code/gitup/test",
-		.path_target       = "/work/code/gitup/svnup",
-		.pack_file         = "/work/code/gitup/temp/pack",
+		.host              = NULL,
+		.port              = 0,
+		.repository        = NULL,
+		.branch            = NULL,
+		.path_target       = NULL,
+		.path_work         = NULL,
+		.pack_file         = NULL,
+		.verbosity         = 2,
+		.keep_pack_file    = 0,
+		.use_pack_file     = 0,
 		};
+
+	if (argc < 2)
+		usage(configuration_file);
+
+	if (argv[1][0] == '-') {
+		if (argv[1][1] == 'V') {
+			fprintf(stdout, "gitup version %s\n", GITUP_VERSION);
+			exit(EXIT_SUCCESS);
+			}
+		else usage(configuration_file);
+	} else {
+		load_configuration(&connection, configuration_file, argv[1]);
+		optind = 2;
+	}
+
+	while ((option = getopt(argc, argv, "Vv:")) != -1)
+		switch (option) {
+			case 'v':
+				connection.verbosity = strtol(optarg, (char **)NULL, 10);
+				break;
+		}
 
 	if ((connection.response = (char *)malloc(connection.response_blocks * BUFFER_UNIT_SMALL + 1)) == NULL)
 		err(EXIT_FAILURE, "main: connection.response malloc");
 
-	find_local_files_and_directories(connection.path_target, "");
+	if (connection.use_pack_file) {
+		char *temp_repository = strdup(connection.repository);
 
-	/* Initialize connection with the server and get the latest revision number. */
+		for (int x = 0; x < strlen(temp_repository); x++)
+			if (temp_repository[x] == '/')
+				temp_repository[x] = '_';
 
-	get_commit_hash(&connection);
+		int length = strlen(connection.path_work) + strlen(temp_repository) + strlen(connection.branch) + 8;
+
+		if ((connection.pack_file = (char *)malloc(length)) == NULL)
+			err(EXIT_FAILURE, "main: connection.pack_file malloc");
+
+		snprintf(connection.pack_file, length, "%s/pack%s_%s", connection.path_work, temp_repository, connection.branch);
+		}
+
+	if (connection.verbosity) {
+		fprintf(stderr, "# Host: %s\n", connection.host);
+		fprintf(stderr, "# Port: %d\n", connection.port);
+		fprintf(stderr, "# Repository: %s\n", connection.repository);
+		fprintf(stderr, "# Branch: %s\n", connection.branch);
+		fprintf(stderr, "# Target: %s\n", connection.path_target);
+		fprintf(stderr, "# Keep packfile: %s\n", connection.keep_pack_file ? "Yes" : "No");
+		fprintf(stderr, "# Use packfile: %s\n", connection.use_pack_file ? "Yes" : "No");
+
+		if ((connection.keep_pack_file) || (connection.use_pack_file))
+			fprintf(stderr, "# Using pack_file: %s\n", connection.pack_file);
+	}
+
+	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
+		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
+
+//	find_local_files_and_directories(connection.path_target, "");
+
+	if (lstat(connection.pack_file, &pack_file) == -1)
+		get_commit_hash(&connection);
+
 	fetch_pack(&connection);
 	unpack_objects(&connection);
-	save_objects();
+	apply_deltas(&connection);
+	save_objects(&connection);
 
 	/* Wrap it all up. */
 
@@ -1321,7 +1377,7 @@ main(void)
 		file_node_free(RB_REMOVE(Tree_Local_Directories, &Local_Directories, file));
 
 	for (int o = 0; o < connection.objects; o++) {
-		if (connection.verbosity > 2)
+		if (connection.verbosity > 1)
 			fprintf(stderr, "###### %04d-%d\t%u\t%s -> %s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->ref_delta_sha);
 
 		object_node_free(connection.object[o]);
@@ -1336,11 +1392,26 @@ main(void)
 	if (connection.commit)
 		free(connection.commit);
 
+	if (connection.host)
+		free(connection.host);
+
+	if (connection.repository)
+		free(connection.repository);
+
+	if (connection.branch)
+		free(connection.branch);
+
+	if (connection.path_target)
+		free(connection.path_target);
+
+	if (connection.path_work)
+		free(connection.path_work);
+
 	if (connection.ssl) {
 		SSL_shutdown(connection.ssl);
 		SSL_CTX_free(connection.ctx);
 		SSL_free(connection.ssl);
 	}
 
-	return 0;
+	return (0);
 }
