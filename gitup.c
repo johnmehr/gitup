@@ -872,8 +872,8 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, cha
 static void
 unpack_objects(connector *connection)
 {
-	int            objects = 0, buffer_size = 0, total_objects = 0;
-	int            version = 0, object_type = 0, stream_code = 0, stream_bytes = 0;
+	int            buffer_size = 0, total_objects = 0, version = 0;
+	int            object_type = 0, stream_code = 0, stream_bytes = 0;
 	char          *buffer = NULL, *ref_delta_sha_buffer = NULL;
 	uint32_t       file_size = 0, file_bits = 0, position = 4;
 	unsigned char  zlib_out[16384];
@@ -1032,7 +1032,7 @@ apply_deltas(connector *connection)
 	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0;
 	char               *start, *new_buffer = NULL;
 	uint32_t            offset = 0, length = 0, old_file_size = 0, new_file_size = 0, new_position = 0;
-	struct object_node *delta, *base, lookup, *new_object;
+	struct object_node *delta, *base, lookup;
 
 	for (int o = 0; o < connection->objects; o++) {
 		delta = connection->object[o];
@@ -1187,9 +1187,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 static void
 save_objects(connector *connection)
 {
-	struct object_node *object = NULL;
-	char               *tree = NULL, full_path[BUFFER_UNIT_SMALL];
-	int                 fd;
+	char *tree = NULL;
 
 	/* Find the tree object referenced in the first commit. */
 
@@ -1433,7 +1431,7 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	if ((connection.use_pack_file == 0) || (lstat(connection.pack_file, &pack_file) == -1))
+	if ((connection.use_pack_file == 0) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
 		get_commit_hash(&connection);
 
 	fetch_pack(&connection);
