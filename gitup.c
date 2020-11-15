@@ -727,7 +727,7 @@ get_commit_hash(connector *connection)
 	connection->commit[40] = '\0';
 
 	if (connection->verbosity)
-		printf("\nFetching %s %s (%s)\n", connection->repository, connection->branch, connection->commit);
+		printf("Fetching %s %s (%s)\n", connection->repository, connection->branch, connection->commit);
 }
 
 
@@ -748,7 +748,7 @@ fetch_pack(connector *connection)
 
 	/* If a pack file has been specified, attempt to load it. */
 
-	if ((connection->pack_file) && (lstat(connection->pack_file, &pack_file) != -1)) {
+	if ((connection->use_pack_file) && (lstat(connection->pack_file, &pack_file) != -1)) {
 		if ((fd = open(connection->pack_file, O_RDONLY)) != -1) {
 			if (pack_file.st_size > connection->response_size)
 				if ((connection->response = (char *)realloc(connection->response, pack_file.st_size + 1)) == NULL)
@@ -798,33 +798,23 @@ fetch_pack(connector *connection)
 		pack_size = connection->response_size - 20;
 	}
 
+	/* Save the pack data. */
+
+	if (connection->keep_pack_file) {
+		if ((fd = open(connection->pack_file, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
+			err(EXIT_FAILURE, "write file failure %s", path);
+
+		chmod(connection->pack_file, 0644);
+		write(fd, connection->response, connection->response_size);
+		close(fd);
+	}
+
 	/* Verify the pack data checksum. */
 
 	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)sha_buffer);
 
 	if (memcmp(connection->response + pack_size, sha_buffer, 20) != 0)
 		errc(EXIT_FAILURE, 80, "unpack_objects: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
-
-	/* Save the pack data. */
-
-	if (connection->keep_pack_file) {
-		char *temp_repository = strdup(connection->repository);
-
-		for (int x = 0; x < strlen(temp_repository); x++)
-			if (temp_repository[x] == '/')
-				temp_repository[x] = '_';
-
-		snprintf(path, sizeof(path), "%s/pack%s_%s", connection->path_work, temp_repository, connection->branch);
-
-		if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-			err(EXIT_FAILURE, "write file failure %s", path);
-
-		chmod(path, 0644);
-		write(fd, connection->response, connection->response_size);
-		close(fd);
-
-		free(temp_repository);
-	}
 }
 
 
@@ -1255,12 +1245,6 @@ set_configuration_parameters(connector *connection, char *buffer, size_t length,
 		if (strstr(line, "work_directory=") == line)
 			connection->path_work = strdup(line + 15);
 
-		if (strstr(line, "keep_pack_file=") == line)
-			connection->keep_pack_file = strtol(line + 15, (char **)NULL, 10);
-
-		if (strstr(line, "use_pack_file=") == line)
-			connection->use_pack_file = strtol(line + 14, (char **)NULL, 10);
-
 		if (strstr(line, "verbosity=") == line)
 			connection->verbosity = strtol(line + 10, (char **)NULL, 10);
 	}
@@ -1322,6 +1306,8 @@ usage(char *configuration_file)
 	fprintf(stderr, "Usage: gitup <section> [options]\n\n");
 	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
 	fprintf(stderr, "  Options:\n");
+	fprintf(stderr, "    -k  Path to save a copy of the pack data.\n");
+	fprintf(stderr, "    -p  Path to load a copy of the pack data, skipping the download.\n");
 	fprintf(stderr, "    -v  How verbose the output should be (0 = no output, 1 = the default\n");
 	fprintf(stderr, "          normal output, 2 = also show debugging information.\n");
 	fprintf(stderr, "    -V  Display gitup's version number and exit.\n");
@@ -1381,31 +1367,20 @@ main(int argc, char **argv)
 		optind = 2;
 	}
 
-	while ((option = getopt(argc, argv, "Vv:")) != -1)
+	while ((option = getopt(argc, argv, "k:p:Vv:")) != -1)
 		switch (option) {
+			case 'k':
+				connection.keep_pack_file = 1;
+				connection.pack_file      = strdup(optarg);
+				break;
+			case 'p':
+				connection.use_pack_file = 1;
+				connection.pack_file     = strdup(optarg);
+				break;
 			case 'v':
 				connection.verbosity = strtol(optarg, (char **)NULL, 10);
 				break;
 		}
-
-	/* Build the full path to the pack file. */
-
-	if ((connection.keep_pack_file) || (connection.use_pack_file)) {
-		char *temp_repository = strdup(connection.repository);
-
-		for (int x = 0; x < strlen(temp_repository); x++)
-			if (temp_repository[x] == '/')
-				temp_repository[x] = '_';
-
-		int length = strlen(connection.path_work) + strlen(temp_repository) + strlen(connection.branch) + 8;
-
-		if ((connection.pack_file = (char *)malloc(length)) == NULL)
-			err(EXIT_FAILURE, "main: connection.pack_file malloc");
-
-		snprintf(connection.pack_file, length, "%s/pack%s_%s", connection.path_work, temp_repository, connection.branch);
-
-		free(temp_repository);
-	}
 
 	/* Display connection parameters. */
 
@@ -1415,11 +1390,14 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Repository: %s\n", connection.repository);
 		fprintf(stderr, "# Branch: %s\n", connection.branch);
 		fprintf(stderr, "# Target: %s\n", connection.path_target);
-		fprintf(stderr, "# Keep packfile: %s\n", connection.keep_pack_file ? "Yes" : "No");
-		fprintf(stderr, "# Use packfile: %s\n", connection.use_pack_file ? "Yes" : "No");
 
-		if ((connection.keep_pack_file) || (connection.use_pack_file))
+		if (connection.keep_pack_file)
+			fprintf(stderr, "# Saving pack_file: %s\n", connection.pack_file);
+
+		if (connection.use_pack_file)
 			fprintf(stderr, "# Using pack_file: %s\n", connection.pack_file);
+
+		printf("\n");
 	}
 
 	/* Continue setting up the environment. */
