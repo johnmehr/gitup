@@ -497,15 +497,12 @@ ssl_connect(connector *connection)
 static void
 process_command(connector *connection, char *command)
 {
-	char  read_buffer[BUFFER_UNIT_SMALL + 1];
+	char  read_buffer[BUFFER_UNIT_SMALL];
 	char *position = NULL, *next_chunk = NULL, *data_start = NULL;
-	int   chunk_size = -1, bytes_expected = 0, error = 0;
+	int   chunk_size = -1, bytes_expected = 0, position_offset = 0, data_start_offset = 0;
 	int   bytes_read = 0, total_bytes_read = 0;
 	int   bytes_sent = 0, total_bytes_sent = 0;
-	int   bytes_to_write = strlen(command);
-
-	bzero(connection->response, connection->response_blocks * BUFFER_UNIT_SMALL + 1);
-	bzero(read_buffer, BUFFER_UNIT_SMALL + 1);
+	int   bytes_to_write = strlen(command), error = 0;
 
 	/* Transmit the command to the server. */
 
@@ -542,6 +539,21 @@ process_command(connector *connection, char *command)
 
 		if (bytes_read < 0)
 			err(EXIT_FAILURE, "process_command: SSL_read error: %d\n", SSL_get_error(connection->ssl, error));
+
+		/* Expand the buffer if needed, preserving the position and data_start if the buffer moves. */
+
+		if (total_bytes_read + bytes_read > connection->response_blocks * BUFFER_UNIT_LARGE) {
+			position_offset   = position   - connection->response;
+			data_start_offset = data_start - connection->response;
+
+			if ((connection->response = (char *)realloc(connection->response, ++connection->response_blocks * BUFFER_UNIT_LARGE)) == NULL)
+				err(EXIT_FAILURE, "process_command: connection.response malloc");
+
+			position   = connection->response + position_offset;
+			data_start = connection->response + data_start_offset;
+		}
+
+		/* Add the bytes read to the buffer. */
 
 		memcpy(connection->response + total_bytes_read, read_buffer, bytes_read + 1);
 		total_bytes_read += bytes_read;
@@ -728,7 +740,7 @@ get_commit_hash(connector *connection)
 static void
 fetch_pack(connector *connection)
 {
-	char        *fetch  = NULL, *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
+	char        *fetch = NULL, *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
 	struct stat  pack_file;
 	int          fd, chunk_size = 1, position = 0, pack_size = 0;
 
@@ -738,6 +750,10 @@ fetch_pack(connector *connection)
 
 	if ((connection->pack_file) && (lstat(connection->pack_file, &pack_file) != -1)) {
 		if ((fd = open(connection->pack_file, O_RDONLY)) != -1) {
+			if (pack_file.st_size > connection->response_size)
+				if ((connection->response = (char *)realloc(connection->response, pack_file.st_size + 1)) == NULL)
+					err(EXIT_FAILURE, "fetch_pack: connection->response malloc");
+
 			connection->response_size = pack_file.st_size;
 
 			read(fd, connection->response, connection->response_size);
@@ -1165,6 +1181,8 @@ save_tree(connector *connection, char *sha, char *base_path)
 
 /*
  * save_objects
+ *
+ * Procedure that commits the objects and trees to disk.
  */
 
 static void
@@ -1336,7 +1354,7 @@ main(int argc, char **argv)
 		.ctx               = NULL,
 		.socket_descriptor = 0,
 		.response          = NULL,
-		.response_blocks   = 1024,
+		.response_blocks   = 0,
 		.response_size     = 0,
 		.host              = NULL,
 		.port              = 0,
@@ -1345,7 +1363,7 @@ main(int argc, char **argv)
 		.path_target       = NULL,
 		.path_work         = NULL,
 		.pack_file         = NULL,
-		.verbosity         = 2,
+		.verbosity         = 1,
 		.keep_pack_file    = 0,
 		.use_pack_file     = 0,
 		};
@@ -1372,9 +1390,6 @@ main(int argc, char **argv)
 				connection.verbosity = strtol(optarg, (char **)NULL, 10);
 				break;
 		}
-
-	if ((connection.response = (char *)malloc(connection.response_blocks * BUFFER_UNIT_SMALL + 1)) == NULL)
-		err(EXIT_FAILURE, "main: connection.response malloc");
 
 	/* Build the full path to the pack file. */
 
