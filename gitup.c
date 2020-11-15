@@ -78,8 +78,8 @@ typedef struct {
 	char                *host;
 	uint16_t             port;
 	char                *repository;
-	char                *commit;
 	char                *branch;
+	char                *commit;
 	char                *response;
 	uint32_t             response_size;
 	int                  response_blocks;
@@ -522,7 +522,7 @@ process_command(connector *connection, char *command)
 				continue;
 			else
 				err(EXIT_FAILURE, "process_command: send command");
-			}
+		}
 
 		total_bytes_sent += bytes_sent;
 
@@ -555,13 +555,12 @@ process_command(connector *connection, char *command)
 		if (chunk_size == -1) {
 			if ((position = strnstr(connection->response, "\r\n\r\n", total_bytes_read)) == NULL) {
 				continue;
-				}
-			else {
+			} else {
 				bytes_expected = position - connection->response + 4;
 				position += 2;
 				data_start = position;
-				}
 			}
+		}
 
 		while (bytes_expected < total_bytes_read) {
 			chunk_size = strtol(position + 2, (char **)NULL, 16);
@@ -587,8 +586,8 @@ process_command(connector *connection, char *command)
 
 			position += chunk_size;
 			bytes_expected += chunk_size;
-			}
 		}
+	}
 
 	if (strstr(connection->response, "HTTP/1.1 200 OK") != connection->response)
 		err(EXIT_FAILURE, "process_command: read failure:\n%s\n", connection->response);
@@ -626,7 +625,6 @@ build_fetch_request(connector *connection)
 		BUFFER_UNIT_SMALL,
 		"0065want %s no-progress side-band-64k ref-delta agent=git/2.28\n"
 		"0032want %s\n"
-//		"000cdeepen 1"
 		"0034shallow %s"
 		"0000",
 		connection->commit,
@@ -661,7 +659,7 @@ build_fetch_request(connector *connection)
 	RB_FOREACH(file, Tree_Local_Files, &Local_Files) {
 		snprintf(have, sizeof(have), "0032have %s\n\n", file->sha);
 		append_string(&command, &command_buffer_size, &command_size, have);
-		}
+	}
 
 	/* Finish the request. */
 
@@ -783,27 +781,6 @@ fetch_pack(connector *connection)
 		connection->response_size -= (pack_start - connection->response);
 		memmove(connection->response, pack_start, connection->response_size);
 		pack_size = connection->response_size - 31;
-
-		/* Save the pack data for testing. */
-
-		if (connection->keep_pack_file) {
-			char *temp_repository = strdup(connection->repository);
-
-			for (int x = 0; x < strlen(temp_repository); x++)
-				if (temp_repository[x] == '/')
-					temp_repository[x] = '_';
-
-			snprintf(path, sizeof(path), "%s/pack%s_%s", connection->path_work, temp_repository, connection->branch);
-
-			if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-				err(EXIT_FAILURE, "write file failure %s", path);
-
-			chmod(path, 0644);
-			write(fd, connection->response, connection->response_size);
-			close(fd);
-
-			free(temp_repository);
-		}
 	}
 
 	/* Verify the pack data checksum. */
@@ -812,6 +789,27 @@ fetch_pack(connector *connection)
 
 	if (memcmp(connection->response + pack_size, sha_buffer, 20) != 0)
 		errc(EXIT_FAILURE, 80, "unpack_objects: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
+
+	/* Save the pack data. */
+
+	if (connection->keep_pack_file) {
+		char *temp_repository = strdup(connection->repository);
+
+		for (int x = 0; x < strlen(temp_repository); x++)
+			if (temp_repository[x] == '/')
+				temp_repository[x] = '_';
+
+		snprintf(path, sizeof(path), "%s/pack%s_%s", connection->path_work, temp_repository, connection->branch);
+
+		if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
+			err(EXIT_FAILURE, "write file failure %s", path);
+
+		chmod(path, 0644);
+		write(fd, connection->response, connection->response_size);
+		close(fd);
+
+		free(temp_repository);
+	}
 }
 
 
@@ -1162,7 +1160,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 
 	free(file.sha);
 	free(file.path);
-	}
+}
 
 
 /*
@@ -1294,7 +1292,7 @@ load_configuration(connector *connection, char *configuration_file, char *sectio
 	set_configuration_parameters(connection, buffer, file.st_size, section);
 
 	free(buffer);
-	}
+}
 
 
 /*
@@ -1337,6 +1335,7 @@ main(int argc, char **argv)
 		.ssl               = NULL,
 		.ctx               = NULL,
 		.socket_descriptor = 0,
+		.response          = NULL,
 		.response_blocks   = 1024,
 		.response_size     = 0,
 		.host              = NULL,
@@ -1351,6 +1350,8 @@ main(int argc, char **argv)
 		.use_pack_file     = 0,
 		};
 
+	/* Process the command line parameters. */
+
 	if (argc < 2)
 		usage(configuration_file);
 
@@ -1358,7 +1359,7 @@ main(int argc, char **argv)
 		if (argv[1][1] == 'V') {
 			fprintf(stdout, "gitup version %s\n", GITUP_VERSION);
 			exit(EXIT_SUCCESS);
-			}
+		}
 		else usage(configuration_file);
 	} else {
 		load_configuration(&connection, configuration_file, argv[1]);
@@ -1375,7 +1376,9 @@ main(int argc, char **argv)
 	if ((connection.response = (char *)malloc(connection.response_blocks * BUFFER_UNIT_SMALL + 1)) == NULL)
 		err(EXIT_FAILURE, "main: connection.response malloc");
 
-	if (connection.use_pack_file) {
+	/* Build the full path to the pack file. */
+
+	if ((connection.keep_pack_file) || (connection.use_pack_file)) {
 		char *temp_repository = strdup(connection.repository);
 
 		for (int x = 0; x < strlen(temp_repository); x++)
@@ -1388,7 +1391,11 @@ main(int argc, char **argv)
 			err(EXIT_FAILURE, "main: connection.pack_file malloc");
 
 		snprintf(connection.pack_file, length, "%s/pack%s_%s", connection.path_work, temp_repository, connection.branch);
-		}
+
+		free(temp_repository);
+	}
+
+	/* Display connection parameters. */
 
 	if (connection.verbosity) {
 		fprintf(stderr, "# Host: %s\n", connection.host);
@@ -1403,12 +1410,16 @@ main(int argc, char **argv)
 			fprintf(stderr, "# Using pack_file: %s\n", connection.pack_file);
 	}
 
+	/* Continue setting up the environment. */
+
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
 
 //	find_local_files_and_directories(connection.path_target, "");
 
-	if (lstat(connection.pack_file, &pack_file) == -1)
+	/* Execute the fetch, unpack, apply deltas and save. */
+
+	if ((connection.use_pack_file == 0) || (lstat(connection.pack_file, &pack_file) == -1))
 		get_commit_hash(&connection);
 
 	fetch_pack(&connection);
@@ -1432,16 +1443,13 @@ main(int argc, char **argv)
 			fprintf(stderr, "###### %04d-%d\t%u\t%s -> %s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->ref_delta_sha);
 
 		object_node_free(connection.object[o]);
-		}
+	}
 
 	if (connection.response)
 		free(connection.response);
 
 	if (connection.object)
 		free(connection.object);
-
-	if (connection.commit)
-		free(connection.commit);
 
 	if (connection.host)
 		free(connection.host);
@@ -1451,6 +1459,12 @@ main(int argc, char **argv)
 
 	if (connection.branch)
 		free(connection.branch);
+
+	if (connection.commit)
+		free(connection.commit);
+
+	if (connection.pack_file)
+		free(connection.pack_file);
 
 	if (connection.path_target)
 		free(connection.path_target);
