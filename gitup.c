@@ -742,7 +742,7 @@ fetch_pack(connector *connection)
 {
 	char        *fetch = NULL, *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
 	struct stat  pack_file;
-	int          fd, chunk_size = 1, position = 0, pack_size = 0;
+	int          fd, chunk_size = 1, pack_size = 0, source = 0, target = 0;
 
 	connection->response_size = 0;
 
@@ -759,7 +759,7 @@ fetch_pack(connector *connection)
 			read(fd, connection->response, connection->response_size);
 			close(fd);
 
-			pack_size = connection->response_size - 31;
+			pack_size = connection->response_size - 20;
 		}
 	}
 
@@ -770,33 +770,32 @@ fetch_pack(connector *connection)
 		process_command(connection, fetch);
 		free(fetch);
 
-		/* Find the start of the pack data. */
+		/* Find the start of the pack data and remove the header. */
 
 		if ((pack_start = strstr(connection->response, "PACK")) == NULL)
 			err(EXIT_FAILURE, "unpack_objects: %s\n", connection->response);
 
 		pack_start -= 5;
+		connection->response_size -= (pack_start - connection->response + 11);
+		memmove(connection->response, connection->response + 8, 4);
 
 		/* Remove the chunk size markers from the pack data. */
 
-		position = pack_start - connection->response;
+		source = pack_start - connection->response;
 
 		while (chunk_size > 0) {
-			chunk_size = strtol(connection->response + position, (char **)NULL, 16);
+			chunk_size = strtol(connection->response + source, (char **)NULL, 16);
 
 			if (chunk_size == 0)
 				break;
 
-			memmove(connection->response + position, connection->response + position + 5, connection->response_size - position);
+			memmove(connection->response + target, connection->response + source + 5, chunk_size - 5);
+			target += chunk_size - 5;
+			source += chunk_size;
 			connection->response_size -= 5;
-			position += chunk_size - 5;
 		}
 
-		/* Remove anything before the 'PACK'. */
-
-		connection->response_size -= (pack_start - connection->response);
-		memmove(connection->response, pack_start, connection->response_size);
-		pack_size = connection->response_size - 31;
+		pack_size = connection->response_size - 20;
 	}
 
 	/* Verify the pack data checksum. */
