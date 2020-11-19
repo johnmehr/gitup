@@ -500,10 +500,10 @@ static void
 process_command(connector *connection, char *command)
 {
 	char  read_buffer[BUFFER_UNIT_SMALL];
-	char *position = NULL, *next_chunk = NULL, *data_start = NULL;
-	int   chunk_size = -1, bytes_expected = 0, position_offset = 0, data_start_offset = 0;
-	int   bytes_read = 0, total_bytes_read = 0;
-	int   bytes_sent = 0, total_bytes_sent = 0;
+	char *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
+	int   chunk_size = -1, bytes_expected = 0, marker_offset = 0, data_start_offset = 0;
+	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
+	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
 	int   bytes_to_write = strlen(command), error = 0;
 
 	/* Transmit the command to the server. */
@@ -537,7 +537,8 @@ process_command(connector *connection, char *command)
 	while (chunk_size) {
 		bytes_read = SSL_read(connection->ssl, read_buffer, BUFFER_UNIT_SMALL);
 
-		if (bytes_read == 0) break;
+		if (bytes_read == 0)
+			break;
 
 		if (bytes_read < 0)
 			err(EXIT_FAILURE, "process_command: SSL_read error: %d\n", SSL_get_error(connection->ssl, error));
@@ -545,66 +546,69 @@ process_command(connector *connection, char *command)
 		/* Expand the buffer if needed, preserving the position and data_start if the buffer moves. */
 
 		if (total_bytes_read + bytes_read > connection->response_blocks * BUFFER_UNIT_LARGE) {
-			position_offset   = position   - connection->response;
-			data_start_offset = data_start - connection->response;
+			marker_offset     = marker_start - connection->response;
+			data_start_offset = data_start   - connection->response;
 
 			if ((connection->response = (char *)realloc(connection->response, ++connection->response_blocks * BUFFER_UNIT_LARGE)) == NULL)
 				err(EXIT_FAILURE, "process_command: connection.response malloc");
 
-			position   = connection->response + position_offset;
-			data_start = connection->response + data_start_offset;
+			marker_start = connection->response + marker_offset;
+			data_start   = connection->response + data_start_offset;
 		}
 
-		/* Add the bytes read to the buffer. */
+		/* Add the bytes received to the buffer. */
 
 		memcpy(connection->response + total_bytes_read, read_buffer, bytes_read + 1);
 		total_bytes_read += bytes_read;
 		connection->response[total_bytes_read] = '\0';
 
 		if (connection->verbosity > 1)
-			fprintf(stderr, "\r==> bytes read: %d\tbytes_expected:%d\ttotal_bytes_read:%d", bytes_read, bytes_expected, total_bytes_read);
+			fprintf(stderr, "\r==> bytes read:%d\tbytes_expected:%d\ttotal_bytes_read:%d", bytes_read, bytes_expected, total_bytes_read);
 
 		/* Find the boundary between the header and the data. */
 
 		if (chunk_size == -1) {
-			if ((position = strnstr(connection->response, "\r\n\r\n", total_bytes_read)) == NULL) {
+			if ((marker_start = strnstr(connection->response, "\r\n\r\n", total_bytes_read)) == NULL) {
 				continue;
 			} else {
-				bytes_expected = position - connection->response + 4;
-				position += 2;
-				data_start = position;
+				bytes_expected = marker_start - connection->response + 4;
+				marker_start += 2;
+				data_start = marker_start;
 			}
 		}
 
-		while (bytes_expected < total_bytes_read) {
-			chunk_size = strtol(position + 2, (char **)NULL, 16);
+		while (total_bytes_read + chunk_size > bytes_expected) {
+			// Make sure the whole chunk marker has been read.
 
-			/* Check to see if the stream has ended or if the current chunk hasn't been fully fetched. */
+			check_bytes = total_bytes_read - (marker_start + 2 - connection->response);
 
-			if ((chunk_size == 0) || (bytes_expected + chunk_size > total_bytes_read))
- 				break;
-
-			/* Find the start of the next chunk. */
-
-			next_chunk = strnstr(position + 2, "\r\n", total_bytes_read - (position + 2 - connection->response));
-
-			if (next_chunk == NULL)
+			if (check_bytes < 0)
 				break;
-			else
-				next_chunk += 2;
 
-			/* Remove the chunk length marker. */
+			marker_end = strnstr(marker_start + 2, "\r\n", check_bytes);
 
-			memmove(position, next_chunk, total_bytes_read - (next_chunk - connection->response));
-			total_bytes_read -= (next_chunk - position);
+			if (marker_end == NULL)
+				break;
 
-			position += chunk_size;
+			// Remove the chunk length marker.
+
+			chunk_size = strtol(marker_start, (char **)NULL, 16);
+
+			bytes_to_move = total_bytes_read - (marker_end + 2 - connection->response) + 1;
+
+			if (bytes_to_move < 0)
+				break;
+
+			memmove(marker_start, marker_end + 2, bytes_to_move);
+			total_bytes_read -= (marker_end + 2 - marker_start);
+
+			if (chunk_size == 0)
+				break;
+
+			marker_start += chunk_size;
 			bytes_expected += chunk_size;
 		}
 	}
-
-	if (strstr(connection->response, "HTTP/1.1 200 OK") != connection->response)
-		err(EXIT_FAILURE, "process_command: read failure:\n%s\n", connection->response);
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
@@ -807,7 +811,7 @@ fetch_pack(connector *connection)
 			connection->response_size -= 5;
 		}
 
-		pack_size = connection->response_size - 20;
+		pack_size = connection->response_size - 15;
 	}
 
 	/* Save the pack data. */
@@ -817,7 +821,7 @@ fetch_pack(connector *connection)
 			err(EXIT_FAILURE, "write file failure %s", path);
 
 		chmod(connection->pack_file, 0644);
-		write(fd, connection->response, connection->response_size);
+		write(fd, connection->response, connection->response_size + 5);
 		close(fd);
 	}
 
@@ -1408,8 +1412,6 @@ main(int argc, char **argv)
 
 		if (connection.use_pack_file)
 			fprintf(stderr, "# Using pack_file: %s\n", connection.pack_file);
-
-		printf("\n");
 	}
 
 	/* Continue setting up the environment. */
