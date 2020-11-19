@@ -319,14 +319,14 @@ append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_len
 
 
 /*
- * find_local_files_and_directories
+ * find_local_tree
  *
  * Procedure that recursively finds and adds local files and directories to
  * separate red-black trees.
  */
 
 static void
-find_local_files_and_directories(char *path_base, const char *path_target)
+find_local_tree(char *path_base, const char *path_target)
 {
 	DIR              *directory;
 	struct stat       file;
@@ -340,7 +340,7 @@ find_local_files_and_directories(char *path_base, const char *path_target)
 	full_path_size = strlen(path_base) + strlen(path_target) + MAXNAMLEN + 3;
 
 	if ((full_path = (char *)malloc(full_path_size)) == NULL)
-		err(EXIT_FAILURE, "find_local_files_and_directories: full_path malloc");
+		err(EXIT_FAILURE, "find_local_tree: full_path malloc");
 
 	snprintf(full_path, full_path_size, "%s%s", path_base, path_target);
 
@@ -353,7 +353,7 @@ find_local_files_and_directories(char *path_base, const char *path_target)
 
 			if (strlen(path_target)) {
 				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE, "find_local_files_and_directories: malloc");
+					err(EXIT_FAILURE, "find_local_tree: malloc");
 
 				new_node->path = strdup(full_path);
 				new_node->sha  = 0;
@@ -382,14 +382,14 @@ find_local_files_and_directories(char *path_base, const char *path_target)
 						path_target,
 						entry->d_name);
 
-					find_local_files_and_directories(path_base, full_path);
+					find_local_tree(path_base, full_path);
 				}
 
 				closedir(directory);
 			}
 		} else {
 			if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-				err(EXIT_FAILURE, "find_local_files_and_directories: malloc");
+				err(EXIT_FAILURE, "find_local_tree: malloc");
 
 			new_node->path = strdup(path_target);
 			new_node->sha  = calculate_file_sha(full_path, file.st_size, file.st_mode);
@@ -1419,7 +1419,7 @@ main(int argc, char **argv)
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
 
-//	find_local_files_and_directories(connection.path_target, "");
+//	find_local_tree(connection.path_target, "");
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
