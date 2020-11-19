@@ -50,6 +50,7 @@
 #include <zlib.h>
 
 #define GITUP_VERSION "0.1"
+#define GIT_VERSION "2.28"
 #define BUFFER_UNIT_SMALL 4096
 #define BUFFER_UNIT_LARGE 1048576
 
@@ -77,6 +78,7 @@ typedef struct {
 	SSL_CTX             *ctx;
 	char                *host;
 	uint16_t             port;
+	char                *agent;
 	char                *repository;
 	char                *branch;
 	char                *commit;
@@ -691,7 +693,7 @@ build_fetch_request(connector *connection)
 static void
 get_commit_hash(connector *connection)
 {
-	char command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL;
+	char command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
 
 	/* Get the list of commits from the server. */
 
@@ -699,17 +701,29 @@ get_commit_hash(connector *connection)
 		BUFFER_UNIT_SMALL,
 		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\n"
 		"Host: github.com\n"
-		"User-Agent: git/2.28\n"
+		"User-Agent: git/%s\n"
 		"\r\n",
-		connection->repository);
+		connection->repository,
+		GIT_VERSION);
 
 	process_command(connection, command);
 
-	/* Change all \0 characters to \n to make it easy to find the entry. */
+	/* Change all \0 characters to \n to make it easy to find the data. */
 
 	for (uint32_t x = 0; x < connection->response_size; x++)
 		if (connection->response[x] == '\0')
 			connection->response[x] = '\n';
+
+	/* Extract the agent. */
+
+	position = strstr(connection->response, "agent=");
+	end      = strstr(position, "\n");
+
+	*end = '\0';
+	connection->agent = strdup(position);
+	*end = '\n';
+
+	/* Extract the commit hash. */
 
 	snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
 
@@ -718,8 +732,6 @@ get_commit_hash(connector *connection)
 	if (position == NULL)
 		err(EXIT_FAILURE, "get_commit_hash: %s doesn't exist in %s", connection->branch, connection->repository);
 
-	/* Extract and save the commit hash. */
-
 	if ((connection->commit = (char *)malloc(41)) == NULL)
 		err(EXIT_FAILURE, "get_commit_hash: malloc");
 
@@ -727,7 +739,7 @@ get_commit_hash(connector *connection)
 	connection->commit[40] = '\0';
 
 	if (connection->verbosity)
-		printf("Fetching %s %s (%s)\n", connection->repository, connection->branch, connection->commit);
+		printf("# Commit: %s\n", connection->commit);
 }
 
 
@@ -1443,6 +1455,9 @@ main(int argc, char **argv)
 
 	if (connection.host)
 		free(connection.host);
+
+	if (connection.agent)
+		free(connection.agent);
 
 	if (connection.repository)
 		free(connection.repository);
