@@ -954,7 +954,7 @@ unpack_objects(connector *connection)
 				errc(EXIT_FAILURE, EINVAL, "Cannot find ofs-delta base object");
 		}
 
-		/* Extract ref_delta SHA checksum. */
+		/* Extract ref-delta SHA checksum. */
 
 		if (object_type == 7) {
 			ref_delta_sha = legible_sha(connection->response);
@@ -1055,7 +1055,7 @@ unpack_variable_length_integer(char *data, int *position)
 /*
  * apply_deltas
  *
- * Procedure that applies the changes in all of the ref_delta objects to their
+ * Procedure that applies the changes in all of the delta objects to their
  * base objects.
  */
 
@@ -1367,7 +1367,7 @@ usage(char *configuration_file)
 	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
 	fprintf(stderr, "  Options:\n");
 	fprintf(stderr, "    -k  Path to save a copy of the pack data.\n");
-	fprintf(stderr, "    -p  Path to load a copy of the pack data, skipping the download.\n");
+	fprintf(stderr, "    -u  Path to load a copy of the pack data, skipping the download.\n");
 	fprintf(stderr, "    -v  How verbose the output should be (0 = no output, 1 = the default\n");
 	fprintf(stderr, "          normal output, 2 = also show debugging information.\n");
 	fprintf(stderr, "    -V  Display gitup's version number and exit.\n");
@@ -1427,13 +1427,13 @@ main(int argc, char **argv)
 		optind = 2;
 	}
 
-	while ((option = getopt(argc, argv, "k:p:Vv:")) != -1)
+	while ((option = getopt(argc, argv, "k:u:Vv:")) != -1)
 		switch (option) {
 			case 'k':
 				connection.keep_pack_file = 1;
 				connection.pack_file      = strdup(optarg);
 				break;
-			case 'p':
+			case 'u':
 				connection.use_pack_file = 1;
 				connection.pack_file     = strdup(optarg);
 				break;
