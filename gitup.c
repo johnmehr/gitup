@@ -59,6 +59,7 @@ struct object_node {
 	char *sha;
 	int   type;
 	int   index;
+	int   pack_offset;
 	char *ref_delta_sha;
 	char *buffer;
 	int   buffer_size;
@@ -622,29 +623,37 @@ process_command(connector *connection, char *command)
 
 
 /*
- * build_fetch_request
+ * build_clone_request
  *
- * Function that constructs the command to the fetch the pack data.
+ * Function that constructs the command to the fetch the full pack data.
  */
 
 static char *
-build_fetch_request(connector *connection)
+build_clone_request(connector *connection)
 {
 	struct file_node *file;
 	unsigned int      command_size = 0, command_buffer_size = BUFFER_UNIT_LARGE;
 	char             *command = NULL, want[BUFFER_UNIT_SMALL], have[51];
 
 	if ((command = (char *)malloc(BUFFER_UNIT_LARGE)) == NULL)
-		err(EXIT_FAILURE, "build_fetch_request: malloc");
+		err(EXIT_FAILURE, "build_clone_request: malloc");
 
 	/* Start with the "wants". */
 
 	snprintf(want,
 		BUFFER_UNIT_SMALL,
-		"0065want %s no-progress side-band-64k ref-delta agent=git/2.28\n"
-		"0032want %s\n"
+		"0011command=fetch"
+		"%04lx%s0001"
+//		"000dthin-pack"
+		"000fno-progress"
+//		"000dref-delta"
+		"000dofs-delta"
+//		"000cdeepen 1"
 		"0034shallow %s"
-		"0000",
+		"0032want %s\n"
+		"0032want %s\n",
+		strlen(connection->agent) + 4,
+		connection->agent,
 		connection->commit,
 		connection->commit,
 		connection->commit);
@@ -660,15 +669,19 @@ build_fetch_request(connector *connection)
 		BUFFER_UNIT_LARGE,
 		"POST %s/git-upload-pack HTTP/1.1\n"
 		"Host: github.com\n"
-		"Accept: */*\n"
-		"User-Agent: git/2.28\n"
+		"User-Agent: git/%s\n"
+		"Accept-encoding: deflate, gzip\n"
 		"Content-type: application/x-git-upload-pack-request\n"
+		"Accept: application/x-git-upload-pack-request\n"
+		"Git-Protocol: version=2\n"
 		"Content-length: %d\n"
 		"\r\n"
 		"%s",
 		connection->repository,
+		GIT_VERSION,
 		command_size,
-		want);
+		want
+		);
 
 	command_size = strlen(command);
 
@@ -685,6 +698,8 @@ build_fetch_request(connector *connection)
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "%s\n\n", command);
+
+	process_command(connection, command);
 
 	return command;
 }
@@ -782,7 +797,7 @@ fetch_pack(connector *connection)
 	/* If no pack data has been loaded, fetch it from the server. */
 
 	if (connection->response_size == 0) {
-		fetch = build_fetch_request(connection);
+		fetch = build_clone_request(connection);
 		process_command(connection, fetch);
 		free(fetch);
 
@@ -841,7 +856,7 @@ fetch_pack(connector *connection)
  */
 
 static void
-store_object(connector *connection, int type, char *buffer, int buffer_size, char *ref_delta_sha)
+store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, char *ref_delta_sha)
 {
 	struct object_node *object = NULL;
 
@@ -855,13 +870,14 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, cha
 	object->index         = connection->objects;
 	object->type          = type;
 	object->sha           = calculate_sha(buffer, buffer_size, type);
-	object->ref_delta_sha = (ref_delta_sha != NULL ? legible_sha(ref_delta_sha) : NULL);
+	object->pack_offset   = pack_offset;
+	object->ref_delta_sha = ref_delta_sha;
 	object->buffer        = buffer;
 	object->buffer_size   = buffer_size;
 	object->data_size     = buffer_size;
 
 	if (connection->verbosity > 1)
-		fprintf(stdout, "###### %04d-%d\t%u\t%s -> %s\n", object->index, object->type, object->data_size, object->sha, object->ref_delta_sha);
+		fprintf(stdout, "###### %04d-%d\t%d\t%u\t%s -> %s\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->ref_delta_sha);
 
 	connection->object[connection->objects++] = object;
 
@@ -878,10 +894,10 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, cha
 static void
 unpack_objects(connector *connection)
 {
-	int            buffer_size = 0, total_objects = 0, version = 0;
-	int            object_type = 0, stream_code = 0, stream_bytes = 0;
-	char          *buffer = NULL, *ref_delta_sha_buffer = NULL;
-	uint32_t       file_size = 0, file_bits = 0, position = 4;
+	int            buffer_size = 0, total_objects = 0, version = 0, object_type = 0, pack_offset = 0, found = 0;
+	int            lookup_offset = 0, lookup_object = 0, stream_code = 0, stream_bytes = 0, position = 4;
+	char          *buffer = NULL, *ref_delta_sha = NULL;
+	uint32_t       file_size = 0, file_bits = 0;
 	unsigned char  zlib_out[16384];
 
 	/* Check the pack version number. */
@@ -890,7 +906,7 @@ unpack_objects(connector *connection)
 	position += 4;
 
 	if (version != 2)
-		errc(EXIT_FAILURE, 79, "unpack_objects: pack version %d not supported", version);
+		errc(EXIT_FAILURE, EFTYPE, "unpack_objects: pack version %d not supported", version);
 
 	/* Determine the number of objects in the pack data. */
 
@@ -903,7 +919,9 @@ unpack_objects(connector *connection)
 	/* Unpack the objects. */
 
 	while ((position < connection->response_size) && (total_objects-- > 0)) {
-		object_type = (unsigned char)connection->response[position] >> 4 & 0x07;
+		object_type   = (unsigned char)connection->response[position] >> 4 & 0x07;
+		pack_offset   = position;
+		ref_delta_sha = NULL;
 
 		/* Extract the file size. */
 
@@ -916,23 +934,34 @@ unpack_objects(connector *connection)
 		}
 		while (connection->response[position++] & 0x80);
 
-		/* Ignore ofs_deltas for now. */
+		/* Convert ofs-deltas to ref-deltas. */
 
 		if (object_type == 6) {
-			while ((unsigned char)connection->response[position] & 0x80) position++;
-			position++;
+			lookup_offset = 0;
+			found         = 0;
+
+			do lookup_offset = (lookup_offset << 7) + (connection->response[position] & 0x7F) + 1;
+			while (connection->response[position++] & 0x80);
+
+			lookup_offset -= 1;
+			lookup_object  = connection->objects;
+
+			while ((!found) && (--lookup_object > 0))
+				if (pack_offset - lookup_offset == connection->object[lookup_object]->pack_offset)
+					found = 1;
+
+			if (found)
+				ref_delta_sha = strdup(connection->object[lookup_object]->sha);
+			else
+				errc(EXIT_FAILURE, EINVAL, "Cannot find ofs-delta base object");
 		}
 
 		/* Extract ref_delta SHA checksum. */
 
 		if (object_type == 7) {
-			if ((ref_delta_sha_buffer = (char *)malloc(21)) == NULL)
-				err(EXIT_FAILURE, "unpack_objects: malloc");
-
-			memcpy(ref_delta_sha_buffer, connection->response + position, 20);
+			ref_delta_sha = legible_sha(connection->response);
 			position += 20;
 		}
-		else ref_delta_sha_buffer = NULL;
 
 		/* Inflate and store the object. */
 
@@ -967,7 +996,7 @@ unpack_objects(connector *connection)
 		inflateEnd(&stream);
 		position += stream.total_in;
 
-		store_object(connection, object_type, buffer, buffer_size, ref_delta_sha_buffer);
+		store_object(connection, object_type, buffer, buffer_size, pack_offset, ref_delta_sha);
 	}
 }
 
@@ -1038,15 +1067,23 @@ apply_deltas(connector *connection)
 	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0;
 	char               *start, *new_buffer = NULL;
 	uint32_t            offset = 0, length = 0, old_file_size = 0, new_file_size = 0, new_position = 0;
-	struct object_node *delta, *base, lookup;
+	struct object_node *delta, *base, lookup, r;
 
 	for (int o = 0; o < connection->objects; o++) {
 		delta = connection->object[o];
 
-		if (delta->type != 7)
+		if (delta->type < 6)
 			continue;
 
 		lookup.sha = delta->ref_delta_sha;
+
+		if (delta->type == 6) {
+			if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
+				err(EXIT_FAILURE, "apply_deltas: can't find %04d -> %s\n", delta->index, delta->ref_delta_sha);
+
+			if (base->type == 6)
+				lookup.sha = base->ref_delta_sha;
+			}
 
 		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
 			err(EXIT_FAILURE, "apply_deltas: can't find %04d -> %s\n", delta->index, delta->ref_delta_sha);
@@ -1087,7 +1124,10 @@ apply_deltas(connector *connection)
 
 		/* Store the object. */
 
-		store_object(connection, base->type, new_buffer, new_file_size, NULL);
+		store_object(connection, base->type, new_buffer, new_file_size, 0, NULL);
+
+		if (delta->type == 6)
+			delta->ref_delta_sha = connection->object[connection->objects - 1]->sha;
 	}
 }
 
@@ -1444,7 +1484,7 @@ main(int argc, char **argv)
 
 	for (int o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
-			fprintf(stderr, "###### %04d-%d\t%u\t%s -> %s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->ref_delta_sha);
+			fprintf(stdout, "###### %04d-%d\t%u\t%s -> %s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->ref_delta_sha);
 
 		object_node_free(connection.object[o]);
 	}
