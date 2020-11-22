@@ -49,10 +49,10 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION "0.1"
-#define GIT_VERSION "2.28"
-#define BUFFER_UNIT_SMALL 4096
-#define BUFFER_UNIT_LARGE 1048576
+#define GITUP_VERSION     "0.1"
+#define GIT_VERSION       "2.28"
+#define BUFFER_UNIT_SMALL  4096
+#define BUFFER_UNIT_LARGE  1048576
 
 struct object_node {
 	RB_ENTRY(object_node) link;
@@ -198,7 +198,7 @@ calculate_sha(char *buffer, uint32_t buffer_size, int type)
 {
 	int   digits = buffer_size, header_width = 0;
 	char *sha = NULL, *sha_buffer = NULL, *temp_buffer = NULL;
-	char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs_delta", "ref_delta" };
+	char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs-delta", "ref-delta" };
 
 	if ((sha_buffer = (char *)malloc(21)) == NULL)
 		err(EXIT_FAILURE, "calculate_sha: malloc");
@@ -392,11 +392,11 @@ find_local_tree(char *path_base, const char *path_target)
 			if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 				err(EXIT_FAILURE, "find_local_tree: malloc");
 
-			new_node->path = strdup(path_target);
+			new_node->path = strdup(full_path);
 			new_node->sha  = calculate_file_sha(full_path, file.st_size, file.st_mode);
 			new_node->mode = file.st_mode;
 
-			printf("?? %o\t%s\t%s\n", new_node->mode, new_node->sha, new_node->path);
+//			printf("?? %o\t%s\t%s\n", new_node->mode, new_node->sha, new_node->path);
 
 			RB_INSERT(Tree_Local_Files, &Local_Files, new_node);
 		}
@@ -593,8 +593,7 @@ process_command(connector *connection, char *command)
 
 			// Remove the chunk length marker.
 
-			chunk_size = strtol(marker_start, (char **)NULL, 16);
-
+			chunk_size    = strtol(marker_start, (char **)NULL, 16);
 			bytes_to_move = total_bytes_read - (marker_end + 2 - connection->response) + 1;
 
 			if (bytes_to_move < 0)
@@ -826,7 +825,8 @@ fetch_pack(connector *connection)
 			connection->response_size -= 5;
 		}
 
-		pack_size = connection->response_size - 15;
+		connection->response_size += 5;
+		pack_size = connection->response_size - 20;
 	}
 
 	/* Save the pack data. */
@@ -836,7 +836,7 @@ fetch_pack(connector *connection)
 			err(EXIT_FAILURE, "write file failure %s", path);
 
 		chmod(connection->pack_file, 0644);
-		write(fd, connection->response, connection->response_size + 5);
+		write(fd, connection->response, connection->response_size);
 		close(fd);
 	}
 
@@ -845,7 +845,7 @@ fetch_pack(connector *connection)
 	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)sha_buffer);
 
 	if (memcmp(connection->response + pack_size, sha_buffer, 20) != 0)
-		errc(EXIT_FAILURE, 80, "unpack_objects: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
+		errc(EXIT_FAILURE, EAUTH, "unpack_objects: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
 }
 
 
@@ -1169,10 +1169,10 @@ extract_tree_item(struct file_node *file, char **position) {
 static void
 save_tree(connector *connection, char *sha, char *base_path)
 {
-	struct object_node *tree = NULL, *find = NULL, lookup;
-	struct file_node    file;
-	char                full_path[BUFFER_UNIT_SMALL], *position = NULL;
-	int                 fd;
+	struct object_node object, *lookup_object = NULL, *tree = NULL;
+	struct file_node   file, *lookup_file = NULL;
+	char               full_path[BUFFER_UNIT_SMALL], *position = NULL;
+	int                fd;
 
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", base_path);
@@ -1183,10 +1183,10 @@ save_tree(connector *connection, char *sha, char *base_path)
 	if ((file.sha = (char *)malloc(41)) == NULL)
 		err(EXIT_FAILURE, "save_tree: malloc");
 
-	lookup.sha = sha;
+	object.sha = sha;
 
-	if ((tree = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-		err(EXIT_FAILURE, "save_objects: tree %s - %s cannot be found", base_path, lookup.sha);
+	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
+		errc(EXIT_FAILURE, ENOENT, "save_objects: tree %s - %s cannot be found", base_path, object.sha);
 
 	/* Process the tree items. */
 
@@ -1202,20 +1202,26 @@ save_tree(connector *connection, char *sha, char *base_path)
 		if (S_ISDIR(file.mode)) {
 			save_tree(connection, file.sha, full_path);
 		} else {
-			memcpy(lookup.sha, file.sha, 40);
+			memcpy(object.sha, file.sha, 41);
+			memcpy(file.path, full_path, sizeof(full_path));
 
-			if ((find = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-				err(EXIT_FAILURE, "save_objects: file %s - %s cannot be found", full_path, lookup.sha);
+			lookup_object = RB_FIND(Tree_Objects, &Objects, &object);
+			lookup_file   = RB_FIND(Tree_Local_Files, &Local_Files, &file);
 
-			if (connection->verbosity)
-				printf(" + %s\n", full_path);
+			if ((lookup_object == NULL) && (lookup_file == NULL))
+				errc(EXIT_FAILURE, ENOENT, "save_object: file %s - %s cannot be found", full_path, object.sha);
 
-			if ((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-				err(EXIT_FAILURE, "save_objects: write file failure %s", full_path);
+			if (lookup_object != NULL) {
+				if (connection->verbosity)
+					printf(" %c %s\n", (lookup_file == NULL ? '+' : '*'), full_path);
 
-			chmod(full_path, file.mode);
-			write(fd, find->buffer, find->data_size);
-			close(fd);
+				if (((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
+					err(EXIT_FAILURE, "save_object: write file failure %s", full_path);
+
+				chmod(full_path, file.mode);
+				write(fd, lookup_object->buffer, lookup_object->data_size);
+				close(fd);
+			}
 		}
 	}
 
