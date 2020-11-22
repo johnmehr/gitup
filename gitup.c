@@ -622,20 +622,20 @@ process_command(connector *connection, char *command)
 
 
 /*
- * build_clone_request
+ * initiate_clone
  *
  * Function that constructs the command to the fetch the full pack data.
  */
 
-static char *
-build_clone_request(connector *connection)
+static void
+initiate_clone(connector *connection)
 {
 	struct file_node *file;
 	unsigned int      command_size = 0, command_buffer_size = BUFFER_UNIT_LARGE;
 	char             *command = NULL, want[BUFFER_UNIT_SMALL], have[51];
 
 	if ((command = (char *)malloc(BUFFER_UNIT_LARGE)) == NULL)
-		err(EXIT_FAILURE, "build_clone_request: malloc");
+		err(EXIT_FAILURE, "initiate_clone: malloc");
 
 	/* Start with the "wants". */
 
@@ -700,16 +700,16 @@ build_clone_request(connector *connection)
 
 	process_command(connection, command);
 
-	return command;
+	free(command);
 }
 
 
 /*
- * get_commit_hash
+ * get_commit_details
  */
 
 static void
-get_commit_hash(connector *connection)
+get_commit_details(connector *connection)
 {
 	char command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
 
@@ -748,10 +748,10 @@ get_commit_hash(connector *connection)
 	position = strstr(connection->response, full_branch);
 
 	if (position == NULL)
-		err(EXIT_FAILURE, "get_commit_hash: %s doesn't exist in %s", connection->branch, connection->repository);
+		err(EXIT_FAILURE, "get_commit_details: %s doesn't exist in %s", connection->branch, connection->repository);
 
 	if ((connection->commit = (char *)malloc(41)) == NULL)
-		err(EXIT_FAILURE, "get_commit_hash: malloc");
+		err(EXIT_FAILURE, "get_commit_details: malloc");
 
 	memcpy(connection->commit, position - 40, 40);
 	connection->commit[40] = '\0';
@@ -770,7 +770,7 @@ get_commit_hash(connector *connection)
 static void
 fetch_pack(connector *connection)
 {
-	char        *fetch = NULL, *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
+	char        *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
 	struct stat  pack_file;
 	int          fd, chunk_size = 1, pack_size = 0, source = 0, target = 0;
 
@@ -796,9 +796,7 @@ fetch_pack(connector *connection)
 	/* If no pack data has been loaded, fetch it from the server. */
 
 	if (connection->response_size == 0) {
-		fetch = build_clone_request(connection);
-		process_command(connection, fetch);
-		free(fetch);
+		initiate_clone(connection);
 
 		/* Find the start of the pack data and remove the header. */
 
@@ -1067,7 +1065,7 @@ apply_deltas(connector *connection)
 	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0;
 	char               *start, *new_buffer = NULL;
 	uint32_t            offset = 0, length = 0, old_file_size = 0, new_file_size = 0, new_position = 0;
-	struct object_node *delta, *base, lookup, r;
+	struct object_node *delta, *base, lookup;
 
 	for (int o = 0; o < connection->objects; o++) {
 		delta = connection->object[o];
@@ -1470,7 +1468,7 @@ main(int argc, char **argv)
 	/* Execute the fetch, unpack, apply deltas and save. */
 
 	if ((connection.use_pack_file == 0) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
-		get_commit_hash(&connection);
+		get_commit_details(&connection);
 
 	fetch_pack(&connection);
 	unpack_objects(&connection);
