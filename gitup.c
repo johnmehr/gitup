@@ -59,8 +59,8 @@ struct object_node {
 	char *sha;
 	int   type;
 	int   index;
+	int   index_delta;
 	int   pack_offset;
-	char *ref_delta_sha;
 	char *buffer;
 	int   buffer_size;
 	int   data_size;
@@ -74,18 +74,19 @@ struct file_node {
 };
 
 typedef struct {
-	int                  socket_descriptor;
 	SSL                 *ssl;
 	SSL_CTX             *ctx;
+	int                  socket_descriptor;
 	char                *host;
 	uint16_t             port;
 	char                *agent;
+	char                *section;
 	char                *repository;
 	char                *branch;
 	char                *commit;
 	char                *response;
-	uint32_t             response_size;
 	int                  response_blocks;
+	uint32_t             response_size;
 	struct object_node **object;
 	int                  objects;
 	char                *pack_file;
@@ -141,9 +142,6 @@ object_node_free(struct object_node *node)
 {
 	if (node->sha != NULL)
 		free(node->sha);
-
-	if (node->ref_delta_sha != NULL)
-		free(node->ref_delta_sha);
 
 	if (node->buffer != NULL)
 		free(node->buffer);
@@ -551,7 +549,7 @@ process_command(connector *connection, char *command)
 			data_start_offset = data_start   - connection->response;
 
 			if ((connection->response = (char *)realloc(connection->response, ++connection->response_blocks * BUFFER_UNIT_LARGE)) == NULL)
-				err(EXIT_FAILURE, "process_command: connection.response malloc");
+				err(EXIT_FAILURE, "process_command: connection.response realloc");
 
 			marker_start = connection->response + marker_offset;
 			data_start   = connection->response + data_start_offset;
@@ -743,21 +741,35 @@ get_commit_details(connector *connection)
 
 	/* Extract the commit hash. */
 
-	snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
+	if (connection->commit == NULL) {
+		snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
 
-	position = strstr(connection->response, full_branch);
+		position = strstr(connection->response, full_branch);
 
-	if (position == NULL)
-		err(EXIT_FAILURE, "get_commit_details: %s doesn't exist in %s", connection->branch, connection->repository);
+		if (position == NULL)
+			err(EXIT_FAILURE, "get_commit_details: %s doesn't exist in %s", connection->branch, connection->repository);
 
-	if ((connection->commit = (char *)malloc(41)) == NULL)
-		err(EXIT_FAILURE, "get_commit_details: malloc");
+		if ((connection->commit = (char *)malloc(41)) == NULL)
+			err(EXIT_FAILURE, "get_commit_details: malloc");
 
-	memcpy(connection->commit, position - 40, 40);
-	connection->commit[40] = '\0';
+		memcpy(connection->commit, position - 40, 40);
+		connection->commit[40] = '\0';
 
-	if (connection->verbosity)
-		printf("# Commit: %s\n", connection->commit);
+		if (connection->verbosity)
+			printf("# Commit: %s\n", connection->commit);
+		}
+
+	if (connection->keep_pack_file) {
+		int pack_file_name_size = strlen(connection->section) + 47;
+
+		if ((connection->pack_file = (char *)malloc(pack_file_name_size)) == NULL)
+			err(EXIT_FAILURE, "get_commit_details: malloc");
+
+		snprintf(connection->pack_file, pack_file_name_size, "%s-%s.pack", connection->section, connection->commit);
+
+		if (connection->verbosity)
+			fprintf(stderr, "# Saving pack_file: %s\n", connection->pack_file);
+		}
 }
 
 
@@ -782,7 +794,7 @@ fetch_pack(connector *connection)
 		if ((fd = open(connection->pack_file, O_RDONLY)) != -1) {
 			if (pack_file.st_size > connection->response_size)
 				if ((connection->response = (char *)realloc(connection->response, pack_file.st_size + 1)) == NULL)
-					err(EXIT_FAILURE, "fetch_pack: connection->response malloc");
+					err(EXIT_FAILURE, "fetch_pack: connection->response realloc");
 
 			connection->response_size = pack_file.st_size;
 
@@ -854,7 +866,7 @@ fetch_pack(connector *connection)
  */
 
 static void
-store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, char *ref_delta_sha)
+store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, int index_delta)
 {
 	struct object_node *object = NULL;
 
@@ -869,17 +881,18 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 	object->type          = type;
 	object->sha           = calculate_sha(buffer, buffer_size, type);
 	object->pack_offset   = pack_offset;
-	object->ref_delta_sha = ref_delta_sha;
+	object->index_delta   = index_delta;
 	object->buffer        = buffer;
 	object->buffer_size   = buffer_size;
 	object->data_size     = buffer_size;
 
 	if (connection->verbosity > 1)
-		fprintf(stdout, "###### %04d-%d\t%d\t%u\t%s -> %s\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->ref_delta_sha);
+		fprintf(stdout, "###### %04d-%d\t%d\t%u\t%s -> %d\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->index_delta);
+
+	if (type < 6)
+		RB_INSERT(Tree_Objects, &Objects, object);
 
 	connection->object[connection->objects++] = object;
-
-	RB_INSERT(Tree_Objects, &Objects, object);
 }
 
 
@@ -892,9 +905,9 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 static void
 unpack_objects(connector *connection)
 {
-	int            buffer_size = 0, total_objects = 0, version = 0, object_type = 0, pack_offset = 0, found = 0;
-	int            lookup_offset = 0, lookup_object = 0, stream_code = 0, stream_bytes = 0, position = 4;
-	char          *buffer = NULL, *ref_delta_sha = NULL;
+	int            buffer_size = 0, total_objects = 0, object_type = 0, position = 4, index_delta = 0;
+	int            pack_offset = 0, lookup_offset = 0, stream_code = 0, version = 0, stream_bytes = 0;
+	char          *buffer = NULL;
 	uint32_t       file_size = 0, file_bits = 0;
 	unsigned char  zlib_out[16384];
 
@@ -917,13 +930,13 @@ unpack_objects(connector *connection)
 	/* Unpack the objects. */
 
 	while ((position < connection->response_size) && (total_objects-- > 0)) {
-		object_type   = (unsigned char)connection->response[position] >> 4 & 0x07;
-		pack_offset   = position;
-		ref_delta_sha = NULL;
+		object_type  = (unsigned char)connection->response[position] >> 4 & 0x07;
+		pack_offset  = position;
+		index_delta  = 0;
+		file_size    = 0;
+		stream_bytes = 0;
 
 		/* Extract the file size. */
-
-		file_size = stream_bytes = 0;
 
 		do {
 			file_bits  = connection->response[position] & (stream_bytes == 0 ? 0x0F : 0x7F);
@@ -932,34 +945,27 @@ unpack_objects(connector *connection)
 		}
 		while (connection->response[position++] & 0x80);
 
-		/* Convert ofs-deltas to ref-deltas. */
+		/* Find the object->index referred to by the ofs-delta. */
 
 		if (object_type == 6) {
 			lookup_offset = 0;
-			found         = 0;
+			index_delta   = connection->objects;
 
 			do lookup_offset = (lookup_offset << 7) + (connection->response[position] & 0x7F) + 1;
 			while (connection->response[position++] & 0x80);
 
-			lookup_offset -= 1;
-			lookup_object  = connection->objects;
+			while (--index_delta > 0)
+				if (pack_offset - lookup_offset + 1 == connection->object[index_delta]->pack_offset)
+					break;
 
-			while ((!found) && (--lookup_object > 0))
-				if (pack_offset - lookup_offset == connection->object[lookup_object]->pack_offset)
-					found = 1;
-
-			if (found)
-				ref_delta_sha = strdup(connection->object[lookup_object]->sha);
-			else
+			if (index_delta == 0)
 				errc(EXIT_FAILURE, EINVAL, "Cannot find ofs-delta base object");
 		}
 
-		/* Extract ref-delta SHA checksum. */
+		/* Ignore ref-delta SHA1 checksum. */
 
-		if (object_type == 7) {
-			ref_delta_sha = legible_sha(connection->response);
+		if (object_type == 7)
 			position += 20;
-		}
 
 		/* Inflate and store the object. */
 
@@ -985,7 +991,9 @@ unpack_objects(connector *connection)
 			stream_code      = inflate(&stream, Z_NO_FLUSH);
 			stream_bytes     = 16384 - stream.avail_out;
 
-			buffer = (char *)realloc(buffer, buffer_size + stream_bytes);
+			if ((buffer = (char *)realloc(buffer, buffer_size + stream_bytes)) == NULL)
+				err(EXIT_FAILURE, "unpack_objects: realloc");
+
 			memcpy(buffer + buffer_size, zlib_out, stream_bytes);
 			buffer_size += stream_bytes;
 		}
@@ -994,7 +1002,7 @@ unpack_objects(connector *connection)
 		inflateEnd(&stream);
 		position += stream.total_in;
 
-		store_object(connection, object_type, buffer, buffer_size, pack_offset, ref_delta_sha);
+		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta);
 	}
 }
 
@@ -1062,70 +1070,95 @@ unpack_variable_length_integer(char *data, int *position)
 static void
 apply_deltas(connector *connection)
 {
-	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0;
-	char               *start, *new_buffer = NULL;
+	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0, build_buffer_size = 0;
+	int                 delta_count = -1, deltas[1024], new_buffer_size = 0, total_objects = connection->objects;
+	char               *start, *build_buffer = NULL, *new_buffer = NULL;
 	uint32_t            offset = 0, length = 0, old_file_size = 0, new_file_size = 0, new_position = 0;
 	struct object_node *delta, *base, lookup;
 
-	for (int o = 0; o < connection->objects; o++) {
-		delta = connection->object[o];
+	for (int o = 0; o < total_objects; o++) {
+		build_buffer = NULL;
+		delta        = connection->object[o];
+		delta_count  = 0;
 
 		if (delta->type < 6)
 			continue;
 
-		lookup.sha = delta->ref_delta_sha;
+		// Find the chain of ofs-deltas down to the base object.
 
-		if (delta->type == 6) {
-			if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-				err(EXIT_FAILURE, "apply_deltas: can't find %04d -> %s\n", delta->index, delta->ref_delta_sha);
-
-			if (base->type == 6)
-				lookup.sha = base->ref_delta_sha;
-			}
-
-		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-			err(EXIT_FAILURE, "apply_deltas: can't find %04d -> %s\n", delta->index, delta->ref_delta_sha);
-
-		position      = 0;
-		new_position  = 0;
-		old_file_size = unpack_variable_length_integer(delta->buffer, &position);
-		new_file_size = unpack_variable_length_integer(delta->buffer, &position);
-
-		if ((new_buffer = (char *)malloc(new_file_size + 1)) == NULL)
-			err(EXIT_FAILURE, "apply_deltas: malloc");
-
-		/* Loop through the copy/insert instructions. */
-
-		while (position < delta->data_size) {
-			instruction = (unsigned char)delta->buffer[position++];
-
-			if (instruction & 0x80) {
-				length_bits = (instruction & 0x70) >> 4;
-				offset_bits = (instruction & 0x0F);
-
-				offset = unpack_delta_integer(delta->buffer, &position, offset_bits);
-				length = unpack_delta_integer(delta->buffer, &position, length_bits);
-				start  = base->buffer + offset;
-			} else {
-				offset    = position;
-				length    = instruction;
-				start     = delta->buffer + offset;
-				position += length;
-			}
-
-			if (new_position + length > new_file_size)
-				err(EXIT_FAILURE, "apply_deltas: position overflow -- %u + %u > %u", new_position, length, new_file_size);
-
-			memcpy(new_buffer + new_position, start, length);
-			new_position += length;
+		while (delta->type >= 6) {
+			deltas[delta_count++] = delta->index;
+			delta = connection->object[delta->index_delta];
 		}
 
-		/* Store the object. */
+		// Lookup the base object.
 
-		store_object(connection, base->type, new_buffer, new_file_size, 0, NULL);
+		lookup.sha = delta->sha;
 
-		if (delta->type == 6)
-			delta->ref_delta_sha = connection->object[connection->objects - 1]->sha;
+		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
+			err(EXIT_FAILURE, "apply_deltas: can't find %04d -> %d\n", delta->index, delta->index_delta);
+
+		if ((build_buffer = (char *)malloc(base->buffer_size)) == NULL)
+			err(EXIT_FAILURE, "apply_deltas: malloc");
+
+		memcpy(build_buffer, base->buffer, base->buffer_size);
+		build_buffer_size = base->buffer_size;
+
+		// Loop though the deltas to be applied.
+
+		for (int x = delta_count - 1; x >= 0; x--) {
+			delta         = connection->object[deltas[x]];
+			position      = 0;
+			new_position  = 0;
+			old_file_size = unpack_variable_length_integer(delta->buffer, &position);
+			new_file_size = unpack_variable_length_integer(delta->buffer, &position);
+
+			if (new_file_size > new_buffer_size) {
+				new_buffer_size = new_file_size;
+
+				if ((new_buffer = (char *)realloc(new_buffer, new_buffer_size)) == NULL)
+					err(EXIT_FAILURE, "apply_deltas: realloc");
+			}
+
+			// Loop through the copy/insert instructions.
+
+			while (position < delta->data_size) {
+				instruction = (unsigned char)delta->buffer[position++];
+
+				if (instruction & 0x80) {
+					length_bits = (instruction & 0x70) >> 4;
+					offset_bits = (instruction & 0x0F);
+
+					offset = unpack_delta_integer(delta->buffer, &position, offset_bits);
+					length = unpack_delta_integer(delta->buffer, &position, length_bits);
+					start  = build_buffer + offset;
+				} else {
+					offset    = position;
+					length    = instruction;
+					start     = delta->buffer + offset;
+					position += length;
+				}
+
+				if (new_position + length > new_file_size)
+					errc(EXIT_FAILURE, ERANGE, "apply_deltas: position overflow -- %u + %u > %u", new_position, length, new_file_size);
+
+				memcpy(new_buffer + new_position, start, length);
+				new_position += length;
+			}
+
+			if (new_file_size > build_buffer_size) {
+				build_buffer_size = new_file_size;
+
+				if ((build_buffer = (char *)realloc(build_buffer, build_buffer_size)) == NULL)
+					err(EXIT_FAILURE, "apply_deltas: realloc");
+			}
+
+			memcpy(build_buffer, new_buffer, new_file_size);
+		}
+
+		// Store the object.
+
+		store_object(connection, base->type, build_buffer, new_file_size, 0, 0);
 	}
 }
 
@@ -1237,17 +1270,23 @@ save_tree(connector *connection, char *sha, char *base_path)
 static void
 save_objects(connector *connection)
 {
-	char *tree = NULL;
+	struct object_node *object = NULL, lookup;
+	char               *tree = NULL;
 
-	/* Find the tree object referenced in the first commit. */
+	/* Find the tree object referenced in the commit. */
 
-	if (memcmp(connection->object[0]->buffer, "tree ", 5) != 0)
+	lookup.sha = connection->commit;
+
+	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
+		err(EXIT_FAILURE, "save_objects: can't find %s\n", connection->commit);
+
+	if (memcmp(object->buffer, "tree ", 5) != 0)
 		err(EXIT_FAILURE, "save_objects: first object is not a commit");
 
 	if ((tree = (char *)malloc(41)) == NULL)
 		err(EXIT_FAILURE, "save_objects: malloc");
 
-	memcpy(tree, connection->object[0]->buffer + 5, 40);
+	memcpy(tree, object->buffer + 5, 40);
 	tree[40] = '\0';
 
 	/* Recursively start processing the tree. */
@@ -1350,6 +1389,8 @@ load_configuration(connector *connection, char *configuration_file, char *sectio
 	set_configuration_parameters(connection, buffer, file.st_size, "defaults");
 	set_configuration_parameters(connection, buffer, file.st_size, section);
 
+	connection->section = strdup(section);
+
 	free(buffer);
 }
 
@@ -1366,6 +1407,7 @@ usage(char *configuration_file)
 	fprintf(stderr, "Usage: gitup <section> [options]\n\n");
 	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
 	fprintf(stderr, "  Options:\n");
+	fprintf(stderr, "    -c  Commit hash to use.\n");
 	fprintf(stderr, "    -k  Path to save a copy of the pack data.\n");
 	fprintf(stderr, "    -u  Path to load a copy of the pack data, skipping the download.\n");
 	fprintf(stderr, "    -v  How verbose the output should be (0 = no output, 1 = the default\n");
@@ -1396,19 +1438,24 @@ main(int argc, char **argv)
 		.ssl               = NULL,
 		.ctx               = NULL,
 		.socket_descriptor = 0,
+		.host              = NULL,
+		.port              = 0,
+		.agent             = NULL,
+		.section           = NULL,
+		.repository        = NULL,
+		.branch            = NULL,
+		.commit            = NULL,
 		.response          = NULL,
 		.response_blocks   = 0,
 		.response_size     = 0,
-		.host              = NULL,
-		.port              = 0,
-		.repository        = NULL,
-		.branch            = NULL,
+		.object            = NULL,
+		.objects           = 0,
+		.pack_file         = NULL,
 		.path_target       = NULL,
 		.path_work         = NULL,
-		.pack_file         = NULL,
-		.verbosity         = 1,
 		.keep_pack_file    = 0,
 		.use_pack_file     = 0,
+		.verbosity         = 1,
 		};
 
 	/* Process the command line parameters. */
@@ -1427,15 +1474,41 @@ main(int argc, char **argv)
 		optind = 2;
 	}
 
-	while ((option = getopt(argc, argv, "k:u:Vv:")) != -1)
+	while ((option = getopt(argc, argv, "c:ku:Vv:")) != -1)
 		switch (option) {
+			case 'c':
+				connection.commit = strdup(optarg);
+				break;
 			case 'k':
 				connection.keep_pack_file = 1;
-				connection.pack_file      = strdup(optarg);
 				break;
 			case 'u':
 				connection.use_pack_file = 1;
 				connection.pack_file     = strdup(optarg);
+
+				// Try and extract the commit from the file name.
+
+				int   length    = strlen(optarg);
+				char *start     = optarg;
+				char *temp      = optarg;
+				char *extension = strnstr(optarg, ".pack", length);
+
+				while ((temp = strchr(start, '/')) != NULL)
+					start = temp + 1;
+
+				char *commit = strnstr(start, connection.section, length - (start - optarg));
+
+				if (commit == NULL)
+					break;
+				else
+					commit += strlen(connection.section) + 1;
+
+				if (extension != NULL)
+					*extension = '\0';
+
+				if (strlen(commit) == 40)
+					connection.commit = strdup(commit);
+
 				break;
 			case 'v':
 				connection.verbosity = strtol(optarg, (char **)NULL, 10);
@@ -1451,8 +1524,8 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Branch: %s\n", connection.branch);
 		fprintf(stderr, "# Target: %s\n", connection.path_target);
 
-		if (connection.keep_pack_file)
-			fprintf(stderr, "# Saving pack_file: %s\n", connection.pack_file);
+		if (connection.commit)
+			fprintf(stderr, "# Commit: %s\n", connection.commit);
 
 		if (connection.use_pack_file)
 			fprintf(stderr, "# Using pack_file: %s\n", connection.pack_file);
@@ -1488,7 +1561,7 @@ main(int argc, char **argv)
 
 	for (int o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
-			fprintf(stdout, "###### %04d-%d\t%u\t%s -> %s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->ref_delta_sha);
+			fprintf(stdout, "###### %04d-%d\t%u\t%s -> %d\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->index_delta);
 
 		object_node_free(connection.object[o]);
 	}
@@ -1504,6 +1577,9 @@ main(int argc, char **argv)
 
 	if (connection.agent)
 		free(connection.agent);
+
+	if (connection.section)
+		free(connection.section);
 
 	if (connection.repository)
 		free(connection.repository);
