@@ -83,7 +83,8 @@ typedef struct {
 	char                *section;
 	char                *repository;
 	char                *branch;
-	char                *commit;
+	char                *have;
+	char                *want;
 	char                *response;
 	int                  response_blocks;
 	uint32_t             response_size;
@@ -92,6 +93,8 @@ typedef struct {
 	char                *pack_file;
 	char                *path_target;
 	char                *path_work;
+	char                *path_remote_files_old;
+	char                *path_remote_files_new;
 	int                  keep_pack_file;
 	int                  use_pack_file;
 	int                  verbosity;
@@ -148,6 +151,11 @@ object_node_free(struct object_node *node)
 
 	free(node);
 }
+
+
+static RB_HEAD(Tree_Remote_Files, file_node) Remote_Files = RB_INITIALIZER(&Remote_Files);
+RB_PROTOTYPE(Tree_Remote_Files, file_node, link, file_node_compare)
+RB_GENERATE(Tree_Remote_Files, file_node, link, file_node_compare)
 
 static RB_HEAD(Tree_Local_Files, file_node) Local_Files = RB_INITIALIZER(&Local_Files);
 RB_PROTOTYPE(Tree_Local_Files, file_node, link, file_node_compare)
@@ -347,15 +355,15 @@ find_local_tree(char *path_base, const char *path_target)
 
 	if (lstat(full_path, &file) != -1) {
 		if (S_ISDIR(file.st_mode)) {
-
 			/* Keep track of the local directories, ignoring path_base. */
 
 			if (strlen(path_target)) {
 				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 					err(EXIT_FAILURE, "find_local_tree: malloc");
 
+				new_node->mode = file.st_mode;
+				new_node->sha  = NULL;
 				new_node->path = strdup(full_path);
-				new_node->sha  = 0;
 
 				RB_INSERT(Tree_Local_Directories, &Local_Directories, new_node);
 			}
@@ -390,11 +398,9 @@ find_local_tree(char *path_base, const char *path_target)
 			if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 				err(EXIT_FAILURE, "find_local_tree: malloc");
 
-			new_node->path = strdup(full_path);
-			new_node->sha  = calculate_file_sha(full_path, file.st_size, file.st_mode);
 			new_node->mode = file.st_mode;
-
-//			printf("?? %o\t%s\t%s\n", new_node->mode, new_node->sha, new_node->path);
+			new_node->sha  = calculate_file_sha(full_path, file.st_size, file.st_mode);
+			new_node->path = strdup(full_path);
 
 			RB_INSERT(Tree_Local_Files, &Local_Files, new_node);
 		}
@@ -654,9 +660,9 @@ initiate_clone(connector *connection)
 		"0032want %s\n",
 		strlen(connection->agent) + 4,
 		connection->agent,
-		connection->commit,
-		connection->commit,
-		connection->commit);
+		connection->want,
+		connection->want,
+		connection->want);
 
 	/* Pre-determine the length of the command for inclusion in the header. */
 
@@ -672,7 +678,7 @@ initiate_clone(connector *connection)
 		"User-Agent: git/%s\n"
 		"Accept-encoding: deflate, gzip\n"
 		"Content-type: application/x-git-upload-pack-request\n"
-		"Accept: application/x-git-upload-pack-request\n"
+		"Accept: application/x-git-upload-pack-result\n"
 		"Git-Protocol: version=2\n"
 		"Content-length: %d\n"
 		"\r\n"
@@ -742,9 +748,9 @@ get_commit_details(connector *connection)
 	connection->agent = strdup(position);
 	*end = '\n';
 
-	/* Extract the commit checksum. */
+	/* Extract the want checksum. */
 
-	if (connection->commit == NULL) {
+	if (connection->want == NULL) {
 		snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
 
 		position = strstr(connection->response, full_branch);
@@ -752,14 +758,14 @@ get_commit_details(connector *connection)
 		if (position == NULL)
 			errc(EXIT_FAILURE, EINVAL, "get_commit_details: %s doesn't exist in %s", connection->branch, connection->repository);
 
-		if ((connection->commit = (char *)malloc(41)) == NULL)
+		if ((connection->want = (char *)malloc(41)) == NULL)
 			err(EXIT_FAILURE, "get_commit_details: malloc");
 
-		memcpy(connection->commit, position - 40, 40);
-		connection->commit[40] = '\0';
+		memcpy(connection->want, position - 40, 40);
+		connection->want[40] = '\0';
 
 		if (connection->verbosity)
-			printf("# Commit: %s\n", connection->commit);
+			printf("# Commit: %s\n", connection->want);
 	}
 
 	if (connection->keep_pack_file) {
@@ -768,7 +774,7 @@ get_commit_details(connector *connection)
 		if ((connection->pack_file = (char *)malloc(pack_file_name_size)) == NULL)
 			err(EXIT_FAILURE, "get_commit_details: malloc");
 
-		snprintf(connection->pack_file, pack_file_name_size, "%s-%s.pack", connection->section, connection->commit);
+		snprintf(connection->pack_file, pack_file_name_size, "%s-%s.pack", connection->section, connection->want);
 
 		if (connection->verbosity)
 			fprintf(stderr, "# Saving pack file: %s\n", connection->pack_file);
@@ -1213,7 +1219,7 @@ static void
 save_tree(connector *connection, char *sha, char *base_path)
 {
 	struct object_node object, *lookup_object = NULL, *tree = NULL;
-	struct file_node   file, *lookup_file = NULL;
+	struct file_node   file, *lookup_file = NULL, *new_file_node = NULL;
 	char               full_path[BUFFER_UNIT_SMALL], link_path[BUFFER_UNIT_SMALL], *position = NULL;
 	int                fd;
 
@@ -1268,6 +1274,17 @@ save_tree(connector *connection, char *sha, char *base_path)
 					chmod(full_path, file.mode);
 					write(fd, lookup_object->buffer, lookup_object->data_size);
 					close(fd);
+
+				/* Add the file to the remote files tree. */
+
+				if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+					err(EXIT_FAILURE, "find_local_tree: malloc");
+
+				new_file_node->path = strdup(full_path);
+				new_file_node->sha  = strdup(lookup_object->sha);
+				new_file_node->mode = file.mode;
+
+				RB_INSERT(Tree_Remote_Files, &Remote_Files, new_file_node);
 				}
 			}
 		}
@@ -1288,14 +1305,16 @@ static void
 save_objects(connector *connection)
 {
 	struct object_node *object = NULL, lookup;
-	char               *tree = NULL;
+	struct file_node   *file = NULL;
+	char               *tree = NULL, temp[BUFFER_UNIT_SMALL];
+	int                 fd = 0;
 
 	/* Find the tree object referenced in the commit. */
 
-	lookup.sha = connection->commit;
+	lookup.sha = connection->want;
 
 	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-		errc(EXIT_FAILURE, EINVAL, "save_objects: can't find %s\n", connection->commit);
+		errc(EXIT_FAILURE, EINVAL, "save_objects: can't find %s\n", connection->want);
 
 	if (memcmp(object->buffer, "tree ", 5) != 0)
 		errc(EXIT_FAILURE, EINVAL, "save_objects: first object is not a commit");
@@ -1310,6 +1329,21 @@ save_objects(connector *connection)
 
 	save_tree(connection, tree, connection->path_target);
 
+	/* Save the new list of known files. */
+
+	if ((fd = open(connection->path_remote_files_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
+		err(EXIT_FAILURE, "write file failure %s", connection->path_remote_files_new);
+
+	chmod(connection->path_remote_files_new, 0644);
+	write(fd, connection->want, strlen(connection->want));
+	write(fd, "\n", 1);
+
+	RB_FOREACH(file, Tree_Remote_Files, &Remote_Files) {
+		snprintf(temp, BUFFER_UNIT_SMALL, "%o\t%s\t%s\n", file->mode, file->sha, file->path);
+		write(fd, temp, strlen(temp));
+	}
+
+	close(fd);
 	free(tree);
 }
 
@@ -1446,33 +1480,37 @@ int
 main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
-	struct file_node   *file   = NULL;
-	int                 option = 0;
+	struct file_node   *file   = NULL, lookup_file;
+	int                 option = 0, cache_length = 0, fd = 0, remote_files_size = 0, count = 0;
 	char               *configuration_file = "./gitup.conf";
-	struct stat         pack_file;
+	char               *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL;
+	struct stat         pack_file, cache_file;
 
 	connector connection = {
-		.ssl               = NULL,
-		.ctx               = NULL,
-		.socket_descriptor = 0,
-		.host              = NULL,
-		.port              = 0,
-		.agent             = NULL,
-		.section           = NULL,
-		.repository        = NULL,
-		.branch            = NULL,
-		.commit            = NULL,
-		.response          = NULL,
-		.response_blocks   = 0,
-		.response_size     = 0,
-		.object            = NULL,
-		.objects           = 0,
-		.pack_file         = NULL,
-		.path_target       = NULL,
-		.path_work         = NULL,
-		.keep_pack_file    = 0,
-		.use_pack_file     = 0,
-		.verbosity         = 1,
+		.ssl                   = NULL,
+		.ctx                   = NULL,
+		.socket_descriptor     = 0,
+		.host                  = NULL,
+		.port                  = 0,
+		.agent                 = NULL,
+		.section               = NULL,
+		.repository            = NULL,
+		.branch                = NULL,
+		.have                  = NULL,
+		.want                  = NULL,
+		.response              = NULL,
+		.response_blocks       = 0,
+		.response_size         = 0,
+		.object                = NULL,
+		.objects               = 0,
+		.pack_file             = NULL,
+		.path_target           = NULL,
+		.path_work             = NULL,
+		.path_remote_files_old = NULL,
+		.path_remote_files_new = NULL,
+		.keep_pack_file        = 0,
+		.use_pack_file         = 0,
+		.verbosity             = 1,
 		};
 
 	/* Process the command line parameters. */
@@ -1491,10 +1529,10 @@ main(int argc, char **argv)
 		optind = 2;
 	}
 
-	while ((option = getopt(argc, argv, "c:ku:Vv:")) != -1)
+	while ((option = getopt(argc, argv, "h:ku:Vv:w:")) != -1)
 		switch (option) {
-			case 'c':
-				connection.commit = strdup(optarg);
+			case 'h':
+				connection.have = strdup(optarg);
 				break;
 			case 'k':
 				connection.keep_pack_file = 1;
@@ -1503,7 +1541,7 @@ main(int argc, char **argv)
 				connection.use_pack_file = 1;
 				connection.pack_file     = strdup(optarg);
 
-				/* Try and extract the commit from the file name. */
+				/* Try and extract the want from the file name. */
 
 				int   length    = strlen(optarg);
 				char *start     = optarg;
@@ -1513,19 +1551,22 @@ main(int argc, char **argv)
 				while ((temp = strchr(start, '/')) != NULL)
 					start = temp + 1;
 
-				char *commit = strnstr(start, connection.section, length - (start - optarg));
+				char *want = strnstr(start, connection.section, length - (start - optarg));
 
-				if (commit == NULL)
+				if (want == NULL)
 					break;
 				else
-					commit += strlen(connection.section) + 1;
+					want += strlen(connection.section) + 1;
 
 				if (extension != NULL)
 					*extension = '\0';
 
-				if (strlen(commit) == 40)
-					connection.commit = strdup(commit);
+				if (strlen(want) == 40)
+					connection.want = strdup(want);
 
+				break;
+			case 'w':
+				connection.want = strdup(optarg);
 				break;
 			case 'v':
 				connection.verbosity = strtol(optarg, (char **)NULL, 10);
@@ -1541,8 +1582,8 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Branch: %s\n", connection.branch);
 		fprintf(stderr, "# Target: %s\n", connection.path_target);
 
-		if (connection.commit)
-			fprintf(stderr, "# Commit: %s\n", connection.commit);
+		if (connection.want)
+			fprintf(stderr, "# Want: %s\n", connection.want);
 
 		if (connection.use_pack_file)
 			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
@@ -1553,7 +1594,60 @@ main(int argc, char **argv)
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
 
-//	find_local_tree(connection.path_target, "");
+	find_local_tree(connection.path_target, "");
+
+	/* Load the list of known files and checksums, if they exist. */
+
+	cache_length = strlen(connection.path_work) + MAXNAMLEN;
+
+	connection.path_remote_files_old = (char *)malloc(cache_length);
+	connection.path_remote_files_new = (char *)malloc(cache_length);
+
+	snprintf(connection.path_remote_files_old, cache_length, "%s/%s", connection.path_work, argv[1]);
+	snprintf(connection.path_remote_files_new, cache_length, "%s/%s.new", connection.path_work, argv[1]);
+
+	if (stat(connection.path_remote_files_old, &cache_file) != -1) {
+		remote_files_size = cache_file.st_size;
+
+		if ((remote_files = (char *)malloc(remote_files_size + 1)) == NULL)
+			err(EXIT_FAILURE, "main connection.path_remote_files malloc");
+
+		if ((fd = open(connection.path_remote_files_old, O_RDONLY)) == -1)
+			err(EXIT_FAILURE, "open file (%s)", connection.path_remote_files_old);
+
+		if (read(fd, remote_files, remote_files_size) != remote_files_size)
+			err(EXIT_FAILURE, "read file error (%s)", connection.path_remote_files_old);
+
+		remote_files[remote_files_size] = '\0';
+		close(fd);
+
+		while ((line = strsep(&remote_files, "\n"))) {
+			if (count++ == 0) {
+				connection.have = strdup(line);
+				continue;
+			}
+
+			if (strlen(line) <= 50)
+				continue;
+
+			/* Split the line and save the data into the remote files tree. */
+
+			if ((file = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+				err(EXIT_FAILURE, "find_local_tree: malloc");
+
+			sha  = strchr(line, '\t') + 1;
+			path = strchr(sha, '\t')  + 1;
+
+			*(sha -  1) = '\0';
+			*(sha + 41) = '\0';
+
+			file->mode = strtol(line, (char **)NULL, 8);
+			file->sha  = strdup(sha);
+			file->path = strdup(path);
+
+			RB_INSERT(Tree_Remote_Files, &Remote_Files, file);
+		}
+	}
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
@@ -1566,6 +1660,11 @@ main(int argc, char **argv)
 	save_objects(&connection);
 
 	/* Wrap it all up. */
+
+	remove(connection.path_remote_files_old);
+
+	if ((rename(connection.path_remote_files_new, connection.path_remote_files_old)) != 0)
+		err(EXIT_FAILURE, "Cannot rename %s", connection.path_remote_files_old);
 
 	RB_FOREACH(object, Tree_Objects, &Objects)
 		RB_REMOVE(Tree_Objects, &Objects, object);
@@ -1604,8 +1703,11 @@ main(int argc, char **argv)
 	if (connection.branch)
 		free(connection.branch);
 
-	if (connection.commit)
-		free(connection.commit);
+	if (connection.have)
+		free(connection.have);
+
+	if (connection.want)
+		free(connection.want);
 
 	if (connection.pack_file)
 		free(connection.pack_file);
@@ -1615,6 +1717,12 @@ main(int argc, char **argv)
 
 	if (connection.path_work)
 		free(connection.path_work);
+
+	if (connection.path_remote_files_old)
+		free(connection.path_remote_files_old);
+
+	if (connection.path_remote_files_new)
+		free(connection.path_remote_files_new);
 
 	if (connection.ssl) {
 		SSL_shutdown(connection.ssl);
