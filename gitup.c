@@ -49,7 +49,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "0.1"
+#define GITUP_VERSION     "0.5"
 #define GIT_VERSION       "2.28"
 #define BUFFER_UNIT_SMALL  4096
 #define BUFFER_UNIT_LARGE  1048576
@@ -503,7 +503,8 @@ process_command(connector *connection, char *command)
 	int   chunk_size = -1, bytes_expected = 0, marker_offset = 0, data_start_offset = 0;
 	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
 	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
-	int   bytes_to_write = strlen(command), error = 0;
+	int   bytes_to_write = strlen(command), error = 0, twirl = 0;
+	char  twirly[4] = { '|', '/', '-', '\\' };
 
 	/* Transmit the command to the server. */
 
@@ -549,7 +550,7 @@ process_command(connector *connection, char *command)
 			data_start_offset = data_start   - connection->response;
 
 			if ((connection->response = (char *)realloc(connection->response, ++connection->response_blocks * BUFFER_UNIT_LARGE)) == NULL)
-				err(EXIT_FAILURE, "process_command: connection.response realloc");
+				err(EXIT_FAILURE, "process_command: connection->response realloc");
 
 			marker_start = connection->response + marker_offset;
 			data_start   = connection->response + data_start_offset;
@@ -577,7 +578,7 @@ process_command(connector *connection, char *command)
 		}
 
 		while (total_bytes_read + chunk_size > bytes_expected) {
-			// Make sure the whole chunk marker has been read.
+			/* Make sure the whole chunk marker has been read. */
 
 			check_bytes = total_bytes_read - (marker_start + 2 - connection->response);
 
@@ -589,7 +590,7 @@ process_command(connector *connection, char *command)
 			if (marker_end == NULL)
 				break;
 
-			// Remove the chunk length marker.
+			/* Remove the chunk length marker. */
 
 			chunk_size    = strtol(marker_start, (char **)NULL, 16);
 			bytes_to_move = total_bytes_read - (marker_end + 2 - connection->response) + 1;
@@ -605,6 +606,9 @@ process_command(connector *connection, char *command)
 
 			marker_start += chunk_size;
 			bytes_expected += chunk_size;
+
+			if (connection->verbosity == 1)
+				fprintf(stderr, "%c\r", twirly[twirl++ % 4]);
 		}
 	}
 
@@ -643,7 +647,6 @@ initiate_clone(connector *connection)
 		"%04lx%s0001"
 //		"000dthin-pack"
 		"000fno-progress"
-//		"000dref-delta"
 		"000dofs-delta"
 //		"000cdeepen 1"
 		"0034shallow %s"
@@ -739,7 +742,7 @@ get_commit_details(connector *connection)
 	connection->agent = strdup(position);
 	*end = '\n';
 
-	/* Extract the commit hash. */
+	/* Extract the commit checksum. */
 
 	if (connection->commit == NULL) {
 		snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
@@ -747,7 +750,7 @@ get_commit_details(connector *connection)
 		position = strstr(connection->response, full_branch);
 
 		if (position == NULL)
-			err(EXIT_FAILURE, "get_commit_details: %s doesn't exist in %s", connection->branch, connection->repository);
+			errc(EXIT_FAILURE, EINVAL, "get_commit_details: %s doesn't exist in %s", connection->branch, connection->repository);
 
 		if ((connection->commit = (char *)malloc(41)) == NULL)
 			err(EXIT_FAILURE, "get_commit_details: malloc");
@@ -757,7 +760,7 @@ get_commit_details(connector *connection)
 
 		if (connection->verbosity)
 			printf("# Commit: %s\n", connection->commit);
-		}
+	}
 
 	if (connection->keep_pack_file) {
 		int pack_file_name_size = strlen(connection->section) + 47;
@@ -768,8 +771,8 @@ get_commit_details(connector *connection)
 		snprintf(connection->pack_file, pack_file_name_size, "%s-%s.pack", connection->section, connection->commit);
 
 		if (connection->verbosity)
-			fprintf(stderr, "# Saving pack_file: %s\n", connection->pack_file);
-		}
+			fprintf(stderr, "# Saving pack file: %s\n", connection->pack_file);
+	}
 }
 
 
@@ -813,7 +816,7 @@ fetch_pack(connector *connection)
 		/* Find the start of the pack data and remove the header. */
 
 		if ((pack_start = strstr(connection->response, "PACK")) == NULL)
-			err(EXIT_FAILURE, "unpack_objects: %s\n", connection->response);
+			errc(EXIT_FAILURE, EFTYPE, "unpack_objects: %s\n", connection->response);
 
 		pack_start -= 5;
 		connection->response_size -= (pack_start - connection->response + 11);
@@ -839,6 +842,13 @@ fetch_pack(connector *connection)
 		pack_size = connection->response_size - 20;
 	}
 
+	/* Verify the pack data checksum. */
+
+	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)sha_buffer);
+
+	if (memcmp(connection->response + pack_size, sha_buffer, 20) != 0)
+		errc(EXIT_FAILURE, EAUTH, "unpack_objects: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
+
 	/* Save the pack data. */
 
 	if (connection->keep_pack_file) {
@@ -849,13 +859,6 @@ fetch_pack(connector *connection)
 		write(fd, connection->response, connection->response_size);
 		close(fd);
 	}
-
-	/* Verify the pack data checksum. */
-
-	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)sha_buffer);
-
-	if (memcmp(connection->response + pack_size, sha_buffer, 20) != 0)
-		errc(EXIT_FAILURE, EAUTH, "unpack_objects: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
 }
 
 
@@ -877,17 +880,17 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 	if ((object = (struct object_node *)malloc(sizeof(struct object_node))) == NULL)
 		err(EXIT_FAILURE, "store_object: malloc");
 
-	object->index         = connection->objects;
-	object->type          = type;
-	object->sha           = calculate_sha(buffer, buffer_size, type);
-	object->pack_offset   = pack_offset;
-	object->index_delta   = index_delta;
-	object->buffer        = buffer;
-	object->buffer_size   = buffer_size;
-	object->data_size     = buffer_size;
+	object->index       = connection->objects;
+	object->type        = type;
+	object->sha         = calculate_sha(buffer, buffer_size, type);
+	object->pack_offset = pack_offset;
+	object->index_delta = index_delta;
+	object->buffer      = buffer;
+	object->buffer_size = buffer_size;
+	object->data_size   = buffer_size;
 
 	if (connection->verbosity > 1)
-		fprintf(stdout, "###### %04d-%d\t%d\t%u\t%s -> %d\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->index_delta);
+		fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s -> %d\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->index_delta);
 
 	if (type < 6)
 		RB_INSERT(Tree_Objects, &Objects, object);
@@ -983,7 +986,7 @@ unpack_objects(connector *connection)
 		stream_code = inflateInit(&stream);
 
 		if (stream_code == Z_DATA_ERROR)
-			err(EXIT_FAILURE, "unpack_objects: zlib data stream failure");
+			errc(EXIT_FAILURE, EILSEQ, "unpack_objects: zlib data stream failure");
 
 		do {
 			stream.avail_out = 16384,
@@ -1070,41 +1073,41 @@ unpack_variable_length_integer(char *data, int *position)
 static void
 apply_deltas(connector *connection)
 {
-	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0, build_buffer_size = 0;
-	int                 delta_count = -1, deltas[1024], new_buffer_size = 0, total_objects = connection->objects;
-	char               *start, *build_buffer = NULL, *new_buffer = NULL;
+	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0, delta_count = -1;
+	int                 deltas[BUFFER_UNIT_SMALL], merge_buffer_size = 0, layer_buffer_size = 0;
+	char               *start, *merge_buffer = NULL, *layer_buffer = NULL;
 	uint32_t            offset = 0, length = 0, old_file_size = 0, new_file_size = 0, new_position = 0;
 	struct object_node *delta, *base, lookup;
 
-	for (int o = 0; o < total_objects; o++) {
-		build_buffer = NULL;
+	for (int o = 0; o < connection->objects; o++) {
+		merge_buffer = NULL;
 		delta        = connection->object[o];
 		delta_count  = 0;
 
 		if (delta->type < 6)
 			continue;
 
-		// Find the chain of ofs-deltas down to the base object.
+		/* Follow the chain of ofs-deltas down to the base object. */
 
 		while (delta->type >= 6) {
 			deltas[delta_count++] = delta->index;
 			delta = connection->object[delta->index_delta];
 		}
 
-		// Lookup the base object.
+		/* Lookup the base object and setup the merge buffer. */
 
 		lookup.sha = delta->sha;
 
 		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-			err(EXIT_FAILURE, "apply_deltas: can't find %04d -> %d\n", delta->index, delta->index_delta);
+			errc(EXIT_FAILURE, ENOENT, "apply_deltas: can't find %05d -> %d\n", delta->index, delta->index_delta);
 
-		if ((build_buffer = (char *)malloc(base->buffer_size)) == NULL)
+		if ((merge_buffer = (char *)malloc(base->buffer_size)) == NULL)
 			err(EXIT_FAILURE, "apply_deltas: malloc");
 
-		memcpy(build_buffer, base->buffer, base->buffer_size);
-		build_buffer_size = base->buffer_size;
+		memcpy(merge_buffer, base->buffer, base->buffer_size);
+		merge_buffer_size = base->buffer_size;
 
-		// Loop though the deltas to be applied.
+		/* Loop though the deltas to be applied. */
 
 		for (int x = delta_count - 1; x >= 0; x--) {
 			delta         = connection->object[deltas[x]];
@@ -1113,14 +1116,16 @@ apply_deltas(connector *connection)
 			old_file_size = unpack_variable_length_integer(delta->buffer, &position);
 			new_file_size = unpack_variable_length_integer(delta->buffer, &position);
 
-			if (new_file_size > new_buffer_size) {
-				new_buffer_size = new_file_size;
+			/* Make sure the layer buffer is large enough. */
 
-				if ((new_buffer = (char *)realloc(new_buffer, new_buffer_size)) == NULL)
+			if (new_file_size > layer_buffer_size) {
+				layer_buffer_size = new_file_size;
+
+				if ((layer_buffer = (char *)realloc(layer_buffer, layer_buffer_size)) == NULL)
 					err(EXIT_FAILURE, "apply_deltas: realloc");
 			}
 
-			// Loop through the copy/insert instructions.
+			/* Loop through the copy/insert instructions and build up the layer buffer. */
 
 			while (position < delta->data_size) {
 				instruction = (unsigned char)delta->buffer[position++];
@@ -1130,35 +1135,42 @@ apply_deltas(connector *connection)
 					offset_bits = (instruction & 0x0F);
 
 					offset = unpack_delta_integer(delta->buffer, &position, offset_bits);
+					start  = merge_buffer + offset;
 					length = unpack_delta_integer(delta->buffer, &position, length_bits);
-					start  = build_buffer + offset;
+
+					if (length == 0)
+						length = 65536;
 				} else {
 					offset    = position;
-					length    = instruction;
 					start     = delta->buffer + offset;
+					length    = instruction;
 					position += length;
 				}
 
 				if (new_position + length > new_file_size)
 					errc(EXIT_FAILURE, ERANGE, "apply_deltas: position overflow -- %u + %u > %u", new_position, length, new_file_size);
 
-				memcpy(new_buffer + new_position, start, length);
+				memcpy(layer_buffer + new_position, start, length);
 				new_position += length;
 			}
 
-			if (new_file_size > build_buffer_size) {
-				build_buffer_size = new_file_size;
+			/* Make sure the merge buffer is large enough. */
 
-				if ((build_buffer = (char *)realloc(build_buffer, build_buffer_size)) == NULL)
+			if (new_file_size > merge_buffer_size) {
+				merge_buffer_size = new_file_size;
+
+				if ((merge_buffer = (char *)realloc(merge_buffer, merge_buffer_size)) == NULL)
 					err(EXIT_FAILURE, "apply_deltas: realloc");
 			}
 
-			memcpy(build_buffer, new_buffer, new_file_size);
+			/* Store the layer buffer in the merge buffer for the next loop iteration. */
+
+			memcpy(merge_buffer, layer_buffer, new_file_size);
 		}
 
-		// Store the object.
+		/* Store the completed object. */
 
-		store_object(connection, base->type, build_buffer, new_file_size, 0, 0);
+		store_object(connection, base->type, merge_buffer, new_file_size, 0, 0);
 	}
 }
 
@@ -1202,7 +1214,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 {
 	struct object_node object, *lookup_object = NULL, *tree = NULL;
 	struct file_node   file, *lookup_file = NULL;
-	char               full_path[BUFFER_UNIT_SMALL], *position = NULL;
+	char               full_path[BUFFER_UNIT_SMALL], link_path[BUFFER_UNIT_SMALL], *position = NULL;
 	int                fd;
 
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
@@ -1228,7 +1240,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 
 		snprintf(full_path, sizeof(full_path), "%s/%s", base_path, file.path);
 
-		/* Recursively walk any trees and save any files. */
+		/* Recursively walk the trees and save the files/links. */
 
 		if (S_ISDIR(file.mode)) {
 			save_tree(connection, file.sha, full_path);
@@ -1246,12 +1258,17 @@ save_tree(connector *connection, char *sha, char *base_path)
 				if (connection->verbosity)
 					printf(" %c %s\n", (lookup_file == NULL ? '+' : '*'), full_path);
 
-				if (((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-					err(EXIT_FAILURE, "save_object: write file failure %s", full_path);
+				if (S_ISLNK(file.mode)) {
+					if (symlink(lookup_object->buffer, full_path) == -1)
+						err(EXIT_FAILURE, "save_object: symlink failure %s -> %s", full_path, lookup_object->buffer);
+				} else {
+					if (((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
+						err(EXIT_FAILURE, "save_object: write file failure %s", full_path);
 
-				chmod(full_path, file.mode);
-				write(fd, lookup_object->buffer, lookup_object->data_size);
-				close(fd);
+					chmod(full_path, file.mode);
+					write(fd, lookup_object->buffer, lookup_object->data_size);
+					close(fd);
+				}
 			}
 		}
 	}
@@ -1278,10 +1295,10 @@ save_objects(connector *connection)
 	lookup.sha = connection->commit;
 
 	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-		err(EXIT_FAILURE, "save_objects: can't find %s\n", connection->commit);
+		errc(EXIT_FAILURE, EINVAL, "save_objects: can't find %s\n", connection->commit);
 
 	if (memcmp(object->buffer, "tree ", 5) != 0)
-		err(EXIT_FAILURE, "save_objects: first object is not a commit");
+		errc(EXIT_FAILURE, EINVAL, "save_objects: first object is not a commit");
 
 	if ((tree = (char *)malloc(41)) == NULL)
 		err(EXIT_FAILURE, "save_objects: malloc");
@@ -1315,7 +1332,7 @@ set_configuration_parameters(connector *connection, char *buffer, size_t length,
 	snprintf(bracketed_section, strlen(section) + 4, "[%s]\n", section);
 
 	if ((item = strstr(buffer, bracketed_section)) == NULL)
-		err(EXIT_FAILURE, "Cannot find [%s] in gitup.conf", section);
+		errc(EXIT_FAILURE, EINVAL, "Cannot find [%s] in gitup.conf", section);
 
 	item += strlen(bracketed_section);
 
@@ -1486,7 +1503,7 @@ main(int argc, char **argv)
 				connection.use_pack_file = 1;
 				connection.pack_file     = strdup(optarg);
 
-				// Try and extract the commit from the file name.
+				/* Try and extract the commit from the file name. */
 
 				int   length    = strlen(optarg);
 				char *start     = optarg;
@@ -1528,7 +1545,7 @@ main(int argc, char **argv)
 			fprintf(stderr, "# Commit: %s\n", connection.commit);
 
 		if (connection.use_pack_file)
-			fprintf(stderr, "# Using pack_file: %s\n", connection.pack_file);
+			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
 	}
 
 	/* Continue setting up the environment. */
@@ -1561,7 +1578,7 @@ main(int argc, char **argv)
 
 	for (int o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
-			fprintf(stdout, "###### %04d-%d\t%u\t%s -> %d\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->index_delta);
+			fprintf(stdout, "###### %05d-%d\t%u\t%s -> %d\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->index_delta);
 
 		object_node_free(connection.object[o]);
 	}
