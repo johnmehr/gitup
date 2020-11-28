@@ -60,6 +60,7 @@ struct object_node {
 	int   type;
 	int   index;
 	int   index_delta;
+	char *ref_delta_sha;
 	int   pack_offset;
 	char *buffer;
 	int   buffer_size;
@@ -145,6 +146,9 @@ object_node_free(struct object_node *node)
 {
 	if (node->sha != NULL)
 		free(node->sha);
+
+	if (node->ref_delta_sha != NULL)
+		free(node->ref_delta_sha);
 
 	if (node->buffer != NULL)
 		free(node->buffer);
@@ -742,7 +746,7 @@ initiate_pull(connector *connection)
 	want_size = strlen(want);
 
 	/* Loop through the local files, adding any missing or modified files to the wants. */
-
+/*
 	RB_FOREACH(find, Tree_Remote_Files, &Remote_Files) {
 		found = RB_FIND(Tree_Local_Files, &Local_Files, find);
 
@@ -751,7 +755,7 @@ initiate_pull(connector *connection)
 			append_string(&want, &want_buffer_size, &want_size, have);
 		}
 	}
-
+*/
 	/* Finish the request. */
 
 	append_string(&want, &want_buffer_size, &want_size, "0009done\n0000");
@@ -814,7 +818,7 @@ get_commit_details(connector *connection)
 		connection->want[40] = '\0';
 
 		if (connection->verbosity)
-			printf("# Commit: %s\n", connection->want);
+			printf("# Want: %s\n", connection->want);
 	}
 
 	if (connection->keep_pack_file) {
@@ -866,10 +870,10 @@ fetch_pack(connector *connection)
 	/* If no pack data has been loaded, fetch it from the server. */
 
 	if (connection->response_size == 0) {
-		if (stat(connection->remote_file_old, &remote_file) != 0)
+//		if (stat(connection->remote_file_old, &remote_file) != 0)
 			initiate_clone(connection);
-		else
-			initiate_pull(connection);
+//		else
+//			initiate_pull(connection);
 
 		/* Find the start of the pack data and remove the header. */
 
@@ -927,7 +931,7 @@ fetch_pack(connector *connection)
  */
 
 static void
-store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, int index_delta)
+store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, int index_delta, char *ref_delta_sha)
 {
 	struct object_node *object = NULL;
 
@@ -938,17 +942,18 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 	if ((object = (struct object_node *)malloc(sizeof(struct object_node))) == NULL)
 		err(EXIT_FAILURE, "store_object: malloc");
 
-	object->index       = connection->objects;
-	object->type        = type;
-	object->sha         = calculate_sha(buffer, buffer_size, type);
-	object->pack_offset = pack_offset;
-	object->index_delta = index_delta;
-	object->buffer      = buffer;
-	object->buffer_size = buffer_size;
-	object->data_size   = buffer_size;
+	object->index         = connection->objects;
+	object->type          = type;
+	object->sha           = calculate_sha(buffer, buffer_size, type);
+	object->pack_offset   = pack_offset;
+	object->index_delta   = index_delta;
+	object->ref_delta_sha = (ref_delta_sha ? legible_sha(ref_delta_sha) : NULL);
+	object->buffer        = buffer;
+	object->buffer_size   = buffer_size;
+	object->data_size     = buffer_size;
 
 	if (connection->verbosity > 1)
-		fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s -> %d\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->index_delta);
+		fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->index_delta, object->ref_delta_sha);
 
 	if (type < 6)
 		RB_INSERT(Tree_Objects, &Objects, object);
@@ -968,7 +973,7 @@ unpack_objects(connector *connection)
 {
 	int            buffer_size = 0, total_objects = 0, object_type = 0, position = 4, index_delta = 0;
 	int            pack_offset = 0, lookup_offset = 0, stream_code = 0, version = 0, stream_bytes = 0;
-	char          *buffer = NULL;
+	char          *buffer = NULL, *ref_delta_sha = NULL;
 	uint32_t       file_size = 0, file_bits = 0;
 	unsigned char  zlib_out[16384];
 
@@ -991,11 +996,12 @@ unpack_objects(connector *connection)
 	/* Unpack the objects. */
 
 	while ((position < connection->response_size) && (total_objects-- > 0)) {
-		object_type  = (unsigned char)connection->response[position] >> 4 & 0x07;
-		pack_offset  = position;
-		index_delta  = 0;
-		file_size    = 0;
-		stream_bytes = 0;
+		object_type   = (unsigned char)connection->response[position] >> 4 & 0x07;
+		pack_offset   = position;
+		index_delta   = 0;
+		file_size     = 0;
+		stream_bytes  = 0;
+		ref_delta_sha = NULL;
 
 		/* Extract the file size. */
 
@@ -1023,10 +1029,15 @@ unpack_objects(connector *connection)
 				errc(EXIT_FAILURE, EINVAL, "Cannot find ofs-delta base object");
 		}
 
-		/* Ignore ref-delta SHA1 checksum. */
+		/* Extract ref-delta checksum. */
 
-		if (object_type == 7)
+		if (object_type == 7) {
+			if ((ref_delta_sha = (char *)malloc(21)) == NULL)
+				err(EXIT_FAILURE, "unpack_objects: malloc");
+
+			memcpy(ref_delta_sha, connection->response + position, 20);
 			position += 20;
+		}
 
 		/* Inflate and store the object. */
 
@@ -1063,7 +1074,10 @@ unpack_objects(connector *connection)
 		inflateEnd(&stream);
 		position += stream.total_in;
 
-		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta);
+		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta, ref_delta_sha);
+
+		if (ref_delta_sha != NULL)
+			free(ref_delta_sha);
 	}
 }
 
@@ -1228,7 +1242,7 @@ apply_deltas(connector *connection)
 
 		/* Store the completed object. */
 
-		store_object(connection, base->type, merge_buffer, new_file_size, 0, 0);
+		store_object(connection, base->type, merge_buffer, new_file_size, 0, 0, NULL);
 	}
 }
 
@@ -1327,7 +1341,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 					write(fd, lookup_object->buffer, lookup_object->data_size);
 					close(fd);
 
-				/* Add the file to the remote files tree. */
+				/* Add the file details to the remote files tree. */
 
 				if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 					err(EXIT_FAILURE, "find_local_tree: malloc");
@@ -1381,7 +1395,7 @@ save_objects(connector *connection)
 
 	save_tree(connection, tree, connection->path_target);
 
-	/* Save the new list of known files. */
+	/* Save the new list of remote files. */
 
 	if ((fd = open(connection->remote_file_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
 		err(EXIT_FAILURE, "write file failure %s", connection->remote_file_new);
@@ -1510,12 +1524,13 @@ usage(char *configuration_file)
 	fprintf(stderr, "Usage: gitup <section> [options]\n\n");
 	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
 	fprintf(stderr, "  Options:\n");
-	fprintf(stderr, "    -c  Commit hash to use.\n");
+	fprintf(stderr, "    -h  Override the 'have' checksum.\n");
 	fprintf(stderr, "    -k  Path to save a copy of the pack data.\n");
 	fprintf(stderr, "    -u  Path to load a copy of the pack data, skipping the download.\n");
 	fprintf(stderr, "    -v  How verbose the output should be (0 = no output, 1 = the default\n");
 	fprintf(stderr, "          normal output, 2 = also show debugging information.\n");
 	fprintf(stderr, "    -V  Display gitup's version number and exit.\n");
+	fprintf(stderr, "    -w  Override the 'want' checksum.\n");
 	fprintf(stderr, "\n");
 
 	exit(EXIT_FAILURE);
@@ -1533,10 +1548,10 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL, lookup_file;
-	int                 option = 0, cache_length = 0, fd = 0, remote_files_size = 0, count = 0;
+	int                 option = 0, cache_length = 0, fd = 0, remote_file_size = 0, count = 0;
 	char               *configuration_file = "./gitup.conf";
 	char               *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL;
-	struct stat         pack_file, cache_file;
+	struct stat         pack_file, remote_file;
 
 	connector connection = {
 		.ssl               = NULL,
@@ -1625,22 +1640,6 @@ main(int argc, char **argv)
 				break;
 		}
 
-	/* Display connection parameters. */
-
-	if (connection.verbosity) {
-		fprintf(stderr, "# Host: %s\n", connection.host);
-		fprintf(stderr, "# Port: %d\n", connection.port);
-		fprintf(stderr, "# Repository: %s\n", connection.repository);
-		fprintf(stderr, "# Branch: %s\n", connection.branch);
-		fprintf(stderr, "# Target: %s\n", connection.path_target);
-
-		if (connection.want)
-			fprintf(stderr, "# Want: %s\n", connection.want);
-
-		if (connection.use_pack_file)
-			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
-	}
-
 	/* Continue setting up the environment. */
 
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
@@ -1648,7 +1647,7 @@ main(int argc, char **argv)
 
 	find_local_tree(connection.path_target, "");
 
-	/* Load the list of known files and checksums, if they exist. */
+	/* Load the list of remote files and checksums, if they exist. */
 
 	cache_length = strlen(connection.path_work) + MAXNAMLEN;
 
@@ -1658,19 +1657,19 @@ main(int argc, char **argv)
 	snprintf(connection.remote_file_old, cache_length, "%s/%s", connection.path_work, argv[1]);
 	snprintf(connection.remote_file_new, cache_length, "%s/%s.new", connection.path_work, argv[1]);
 
-	if (stat(connection.remote_file_old, &cache_file) != -1) {
-		remote_files_size = cache_file.st_size;
+	if (stat(connection.remote_file_old, &remote_file) != -1) {
+		remote_file_size = remote_file.st_size;
 
-		if ((remote_files = (char *)malloc(remote_files_size + 1)) == NULL)
+		if ((remote_files = (char *)malloc(remote_file_size + 1)) == NULL)
 			err(EXIT_FAILURE, "main connection.path_remote_files malloc");
 
 		if ((fd = open(connection.remote_file_old, O_RDONLY)) == -1)
 			err(EXIT_FAILURE, "open file (%s)", connection.remote_file_old);
 
-		if (read(fd, remote_files, remote_files_size) != remote_files_size)
+		if (read(fd, remote_files, remote_file_size) != remote_file_size)
 			err(EXIT_FAILURE, "read file error (%s)", connection.remote_file_old);
 
-		remote_files[remote_files_size] = '\0';
+		remote_files[remote_file_size] = '\0';
 		close(fd);
 
 		while ((line = strsep(&remote_files, "\n"))) {
@@ -1699,6 +1698,25 @@ main(int argc, char **argv)
 		}
 	}
 
+	/* Display connection parameters. */
+
+	if (connection.verbosity) {
+		fprintf(stderr, "# Host: %s\n", connection.host);
+		fprintf(stderr, "# Port: %d\n", connection.port);
+		fprintf(stderr, "# Repository: %s\n", connection.repository);
+		fprintf(stderr, "# Branch: %s\n", connection.branch);
+		fprintf(stderr, "# Target: %s\n", connection.path_target);
+
+		if (connection.have)
+			fprintf(stderr, "# Have: %s\n", connection.have);
+
+		if (connection.want)
+			fprintf(stderr, "# Want: %s\n", connection.want);
+
+		if (connection.use_pack_file)
+			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
+	}
+
 	/* Execute the fetch, unpack, apply deltas and save. */
 
 	if ((connection.use_pack_file == 0) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
@@ -1725,12 +1743,15 @@ main(int argc, char **argv)
 	RB_FOREACH(file, Tree_Local_Files, &Local_Files)
 		file_node_free(RB_REMOVE(Tree_Local_Files, &Local_Files, file));
 
+	RB_FOREACH(file, Tree_Remote_Files, &Remote_Files)
+		file_node_free(RB_REMOVE(Tree_Remote_Files, &Remote_Files, file));
+
 	RB_FOREACH(file, Tree_Local_Directories, &Local_Directories)
 		file_node_free(RB_REMOVE(Tree_Local_Directories, &Local_Directories, file));
 
 	for (int o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
-			fprintf(stdout, "###### %05d-%d\t%u\t%s -> %d\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->index_delta);
+			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->pack_offset, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->index_delta, connection.object[o]->ref_delta_sha);
 
 		object_node_free(connection.object[o]);
 	}
