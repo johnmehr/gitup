@@ -337,77 +337,68 @@ append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_len
  */
 
 static void
-find_local_tree(char *path_base, const char *path_target)
+find_local_tree(char *base_path)
 {
-	DIR              *directory;
+	DIR              *directory = NULL;
 	struct stat       file;
-	struct dirent    *entry;
-	struct file_node *new_node;
-	char             *full_path;
-	int               full_path_size, file_name_size;
-
-	/* Construct the file's full path. */
-
-	full_path_size = strlen(path_base) + strlen(path_target) + MAXNAMLEN + 3;
+	struct dirent    *entry = NULL;
+	struct file_node *new_node, files[BUFFER_UNIT_SMALL], directories[BUFFER_UNIT_SMALL];
+	char             *full_path = NULL;
+	int               file_name_size = 0, file_count = 0, directory_count = 0;
+	int               full_path_size = strlen(base_path) + MAXNAMLEN + 3;
 
 	if ((full_path = (char *)malloc(full_path_size)) == NULL)
 		err(EXIT_FAILURE, "find_local_tree: full_path malloc");
 
-	snprintf(full_path, full_path_size, "%s%s", path_base, path_target);
-
 	/* Process the directory's contents. */
 
-	if (lstat(full_path, &file) != -1) {
-		if (S_ISDIR(file.st_mode)) {
-			/* Keep track of the local directories, ignoring path_base. */
+	if ((lstat(base_path, &file) != -1) && ((directory = opendir(base_path)) != NULL)) {
+		while ((entry = readdir(directory)) != NULL) {
+			snprintf(full_path,
+				full_path_size,
+				"%s/%s",
+				base_path,
+				entry->d_name);
 
-			if (strlen(path_target)) {
-				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE, "find_local_tree: malloc");
+			if (lstat(full_path, &file) == -1)
+				err(EXIT_FAILURE, "find_local_tree: %s", full_path);
 
-				new_node->mode = file.st_mode;
-				new_node->sha  = NULL;
-				new_node->path = strdup(full_path);
-
-				RB_INSERT(Tree_Local_Directories, &Local_Directories, new_node);
-			}
-
-			/* Recursively process the contents of the directory. */
-
-			if ((directory = opendir(full_path)) != NULL) {
-				while ((entry = readdir(directory)) != NULL) {
-					file_name_size = strlen(entry->d_name);
-
-					if ((file_name_size == 1) && (strcmp(entry->d_name, "." ) == 0))
-						continue;
-
-					if ((file_name_size == 2) && (strcmp(entry->d_name, "..") == 0))
-						continue;
-
-					if ((file_name_size == 4) && (strcmp(entry->d_name, ".git") == 0))
-						continue;
-
-					snprintf(full_path,
-						full_path_size,
-						"%s/%s",
-						path_target,
-						entry->d_name);
-
-					find_local_tree(path_base, full_path);
-				}
-
-				closedir(directory);
-			}
-		} else {
 			if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 				err(EXIT_FAILURE, "find_local_tree: malloc");
 
 			new_node->mode = file.st_mode;
-			new_node->sha  = calculate_file_sha(full_path, file.st_size, file.st_mode);
+			new_node->sha  = NULL;
 			new_node->path = strdup(full_path);
 
-			RB_INSERT(Tree_Local_Files, &Local_Files, new_node);
+			file_name_size = strlen(entry->d_name);
+
+			if ((file_name_size == 1) && (strcmp(entry->d_name, "." ) == 0))
+				continue;
+
+			if ((file_name_size == 2) && (strcmp(entry->d_name, "..") == 0))
+				continue;
+
+			if ((file_name_size == 4) && (strcmp(entry->d_name, ".git") == 0)) {
+				fprintf(stderr, " ! A .git folder was found -- gitup does not update this folder and will cause problems for the official git client.\n");
+				fprintf(stderr, " ! If you wish to use gitup, please remove %s and rerun gitup.\n", full_path);
+
+				exit(EXIT_FAILURE);
+				}
+
+			if (S_ISDIR(file.st_mode)) {
+				RB_INSERT(Tree_Local_Directories, &Local_Directories, new_node);
+				directories[directory_count++] = *new_node;
+
+				find_local_tree(full_path);
+			} else {
+				new_node->sha = calculate_file_sha(full_path, file.st_size, file.st_mode);
+
+				RB_INSERT(Tree_Local_Files, &Local_Files, new_node);
+				files[file_count++] = *new_node;
+			}
 		}
+
+		closedir(directory);
 	}
 
 	free(full_path);
@@ -1680,7 +1671,7 @@ main(int argc, char **argv)
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
 
-	find_local_tree(connection.path_target, "");
+	find_local_tree(connection.path_target);
 
 	/* Load the list of remote files and checksums, if they exist. */
 
