@@ -415,6 +415,37 @@ find_local_tree(char *path_base, const char *path_target)
 
 
 /*
+ * check_local_tree
+ */
+
+static void
+check_local_tree(void)
+{
+	struct file_node *find = NULL, *found = NULL;
+	int    errors = 0;
+
+	RB_FOREACH(find, Tree_Remote_Files, &Remote_Files) {
+		found = RB_FIND(Tree_Local_Files, &Local_Files, find);
+
+		if (found == NULL) {
+			printf(" ! Local file %s is missing.\n", find->path);
+			errors++;
+			continue;
+		}
+
+		if (strncmp(found->sha, find->sha, 40) != 0) {
+			printf(" ! Local file %s has been modified.\n", find->path);
+			errors++;
+		}
+	}
+
+	if (errors) {
+		exit(EXIT_FAILURE);
+	}
+}
+
+
+/*
  * ssl_connect
  *
  * Procedure that (re)establishes a connection with the server.
@@ -821,6 +852,8 @@ get_commit_details(connector *connection)
 			printf("# Want: %s\n", connection->want);
 	}
 
+	/* Create the pack file name. */
+
 	if (connection->keep_pack_file) {
 		int pack_file_name_size = strlen(connection->section) + 47;
 
@@ -872,8 +905,10 @@ fetch_pack(connector *connection)
 	if (connection->response_size == 0) {
 //		if (stat(connection->remote_file_old, &remote_file) != 0)
 			initiate_clone(connection);
-//		else
+//		else {
+//			check_local_tree();
 //			initiate_pull(connection);
+//		}
 
 		/* Find the start of the pack data and remove the header. */
 
@@ -1679,7 +1714,7 @@ main(int argc, char **argv)
 			if (count++ == 0)
 				connection.have = strdup(line);
 
-			if (strlen(line) <= 50)
+			if (strlen(line) <= 42)
 				continue;
 
 			/* Split the line and save the data into the remote files tree. */
