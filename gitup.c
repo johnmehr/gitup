@@ -93,8 +93,8 @@ typedef struct {
 	char                *pack_file;
 	char                *path_target;
 	char                *path_work;
-	char                *path_remote_files_old;
-	char                *path_remote_files_new;
+	char                *remote_file_old;
+	char                *remote_file_new;
 	int                  keep_pack_file;
 	int                  use_pack_file;
 	int                  verbosity;
@@ -630,46 +630,19 @@ process_command(connector *connection, char *command)
 
 
 /*
- * initiate_clone
+ * send_command
  *
  * Function that constructs the command to the fetch the full pack data.
  */
 
 static void
-initiate_clone(connector *connection)
+send_command(connector *connection, char *want)
 {
-	struct file_node *file;
-	unsigned int      command_size = 0, command_buffer_size = BUFFER_UNIT_LARGE;
-	char             *command = NULL, want[BUFFER_UNIT_SMALL], have[51];
+	char *command   = NULL;
+	int   want_size = strlen(want);
 
-	if ((command = (char *)malloc(BUFFER_UNIT_LARGE)) == NULL)
-		err(EXIT_FAILURE, "initiate_clone: malloc");
-
-	/* Start with the "wants". */
-
-	snprintf(want,
-		BUFFER_UNIT_SMALL,
-		"0011command=fetch"
-		"%04lx%s0001"
-//		"000dthin-pack"
-		"000fno-progress"
-		"000dofs-delta"
-//		"000cdeepen 1"
-		"0034shallow %s"
-		"0032want %s\n"
-		"0032want %s\n",
-		strlen(connection->agent) + 4,
-		connection->agent,
-		connection->want,
-		connection->want,
-		connection->want);
-
-	/* Pre-determine the length of the command for inclusion in the header. */
-
-	command_size = strlen(want) + strlen("0009done\n0000");
-
-	RB_FOREACH(file, Tree_Local_Files, &Local_Files)
-		command_size += 50;
+	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
+		err(EXIT_FAILURE, "send_command: malloc");
 
 	snprintf(command,
 		BUFFER_UNIT_LARGE,
@@ -685,22 +658,9 @@ initiate_clone(connector *connection)
 		"%s",
 		connection->repository,
 		GIT_VERSION,
-		command_size,
+		want_size,
 		want
 		);
-
-	command_size = strlen(command);
-
-	/* Loop through the local files adding each to the "haves". */
-
-	RB_FOREACH(file, Tree_Local_Files, &Local_Files) {
-		snprintf(have, sizeof(have), "0032have %s\n\n", file->sha);
-		append_string(&command, &command_buffer_size, &command_size, have);
-	}
-
-	/* Finish the request. */
-
-	append_string(&command, &command_buffer_size, &command_size, "0009done\n0000");
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "%s\n\n", command);
@@ -708,6 +668,95 @@ initiate_clone(connector *connection)
 	process_command(connection, command);
 
 	free(command);
+}
+
+
+/*
+ * initiate_clone
+ *
+ * Function that constructs the command to the fetch the full pack data.
+ */
+
+static void
+initiate_clone(connector *connection)
+{
+	char want[BUFFER_UNIT_SMALL];
+
+	snprintf(want,
+		BUFFER_UNIT_SMALL,
+		"0011command=fetch"
+		"%04lx%s0001"
+		"000fno-progress"
+		"000dofs-delta"
+		"0034shallow %s"
+		"0032want %s\n"
+		"0032want %s\n"
+		"0009done\n0000",
+		strlen(connection->agent) + 4,
+		connection->agent,
+		connection->want,
+		connection->want,
+		connection->want);
+
+	send_command(connection, want);
+}
+
+
+/*
+ * initiate_pull
+ *
+ * Function that constructs the command to the fetch the full pack data.
+ */
+
+static void
+initiate_pull(connector *connection)
+{
+	struct file_node *find = NULL, *found = NULL;
+	unsigned int      want_size = 0, want_buffer_size = BUFFER_UNIT_LARGE;
+	char             *want = NULL, have[51];
+
+	if ((want = (char *)malloc(want_buffer_size)) == NULL)
+		err(EXIT_FAILURE, "initiate_clone: malloc");
+
+	/* Start with the basic pull command. */
+
+	snprintf(want,
+		BUFFER_UNIT_SMALL,
+		"0011command=fetch"
+		"%04lx%s0001"
+		"000dthin-pack"
+		"000fno-progress"
+		"000dofs-delta"
+		"0034shallow %s"
+		"0034shallow %s"
+		"000cdeepen 1"
+		"0032want %s\n"
+		"0032have %s\n",
+		strlen(connection->agent) + 4,
+		connection->agent,
+		connection->want,
+		connection->have,
+		connection->want,
+		connection->have);
+
+	want_size = strlen(want);
+
+	/* Loop through the local files, adding any missing or modified files to the wants. */
+
+	RB_FOREACH(find, Tree_Remote_Files, &Remote_Files) {
+		found = RB_FIND(Tree_Local_Files, &Local_Files, find);
+
+		if ((found == NULL) || (strncmp(found->sha, find->sha, 40) != 0)) {
+			snprintf(have, sizeof(have), "0032want %s\n", find->sha);
+			append_string(&want, &want_buffer_size, &want_size, have);
+		}
+	}
+
+	/* Finish the request. */
+
+	append_string(&want, &want_buffer_size, &want_size, "0009done\n0000");
+
+	send_command(connection, want);
 }
 
 
@@ -792,7 +841,7 @@ static void
 fetch_pack(connector *connection)
 {
 	char        *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
-	struct stat  pack_file;
+	struct stat  pack_file, remote_file;
 	int          fd, chunk_size = 1, pack_size = 0, source = 0, target = 0;
 
 	connection->response_size = 0;
@@ -817,7 +866,10 @@ fetch_pack(connector *connection)
 	/* If no pack data has been loaded, fetch it from the server. */
 
 	if (connection->response_size == 0) {
-		initiate_clone(connection);
+		if (stat(connection->remote_file_old, &remote_file) != 0)
+			initiate_clone(connection);
+		else
+			initiate_pull(connection);
 
 		/* Find the start of the pack data and remove the header. */
 
@@ -1331,10 +1383,10 @@ save_objects(connector *connection)
 
 	/* Save the new list of known files. */
 
-	if ((fd = open(connection->path_remote_files_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-		err(EXIT_FAILURE, "write file failure %s", connection->path_remote_files_new);
+	if ((fd = open(connection->remote_file_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
+		err(EXIT_FAILURE, "write file failure %s", connection->remote_file_new);
 
-	chmod(connection->path_remote_files_new, 0644);
+	chmod(connection->remote_file_new, 0644);
 	write(fd, connection->want, strlen(connection->want));
 	write(fd, "\n", 1);
 
@@ -1487,30 +1539,30 @@ main(int argc, char **argv)
 	struct stat         pack_file, cache_file;
 
 	connector connection = {
-		.ssl                   = NULL,
-		.ctx                   = NULL,
-		.socket_descriptor     = 0,
-		.host                  = NULL,
-		.port                  = 0,
-		.agent                 = NULL,
-		.section               = NULL,
-		.repository            = NULL,
-		.branch                = NULL,
-		.have                  = NULL,
-		.want                  = NULL,
-		.response              = NULL,
-		.response_blocks       = 0,
-		.response_size         = 0,
-		.object                = NULL,
-		.objects               = 0,
-		.pack_file             = NULL,
-		.path_target           = NULL,
-		.path_work             = NULL,
-		.path_remote_files_old = NULL,
-		.path_remote_files_new = NULL,
-		.keep_pack_file        = 0,
-		.use_pack_file         = 0,
-		.verbosity             = 1,
+		.ssl               = NULL,
+		.ctx               = NULL,
+		.socket_descriptor = 0,
+		.host              = NULL,
+		.port              = 0,
+		.agent             = NULL,
+		.section           = NULL,
+		.repository        = NULL,
+		.branch            = NULL,
+		.have              = NULL,
+		.want              = NULL,
+		.response          = NULL,
+		.response_blocks   = 0,
+		.response_size     = 0,
+		.object            = NULL,
+		.objects           = 0,
+		.pack_file         = NULL,
+		.path_target       = NULL,
+		.path_work         = NULL,
+		.remote_file_old   = NULL,
+		.remote_file_new   = NULL,
+		.keep_pack_file    = 0,
+		.use_pack_file     = 0,
+		.verbosity         = 1,
 		};
 
 	/* Process the command line parameters. */
@@ -1600,32 +1652,30 @@ main(int argc, char **argv)
 
 	cache_length = strlen(connection.path_work) + MAXNAMLEN;
 
-	connection.path_remote_files_old = (char *)malloc(cache_length);
-	connection.path_remote_files_new = (char *)malloc(cache_length);
+	connection.remote_file_old = (char *)malloc(cache_length);
+	connection.remote_file_new = (char *)malloc(cache_length);
 
-	snprintf(connection.path_remote_files_old, cache_length, "%s/%s", connection.path_work, argv[1]);
-	snprintf(connection.path_remote_files_new, cache_length, "%s/%s.new", connection.path_work, argv[1]);
+	snprintf(connection.remote_file_old, cache_length, "%s/%s", connection.path_work, argv[1]);
+	snprintf(connection.remote_file_new, cache_length, "%s/%s.new", connection.path_work, argv[1]);
 
-	if (stat(connection.path_remote_files_old, &cache_file) != -1) {
+	if (stat(connection.remote_file_old, &cache_file) != -1) {
 		remote_files_size = cache_file.st_size;
 
 		if ((remote_files = (char *)malloc(remote_files_size + 1)) == NULL)
 			err(EXIT_FAILURE, "main connection.path_remote_files malloc");
 
-		if ((fd = open(connection.path_remote_files_old, O_RDONLY)) == -1)
-			err(EXIT_FAILURE, "open file (%s)", connection.path_remote_files_old);
+		if ((fd = open(connection.remote_file_old, O_RDONLY)) == -1)
+			err(EXIT_FAILURE, "open file (%s)", connection.remote_file_old);
 
 		if (read(fd, remote_files, remote_files_size) != remote_files_size)
-			err(EXIT_FAILURE, "read file error (%s)", connection.path_remote_files_old);
+			err(EXIT_FAILURE, "read file error (%s)", connection.remote_file_old);
 
 		remote_files[remote_files_size] = '\0';
 		close(fd);
 
 		while ((line = strsep(&remote_files, "\n"))) {
-			if (count++ == 0) {
+			if (count++ == 0)
 				connection.have = strdup(line);
-				continue;
-			}
 
 			if (strlen(line) <= 50)
 				continue;
@@ -1633,13 +1683,13 @@ main(int argc, char **argv)
 			/* Split the line and save the data into the remote files tree. */
 
 			if ((file = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-				err(EXIT_FAILURE, "find_local_tree: malloc");
+				err(EXIT_FAILURE, "main: malloc");
 
 			sha  = strchr(line, '\t') + 1;
 			path = strchr(sha, '\t')  + 1;
 
 			*(sha -  1) = '\0';
-			*(sha + 41) = '\0';
+			*(sha + 40) = '\0';
 
 			file->mode = strtol(line, (char **)NULL, 8);
 			file->sha  = strdup(sha);
@@ -1656,15 +1706,18 @@ main(int argc, char **argv)
 
 	fetch_pack(&connection);
 	unpack_objects(&connection);
-	apply_deltas(&connection);
-	save_objects(&connection);
+
+	if (connection.objects > 0) {
+		apply_deltas(&connection);
+		save_objects(&connection);
+
+		remove(connection.remote_file_old);
+
+		if ((connection.objects > 0) && ((rename(connection.remote_file_new, connection.remote_file_old)) != 0))
+			err(EXIT_FAILURE, "Cannot rename %s", connection.remote_file_old);
+	}
 
 	/* Wrap it all up. */
-
-	remove(connection.path_remote_files_old);
-
-	if ((rename(connection.path_remote_files_new, connection.path_remote_files_old)) != 0)
-		err(EXIT_FAILURE, "Cannot rename %s", connection.path_remote_files_old);
 
 	RB_FOREACH(object, Tree_Objects, &Objects)
 		RB_REMOVE(Tree_Objects, &Objects, object);
@@ -1718,11 +1771,11 @@ main(int argc, char **argv)
 	if (connection.path_work)
 		free(connection.path_work);
 
-	if (connection.path_remote_files_old)
-		free(connection.path_remote_files_old);
+	if (connection.remote_file_old)
+		free(connection.remote_file_old);
 
-	if (connection.path_remote_files_new)
-		free(connection.path_remote_files_new);
+	if (connection.remote_file_new)
+		free(connection.remote_file_new);
 
 	if (connection.ssl) {
 		SSL_shutdown(connection.ssl);
