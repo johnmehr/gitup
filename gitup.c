@@ -678,7 +678,7 @@ send_command(connector *connection, char *want)
 /*
  * initiate_clone
  *
- * Function that constructs the command to the fetch the full pack data.
+ * Function that constructs and executes the command to the fetch the full pack data.
  */
 
 static void
@@ -709,7 +709,7 @@ initiate_clone(connector *connection)
 /*
  * initiate_pull
  *
- * Function that constructs the command to the fetch the full pack data.
+ * Function that constructs and executes the command to the fetch the incremental pack data.
  */
 
 static void
@@ -720,7 +720,7 @@ initiate_pull(connector *connection)
 	char             *want = NULL, have[51];
 
 	if ((want = (char *)malloc(want_buffer_size)) == NULL)
-		err(EXIT_FAILURE, "initiate_clone: malloc");
+		err(EXIT_FAILURE, "initiate_pull: malloc");
 
 	/* Start with the basic pull command. */
 
@@ -801,7 +801,7 @@ get_commit_details(connector *connection)
 	connection->agent = strdup(position);
 	*end = '\n';
 
-	/* Extract the want checksum. */
+	/* Extract the "want" checksum. */
 
 	if (connection->want == NULL) {
 		snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
@@ -845,7 +845,7 @@ static void
 fetch_pack(connector *connection)
 {
 	char        *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
-	struct stat  pack_file, remote_file;
+	struct stat  pack_file;
 	int          fd, chunk_size = 1, pack_size = 0, source = 0, target = 0;
 
 	connection->response_size = 0;
@@ -1286,7 +1286,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 {
 	struct object_node object, *lookup_object = NULL, *tree = NULL;
 	struct file_node   file, *lookup_file = NULL, *new_file_node = NULL;
-	char               full_path[BUFFER_UNIT_SMALL], link_path[BUFFER_UNIT_SMALL], *position = NULL;
+	char               full_path[BUFFER_UNIT_SMALL], *position = NULL;
 	int                fd;
 
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
@@ -1547,8 +1547,8 @@ int
 main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
-	struct file_node   *file   = NULL, lookup_file;
-	int                 option = 0, cache_length = 0, fd = 0, remote_file_size = 0, count = 0;
+	struct file_node   *file   = NULL;
+	int                 option = 0, length = 0, fd = 0, remote_file_size = 0, count = 0;
 	char               *configuration_file = "./gitup.conf";
 	char               *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL;
 	struct stat         pack_file, remote_file;
@@ -1649,13 +1649,16 @@ main(int argc, char **argv)
 
 	/* Load the list of remote files and checksums, if they exist. */
 
-	cache_length = strlen(connection.path_work) + MAXNAMLEN;
+	length = strlen(connection.path_work) + MAXNAMLEN;
 
-	connection.remote_file_old = (char *)malloc(cache_length);
-	connection.remote_file_new = (char *)malloc(cache_length);
+	if ((connection.remote_file_old = (char *)malloc(length)) == NULL)
+		err(EXIT_FAILURE, "main connection.remote_file_old malloc");
 
-	snprintf(connection.remote_file_old, cache_length, "%s/%s", connection.path_work, argv[1]);
-	snprintf(connection.remote_file_new, cache_length, "%s/%s.new", connection.path_work, argv[1]);
+	if ((connection.remote_file_new = (char *)malloc(length)) == NULL)
+		err(EXIT_FAILURE, "main connection.remote_file_new malloc");
+
+	snprintf(connection.remote_file_old, length, "%s/%s", connection.path_work, argv[1]);
+	snprintf(connection.remote_file_new, length, "%s/%s.new", connection.path_work, argv[1]);
 
 	if (stat(connection.remote_file_old, &remote_file) != -1) {
 		remote_file_size = remote_file.st_size;
@@ -1731,7 +1734,7 @@ main(int argc, char **argv)
 
 		remove(connection.remote_file_old);
 
-		if ((connection.objects > 0) && ((rename(connection.remote_file_new, connection.remote_file_old)) != 0))
+		if ((rename(connection.remote_file_new, connection.remote_file_old)) != 0)
 			err(EXIT_FAILURE, "Cannot rename %s", connection.remote_file_old);
 	}
 
