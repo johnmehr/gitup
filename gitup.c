@@ -177,7 +177,7 @@ RB_GENERATE(Tree_Objects, object_node, link, object_node_compare)
 /*
  * legible_sha
  *
- * Function that returns a human-readable SHA checksum.
+ * Function that converts a 20 byte binary SHA checksum into 40 byte human-readable checksum.
  */
 
 static char *
@@ -192,6 +192,27 @@ legible_sha(char *sha_buffer)
 		snprintf(&sha[x * 2], 3, "%02x", (unsigned char)sha_buffer[x]);
 
 	sha[40] = '\0';
+
+	return sha;
+}
+
+
+/*
+ * illegible_sha
+ *
+ * Function that converts a 40 byte human-readable checksum into a 20 byte binary SHA checksum.
+ */
+
+static char *
+illegible_sha(char *sha_buffer)
+{
+	char *sha = NULL;
+
+	if ((sha = (char *)malloc(20)) == NULL)
+		err(EXIT_FAILURE, "illegible_sha: malloc");
+
+	for (int x = 0; x < 20; x++)
+		sha[x] = 16 * ((unsigned char)sha_buffer[x * 2] - (sha_buffer[x * 2] > 58 ? 87 : 48)) + (unsigned char)sha_buffer[x * 2 + 1] - (sha_buffer[x * 2 + 1] > 58 ? 87 : 48);
 
 	return sha;
 }
