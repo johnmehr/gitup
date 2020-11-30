@@ -279,10 +279,7 @@ static char *
 calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 {
 	int   fd;
-	char *file_buffer, *position, *value, *eol, *sha = NULL, *sha_buffer = NULL;
-
-	if ((sha_buffer = (char *)malloc(21)) == NULL)
-		err(EXIT_FAILURE, "calculate_sha: malloc");
+	char *file_buffer, *position, *value, *eol, *sha = NULL;
 
 	if (S_ISLNK(file_mode)) {
 	} else {
@@ -300,7 +297,7 @@ calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 		close(fd);
 
 		/* Remove any revision tags. */
-
+/*
 		position = file_buffer;
 
 		while ((position = strstr(position, "$FreeBSD:"))) {
@@ -314,15 +311,13 @@ calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 				file_buffer[file_size] = '\0';
 			}
 		}
-
+*/
 		/* Calculate the SHA checksum. */
 
 		sha = calculate_sha(file_buffer, file_size, 3);
 
 		free(file_buffer);
 	}
-
-	free(sha_buffer);
 
 	return sha;
 }
