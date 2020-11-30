@@ -330,11 +330,11 @@ calculate_file_sha(char *path, ssize_t file_size, int file_mode)
  */
 
 static void
-append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_length, char *addendum)
+append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_length, char *addendum, int addendum_size)
 {
 	int adjust = 0;
 
-	while (*string_length + strlen(addendum) > *buffer_size) {
+	while (*string_length + addendum_size > *buffer_size) {
 		adjust = 1;
 		*buffer_size += BUFFER_UNIT_SMALL;
 	}
@@ -342,9 +342,9 @@ append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_len
 	if ((adjust) && ((*buffer = (char *)realloc(*buffer, *buffer_size + 1)) == NULL))
 		err(EXIT_FAILURE, "append_string: realloc");
 
-	memcpy(*buffer + *string_length, addendum, strlen(addendum));
+	memcpy(*buffer + *string_length, addendum, addendum_size);
 
-	*string_length += strlen(addendum);
+	*string_length += addendum_size;
 
 	*(*buffer + *string_length) = '\0';
 }
@@ -760,7 +760,7 @@ initiate_pull(connector *connection)
 {
 	struct file_node *find = NULL, *found = NULL;
 	unsigned int      want_size = 0, want_buffer_size = BUFFER_UNIT_LARGE;
-	char             *want = NULL, have[51];
+	char             *want = NULL, have[51], done = "0009done\n0000";
 
 	if ((want = (char *)malloc(want_buffer_size)) == NULL)
 		err(EXIT_FAILURE, "initiate_pull: malloc");
@@ -795,13 +795,13 @@ initiate_pull(connector *connection)
 
 		if ((found == NULL) || (strncmp(found->sha, find->sha, 40) != 0)) {
 			snprintf(have, sizeof(have), "0032want %s\n", find->sha);
-			append_string(&want, &want_buffer_size, &want_size, have);
+			append_string(&want, &want_buffer_size, &want_size, have, strlen(have));
 		}
 	}
 */
 	/* Finish the request. */
 
-	append_string(&want, &want_buffer_size, &want_size, "0009done\n0000");
+	append_string(&want, &want_buffer_size, &want_size, done, strlen(done));
 
 	send_command(connection, want);
 }
