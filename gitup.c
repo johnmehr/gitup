@@ -89,6 +89,7 @@ typedef struct {
 	char                *response;
 	int                  response_blocks;
 	uint32_t             response_size;
+	int                  clone;
 	struct object_node **object;
 	int                  objects;
 	char                *pack_file;
@@ -922,7 +923,7 @@ static void
 fetch_pack(connector *connection)
 {
 	char        *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
-	struct stat  pack_file;
+	struct stat  pack_file, remote_file;
 	int          fd, chunk_size = 1, pack_size = 0, source = 0, target = 0;
 
 	connection->response_size = 0;
@@ -944,15 +945,16 @@ fetch_pack(connector *connection)
 		}
 	}
 
+	if (stat(connection->remote_file_old, &remote_file) == 0)
+		check_local_tree();
+
 	/* If no pack data has been loaded, fetch it from the server. */
 
-	if (connection->response_size == 0) {
-//		if (stat(connection->remote_file_old, &remote_file) != 0)
+	if ((connection->response_size == 0) || (connection->clone)) {
+		if ((stat(connection->remote_file_old, &remote_file) != 0) || (connection->clone))
 			initiate_clone(connection);
-//		else {
-//			check_local_tree();
-//			initiate_pull(connection);
-//		}
+		else
+			initiate_pull(connection);
 
 		/* Find the start of the pack data and remove the header. */
 
@@ -1603,6 +1605,7 @@ usage(char *configuration_file)
 	fprintf(stderr, "Usage: gitup <section> [options]\n\n");
 	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
 	fprintf(stderr, "  Options:\n");
+	fprintf(stderr, "    -c  Force gitup to clone the repository.\n");
 	fprintf(stderr, "    -h  Override the 'have' checksum.\n");
 	fprintf(stderr, "    -k  Path to save a copy of the pack data.\n");
 	fprintf(stderr, "    -u  Path to load a copy of the pack data, skipping the download.\n");
@@ -1647,6 +1650,7 @@ main(int argc, char **argv)
 		.response          = NULL,
 		.response_blocks   = 0,
 		.response_size     = 0,
+		.clone             = 1,
 		.object            = NULL,
 		.objects           = 0,
 		.pack_file         = NULL,
@@ -1675,8 +1679,11 @@ main(int argc, char **argv)
 		optind = 2;
 	}
 
-	while ((option = getopt(argc, argv, "h:ku:Vv:w:")) != -1)
+	while ((option = getopt(argc, argv, "ch:ku:Vv:w:")) != -1)
 		switch (option) {
+			case 'c':
+				connection.clone = 1;
+				break;
 			case 'h':
 				connection.have = strdup(optarg);
 				break;
@@ -1724,7 +1731,7 @@ main(int argc, char **argv)
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
 
-	find_local_tree(connection.path_target);
+	find_local_tree(&connection, connection.path_target);
 
 	/* Load the list of remote files and checksums, if they exist. */
 
@@ -1767,7 +1774,7 @@ main(int argc, char **argv)
 				err(EXIT_FAILURE, "main: malloc");
 
 			sha  = strchr(line, '\t') + 1;
-			path = strchr(sha, '\t')  + 1;
+			path = strchr(sha,  '\t') + 1;
 
 			*(sha -  1) = '\0';
 			*(sha + 40) = '\0';
