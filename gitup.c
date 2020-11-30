@@ -788,7 +788,7 @@ initiate_pull(connector *connection)
 {
 	struct file_node *find = NULL, *found = NULL;
 	unsigned int      want_size = 0, want_buffer_size = BUFFER_UNIT_LARGE;
-	char             *want = NULL, have[51], done = "0009done\n0000";
+	char             *want = NULL, have[51], *done = "0009done\n0000";
 
 	if ((want = (char *)malloc(want_buffer_size)) == NULL)
 		err(EXIT_FAILURE, "initiate_pull: malloc");
@@ -940,7 +940,7 @@ fetch_pack(connector *connection)
 		}
 	}
 
-	if (stat(connection->remote_file_old, &remote_file) == 0)
+	if ((stat(connection->remote_file_old, &remote_file) == 0) && (connection->clone == 0))
 		check_local_tree();
 
 	/* If no pack data has been loaded, fetch it from the server. */
