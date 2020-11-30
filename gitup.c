@@ -945,7 +945,7 @@ fetch_pack(connector *connection)
 
 	/* If no pack data has been loaded, fetch it from the server. */
 
-	if ((connection->response_size == 0) || (connection->clone)) {
+	if (connection->response_size == 0) {
 		if ((stat(connection->remote_file_old, &remote_file) != 0) || (connection->clone))
 			initiate_clone(connection);
 		else
@@ -1806,7 +1806,7 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	if ((connection.use_pack_file == 0) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
+	if ((connection.use_pack_file == 0) || (connection.clone) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
 		get_commit_details(&connection);
 
 	fetch_pack(&connection);
