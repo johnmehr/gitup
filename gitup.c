@@ -1330,7 +1330,8 @@ apply_deltas(connector *connection)
  */
 
 static void
-extract_tree_item(struct file_node *file, char **position) {
+extract_tree_item(struct file_node *file, char **position)
+{
 	int path_size = 0;
 
 	/* Extract the file mode. */
@@ -1360,13 +1361,13 @@ extract_tree_item(struct file_node *file, char **position) {
 static void
 save_tree(connector *connection, char *sha, char *base_path)
 {
-	struct object_node object, *lookup_object = NULL, *tree = NULL;
-	struct file_node   file, *lookup_file = NULL, *new_file_node = NULL;
+	struct object_node object, *found_object = NULL, *tree = NULL;
+	struct file_node   file, *found_file = NULL, *new_file_node = NULL;
 	char               full_path[BUFFER_UNIT_SMALL], *position = NULL;
 	int                fd;
 
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "Cannot create %s", base_path);
+		err(EXIT_FAILURE, "save_tree: Cannot create %s", base_path);
 
 	if ((file.path = (char *)malloc(BUFFER_UNIT_SMALL + 1)) == NULL)
 		err(EXIT_FAILURE, "save_tree: malloc");
@@ -1377,7 +1378,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 	object.sha = sha;
 
 	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
-		errc(EXIT_FAILURE, ENOENT, "save_objects: tree %s - %s cannot be found", base_path, object.sha);
+		errc(EXIT_FAILURE, ENOENT, "save_tree: tree %s - %s cannot be found", base_path, object.sha);
 
 	/* Process the tree items. */
 
@@ -1396,37 +1397,39 @@ save_tree(connector *connection, char *sha, char *base_path)
 			memcpy(object.sha, file.sha, 41);
 			memcpy(file.path, full_path, sizeof(full_path));
 
-			lookup_object = RB_FIND(Tree_Objects, &Objects, &object);
-			lookup_file   = RB_FIND(Tree_Local_Files, &Local_Files, &file);
+			found_object = RB_FIND(Tree_Objects, &Objects, &object);
+			found_file   = RB_FIND(Tree_Local_Files, &Local_Files, &file);
 
-			if ((lookup_object == NULL) && (lookup_file == NULL))
-				errc(EXIT_FAILURE, ENOENT, "save_object: file %s - %s cannot be found", full_path, object.sha);
+			if ((found_object == NULL) && (found_file == NULL))
+				errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, object.sha);
 
-			if (lookup_object != NULL) {
-				if (connection->verbosity)
-					printf(" %c %s\n", (lookup_file == NULL ? '+' : '*'), full_path);
+			if (found_object != NULL) {
+				if ((found_file == NULL) || (strncmp(found_object->sha, found_file->sha, 40) != 0)) {
+					if (connection->verbosity)
+						printf(" %c %s\n", (found_file == NULL ? '+' : '*'), full_path);
 
-				if (S_ISLNK(file.mode)) {
-					if (symlink(lookup_object->buffer, full_path) == -1)
-						err(EXIT_FAILURE, "save_object: symlink failure %s -> %s", full_path, lookup_object->buffer);
-				} else {
-					if (((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-						err(EXIT_FAILURE, "save_object: write file failure %s", full_path);
+					if (S_ISLNK(file.mode)) {
+						if (symlink(found_object->buffer, full_path) == -1)
+							err(EXIT_FAILURE, "save_tree: symlink failure %s -> %s", full_path, found_object->buffer);
+					} else {
+						if (((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
+							err(EXIT_FAILURE, "save_tree: write file failure %s", full_path);
 
-					chmod(full_path, file.mode);
-					write(fd, lookup_object->buffer, lookup_object->data_size);
-					close(fd);
+						chmod(full_path, file.mode);
+						write(fd, found_object->buffer, found_object->data_size);
+						close(fd);
 
-				/* Add the file details to the remote files tree. */
+						/* Add the file details to the remote files tree. */
 
-				if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE, "find_local_tree: malloc");
+						if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+							err(EXIT_FAILURE, "save_tree: malloc");
 
-				new_file_node->path = strdup(full_path);
-				new_file_node->sha  = strdup(lookup_object->sha);
-				new_file_node->mode = file.mode;
+						new_file_node->mode = file.mode;
+						new_file_node->sha  = strdup(found_object->sha);
+						new_file_node->path = strdup(full_path);
 
-				RB_INSERT(Tree_Remote_Files, &Remote_Files, new_file_node);
+						RB_INSERT(Tree_Remote_Files, &Remote_Files, new_file_node);
+					}
 				}
 			}
 		}
