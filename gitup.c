@@ -169,6 +169,10 @@ static RB_HEAD(Tree_Local_Directories, file_node) Local_Directories = RB_INITIAL
 RB_PROTOTYPE(Tree_Local_Directories, file_node, link, file_node_compare)
 RB_GENERATE(Tree_Local_Directories, file_node, link, file_node_compare)
 
+static RB_HEAD(Tree_Temp_Files, file_node) Temp_Files = RB_INITIALIZER(&Temp_Files);
+RB_PROTOTYPE(Tree_Temp_Files, file_node, link, file_node_compare)
+RB_GENERATE(Tree_Temp_Files, file_node, link, file_node_compare)
+
 static RB_HEAD(Tree_Objects, object_node) Objects = RB_INITIALIZER(&Objects);
 RB_PROTOTYPE(Tree_Objects, object_node, link, object_node_compare)
 RB_GENERATE(Tree_Objects, object_node, link, object_node_compare)
@@ -357,16 +361,17 @@ append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_len
  * separate red-black trees.
  */
 
-static void
-find_local_tree(char *base_path)
+static char *
+find_local_tree(connector *connection, char *base_path)
 {
 	DIR              *directory = NULL;
 	struct stat       file;
 	struct dirent    *entry = NULL;
-	struct file_node *new_node, files[BUFFER_UNIT_SMALL], directories[BUFFER_UNIT_SMALL];
-	char             *full_path = NULL;
+	struct file_node *new_node, files[BUFFER_UNIT_SMALL], directories[BUFFER_UNIT_SMALL], *found = NULL;
+	char             *full_path = NULL, *buffer = NULL, line[MAXNAMLEN + 8], *sha = NULL, *null = "\0";
 	int               file_name_size = 0, file_count = 0, directory_count = 0;
 	int               full_path_size = strlen(base_path) + MAXNAMLEN + 3;
+	uint32_t          buffer_size = 0, length = 0;
 
 	if ((full_path = (char *)malloc(full_path_size)) == NULL)
 		err(EXIT_FAILURE, "find_local_tree: full_path malloc");
@@ -400,17 +405,19 @@ find_local_tree(char *base_path)
 				continue;
 
 			if ((file_name_size == 4) && (strcmp(entry->d_name, ".git") == 0)) {
-				fprintf(stderr, " ! A .git folder was found -- gitup does not update this folder and will cause problems for the official git client.\n");
+				fprintf(stderr, " ! A .git folder was found -- gitup does not update this folder which will cause problems for the official git client.\n");
 				fprintf(stderr, " ! If you wish to use gitup, please remove %s and rerun gitup.\n", full_path);
 
 				exit(EXIT_FAILURE);
 				}
 
 			if (S_ISDIR(file.st_mode)) {
+				new_node->mode = 040000;
+				new_node->sha  = find_local_tree(connection, full_path);
+				new_node->path = strdup(full_path);
+
 				RB_INSERT(Tree_Local_Directories, &Local_Directories, new_node);
 				directories[directory_count++] = *new_node;
-
-				find_local_tree(full_path);
 			} else {
 				new_node->sha = calculate_file_sha(full_path, file.st_size, file.st_mode);
 
@@ -422,7 +429,32 @@ find_local_tree(char *base_path)
 		closedir(directory);
 	}
 
+	/* Reconstruct the tree object originally found in the pack file. */
+
+	for (int x = 0; x < file_count; x++)
+		RB_INSERT(Tree_Temp_Files, &Temp_Files, &files[x]);
+
+	for (int x = 0; x < directory_count; x++)
+		RB_INSERT(Tree_Temp_Files, &Temp_Files, &directories[x]);
+
+	RB_FOREACH(found, Tree_Temp_Files, &Temp_Files) {
+		snprintf(line, MAXNAMLEN + 8, "%o %s", found->mode, found->path + strlen(base_path) + 1);
+		sha = illegible_sha(found->sha);
+
+		append_string(&buffer, &buffer_size, &length, line, strlen(line));
+		append_string(&buffer, &buffer_size, &length, null, 1);
+		append_string(&buffer, &buffer_size, &length, sha, 20);
+
+		free(sha);
+		RB_REMOVE(Tree_Temp_Files, &Temp_Files, found);
+	}
+
+//	write(1, buffer, length); write(1, "\n\n\n", 3);
+//	printf("%s %s\n", calculate_sha(buffer, length, 2), base_path);
+
 	free(full_path);
+
+	return calculate_sha(buffer, length, 2);
 }
 
 
