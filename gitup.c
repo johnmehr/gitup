@@ -269,38 +269,56 @@ calculate_sha(char *buffer, uint32_t buffer_size, int type)
 
 
 /*
+ * load_file
+ *
+ * Procedure that loads a local file into the specified buffer.
+ */
+
+static void
+load_file(char *path, char **buffer, uint32_t *buffer_size)
+{
+	struct stat file;
+	int         fd;
+
+	if (stat(path, &file) == -1)
+		err(EXIT_FAILURE, "load_file: Cannot find %s", path);
+
+	if (file.st_size > *buffer_size) {
+		*buffer_size = file.st_size;
+
+		if ((*buffer = (char *)realloc(*buffer, *buffer_size + 1)) == NULL)
+			err(EXIT_FAILURE, "load_file: malloc");
+	}
+
+	if ((fd = open(path, O_RDONLY)) == -1)
+		err(EXIT_FAILURE, "load_file: Cannot read %s", path);
+
+	if (read(fd, *buffer, *buffer_size) != *buffer_size)
+		err(EXIT_FAILURE, "load_file: Problem reading %s", path);
+
+	close(fd);
+
+	*(*buffer + *buffer_size) = '\0';
+}
+
+
+/*
  * calculate_file_sha
  *
- * Function that loads a local file, removes any revision tags and returns
- * the SHA checksum.
+ * Function that loads a local file and returns the SHA checksum.
  */
 
 static char *
 calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 {
-	int   fd;
-	char *file_buffer = NULL, *sha = NULL;
+	char     *buffer = NULL, *sha = NULL;
+	uint32_t  buffer_size = 0;
 
 	if (S_ISLNK(file_mode)) {
 	} else {
-		/* Load the file into memory. */
-
-		if ((file_buffer = (char *)malloc(file_size + 16)) == NULL)
-			err(EXIT_FAILURE, "calculate_file_sha: file_buffer malloc");
-
-		if ((fd = open(path, O_RDONLY)) == -1)
-			err(EXIT_FAILURE, "calculate_file_sha: read file (%s): open", path);
-
-		if (read(fd, file_buffer, file_size) != file_size)
-			err(EXIT_FAILURE, "calculate_file_sha: read file (%s): file changed", path);
-
-		close(fd);
-
-		/* Calculate the SHA checksum. */
-
-		sha = calculate_sha(file_buffer, file_size, 3);
-
-		free(file_buffer);
+		load_file(path, &buffer, &buffer_size);
+		sha = calculate_sha(buffer, file_size, 3);
+		free(buffer);
 	}
 
 	return sha;
@@ -909,19 +927,12 @@ fetch_pack(connector *connection)
 
 	/* If a pack file has been specified, attempt to load it. */
 
-	if ((connection->use_pack_file) && (lstat(connection->pack_file, &pack_file) != -1))
-		if ((fd = open(connection->pack_file, O_RDONLY)) != -1) {
-			if (pack_file.st_size > connection->response_size)
-				if ((connection->response = (char *)realloc(connection->response, pack_file.st_size + 1)) == NULL)
-					err(EXIT_FAILURE, "fetch_pack: connection->response realloc");
-
-			connection->response_size = pack_file.st_size;
-
-			read(fd, connection->response, connection->response_size);
-			close(fd);
-
-			pack_size = connection->response_size - 20;
+	if ((connection->use_pack_file) && (lstat(connection->pack_file, &pack_file) != -1)) {
+		load_file(connection->pack_file, &connection->response, &(connection->response_size));
+		pack_size = connection->response_size - 20;
 		}
+
+	/* If we're pulling and the remote file exists, check the local tree for problems. */
 
 	if ((stat(connection->remote_file_old, &remote_file) == 0) && (connection->clone == 0))
 		check_local_tree();
@@ -1558,27 +1569,13 @@ set_configuration_parameters(connector *connection, char *buffer, size_t length,
 static void
 load_configuration(connector *connection, char *configuration_file, char *section)
 {
-	struct stat  file;
-	int          fd;
-	char        *buffer;
+	char     *buffer      = NULL;
+	uint32_t  buffer_size = 0;
 
-	if (stat(configuration_file, &file) == -1)
-		err(EXIT_FAILURE, "Cannot find configuration file");
+	load_file(configuration_file, &buffer, &buffer_size);
 
-	if ((buffer = (char *)malloc(file.st_size + 1)) == NULL)
-		err(EXIT_FAILURE, "load_configuration temp_buffer malloc");
-
-	if ((fd = open(configuration_file, O_RDONLY)) == -1)
-		err(EXIT_FAILURE, "Cannot read configuration file %s", configuration_file);
-
-	if (read(fd, buffer, file.st_size) != file.st_size)
-		err(EXIT_FAILURE, "Problem reading configuration file %s", configuration_file);
-
-	buffer[file.st_size] = '\0';
-	close(fd);
-
-	set_configuration_parameters(connection, buffer, file.st_size, "defaults");
-	set_configuration_parameters(connection, buffer, file.st_size, section);
+	set_configuration_parameters(connection, buffer, buffer_size, "defaults");
+	set_configuration_parameters(connection, buffer, buffer_size, section);
 
 	connection->section = strdup(section);
 
@@ -1623,7 +1620,8 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
-	int                 option = 0, length = 0, fd = 0, remote_file_size = 0, count = 0;
+	int                 option = 0, length = 0, fd = 0, count = 0;
+	uint32_t            remote_file_size = 0;
 	char               *configuration_file = "./gitup.conf";
 	char               *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL;
 	struct stat         pack_file, temp_file;
@@ -1743,19 +1741,7 @@ main(int argc, char **argv)
 	snprintf(connection.remote_file_new, length, "%s/%s.new", connection.path_work, argv[1]);
 
 	if (stat(connection.remote_file_old, &temp_file) != -1) {
-		remote_file_size = temp_file.st_size;
-
-		if ((remote_files = (char *)malloc(remote_file_size + 1)) == NULL)
-			err(EXIT_FAILURE, "main connection.path_remote_files malloc");
-
-		if ((fd = open(connection.remote_file_old, O_RDONLY)) == -1)
-			err(EXIT_FAILURE, "open file (%s)", connection.remote_file_old);
-
-		if (read(fd, remote_files, remote_file_size) != remote_file_size)
-			err(EXIT_FAILURE, "read file error (%s)", connection.remote_file_old);
-
-		remote_files[remote_file_size] = '\0';
-		close(fd);
+		load_file(connection.remote_file_old, &remote_files, &remote_file_size);
 
 		while ((line = strsep(&remote_files, "\n"))) {
 			if (count++ == 0)
