@@ -1377,42 +1377,54 @@ save_tree(connector *connection, char *sha, char *base_path)
 		if (S_ISDIR(file.mode)) {
 			save_tree(connection, file.sha, full_path);
 		} else {
+			/* Locate the pack file object and local copy of the file. */
+
 			memcpy(object.sha, file.sha, 41);
 			memcpy(file.path, full_path, sizeof(full_path));
 
 			found_object = RB_FIND(Tree_Objects, &Objects, &object);
 			found_file   = RB_FIND(Tree_Local_Files, &Local_Files, &file);
 
-			if ((found_object == NULL) && (found_file == NULL))
+			if (found_object == NULL)
 				errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, object.sha);
 
-			if (found_object != NULL) {
-				if ((found_file == NULL) || (strncmp(found_object->sha, found_file->sha, 40) != 0)) {
-					if (connection->verbosity)
-						printf(" %c %s\n", (found_file == NULL ? '+' : '*'), full_path);
+			/* If the local file hasn't changed, skip it. */
 
-					if (S_ISLNK(file.mode)) {
-						if (symlink(found_object->buffer, full_path) == -1)
-							err(EXIT_FAILURE, "save_tree: symlink failure %s -> %s", full_path, found_object->buffer);
-					} else {
-						if (((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-							err(EXIT_FAILURE, "save_tree: write file failure %s", full_path);
+			if ((found_file != NULL) && (strncmp(found_object->sha, found_file->sha, 40) == 0))
+				continue;
 
-						chmod(full_path, file.mode);
-						write(fd, found_object->buffer, found_object->data_size);
-						close(fd);
+			/* Otherwise save it. */
 
-						/* Add the file details to the remote files tree. */
+			if (connection->verbosity)
+				printf(" %c %s\n", (found_file == NULL ? '+' : '*'), full_path);
 
-						if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-							err(EXIT_FAILURE, "save_tree: malloc");
+			if (S_ISLNK(file.mode)) {
+				if (symlink(found_object->buffer, full_path) == -1)
+					err(EXIT_FAILURE, "save_tree: symlink failure %s -> %s", full_path, found_object->buffer);
+			} else {
+				if (((fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
+					err(EXIT_FAILURE, "save_tree: write file failure %s", full_path);
 
-						new_file_node->mode = file.mode;
-						new_file_node->sha  = strdup(found_object->sha);
-						new_file_node->path = strdup(full_path);
+				chmod(full_path, file.mode);
+				write(fd, found_object->buffer, found_object->data_size);
+				close(fd);
 
-						RB_INSERT(Tree_Remote_Files, &Remote_Files, new_file_node);
-					}
+				/* Add/update the file details to the remote files tree. */
+
+				if (found_file == NULL) {
+					if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+						err(EXIT_FAILURE, "save_tree: malloc");
+
+					new_file_node->mode = file.mode;
+					new_file_node->sha  = strdup(found_object->sha);
+					new_file_node->path = strdup(full_path);
+
+					RB_INSERT(Tree_Remote_Files, &Remote_Files, new_file_node);
+				} else {
+					free(found_file->sha);
+
+					found_file->mode = file.mode;
+					found_file->sha  = strdup(found_object->sha);
 				}
 			}
 		}
