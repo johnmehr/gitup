@@ -260,23 +260,23 @@ load_file(char *path, char **buffer, uint32_t *buffer_size)
 
 
 /*
- * calculate_sha
+ * calculate_object_sha
  *
  * Function that adds git's "type file-size\0" header and returns the SHA checksum.
  */
 
 static char *
-calculate_sha(char *buffer, uint32_t buffer_size, int type)
+calculate_object_sha(char *buffer, uint32_t buffer_size, int type)
 {
 	int   digits = buffer_size, header_width = 0;
 	char *sha = NULL, *sha_buffer = NULL, *temp_buffer = NULL;
 	char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs-delta", "ref-delta" };
 
 	if ((sha_buffer = (char *)malloc(21)) == NULL)
-		err(EXIT_FAILURE, "calculate_sha: malloc");
+		err(EXIT_FAILURE, "calculate_object_sha: malloc");
 
 	if ((temp_buffer = (char *)malloc(buffer_size + 24)) == NULL)
-		err(EXIT_FAILURE, "calculate_sha: malloc");
+		err(EXIT_FAILURE, "calculate_object_sha: malloc");
 
 	/* Start with the git "type file-size\0" header. */
 
@@ -319,7 +319,7 @@ calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 	if (S_ISLNK(file_mode)) {
 	} else {
 		load_file(path, &buffer, &buffer_size);
-		sha = calculate_sha(buffer, file_size, 3);
+		sha = calculate_object_sha(buffer, file_size, 3);
 		free(buffer);
 	}
 
@@ -450,11 +450,11 @@ find_local_tree(connector *connection, char *base_path)
 	}
 
 //	write(1, buffer, length); write(1, "\n\n\n", 3);
-//	printf("%s %s\n", calculate_sha(buffer, length, 2), base_path);
+//	printf("%s %s\n", calculate_object_sha(buffer, length, 2), base_path);
 
 	free(full_path);
 
-	return calculate_sha(buffer, length, 2);
+	return calculate_object_sha(buffer, length, 2);
 }
 
 
@@ -1008,32 +1008,48 @@ fetch_pack(connector *connection)
 static void
 store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, int index_delta, char *ref_delta_sha)
 {
-	struct object_node *object = NULL;
+	struct object_node *object = NULL, find;
+	char               *sha = calculate_object_sha(buffer, buffer_size, type);
 
-	if (connection->objects % BUFFER_UNIT_SMALL == 0)
-		if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node **))) == NULL)
-			err(EXIT_FAILURE, "store_object: realloc");
+	find.sha = sha;
 
-	if ((object = (struct object_node *)malloc(sizeof(struct object_node))) == NULL)
-		err(EXIT_FAILURE, "store_object: malloc");
+	if ((object = RB_FIND(Tree_Objects, &Objects, &find)) != NULL) {
+		free(sha);
+	} else {
+		if (connection->objects % BUFFER_UNIT_SMALL == 0)
+			if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node **))) == NULL)
+				err(EXIT_FAILURE, "store_object: realloc");
 
-	object->index         = connection->objects;
-	object->type          = type;
-	object->sha           = calculate_sha(buffer, buffer_size, type);
-	object->pack_offset   = pack_offset;
-	object->index_delta   = index_delta;
-	object->ref_delta_sha = (ref_delta_sha ? legible_sha(ref_delta_sha) : NULL);
-	object->buffer        = buffer;
-	object->buffer_size   = buffer_size;
-	object->data_size     = buffer_size;
+		if ((object = (struct object_node *)malloc(sizeof(struct object_node))) == NULL)
+			err(EXIT_FAILURE, "store_object: malloc");
 
-	if (connection->verbosity > 1)
-		fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->index_delta, object->ref_delta_sha);
+		object->index         = connection->objects;
+		object->type          = type;
+		object->sha           = sha;
+		object->pack_offset   = pack_offset;
+		object->index_delta   = index_delta;
+		object->ref_delta_sha = (ref_delta_sha ? legible_sha(ref_delta_sha) : NULL);
+		object->buffer        = buffer;
+		object->buffer_size   = buffer_size;
+		object->data_size     = buffer_size;
 
-	if (type < 6)
-		RB_INSERT(Tree_Objects, &Objects, object);
+		if (connection->verbosity > 1)
+			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->index_delta, object->ref_delta_sha);
 
-	connection->object[connection->objects++] = object;
+		if (type < 6)
+			RB_INSERT(Tree_Objects, &Objects, object);
+
+		connection->object[connection->objects++] = object;
+/*
+		char full_path[BUFFER_UNIT_SMALL];
+		snprintf(full_path, sizeof(full_path), "./temp/b%05d-%d-%s.out", object->index, object->type, object->sha);
+
+		int fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC);
+		chmod(full_path, 0644);
+		write(fd, object->buffer, object->data_size);
+		close(fd);
+*/
+	}
 }
 
 
@@ -1646,7 +1662,7 @@ main(int argc, char **argv)
 		.response          = NULL,
 		.response_blocks   = 0,
 		.response_size     = 0,
-		.clone             = 1,
+		.clone             = 0,
 		.object            = NULL,
 		.objects           = 0,
 		.pack_file         = NULL,
