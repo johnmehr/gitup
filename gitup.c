@@ -224,6 +224,42 @@ illegible_sha(char *sha_buffer)
 
 
 /*
+ * load_file
+ *
+ * Procedure that loads a local file into the specified buffer.
+ */
+
+static void
+load_file(char *path, char **buffer, uint32_t *buffer_size)
+{
+	struct stat file;
+	int         fd;
+
+	if (stat(path, &file) == -1)
+		err(EXIT_FAILURE, "load_file: Cannot find %s", path);
+
+	if (file.st_size > 0) {
+		if (file.st_size > *buffer_size) {
+			*buffer_size = file.st_size;
+
+			if ((*buffer = (char *)realloc(*buffer, *buffer_size + 1)) == NULL)
+				err(EXIT_FAILURE, "load_file: malloc");
+		}
+
+		if ((fd = open(path, O_RDONLY)) == -1)
+			err(EXIT_FAILURE, "load_file: Cannot read %s", path);
+
+		if (read(fd, *buffer, *buffer_size) != *buffer_size)
+			err(EXIT_FAILURE, "load_file: Problem reading %s", path);
+
+		close(fd);
+
+		*(*buffer + *buffer_size) = '\0';
+	}
+}
+
+
+/*
  * calculate_sha
  *
  * Function that adds git's "type file-size\0" header and returns the SHA checksum.
@@ -265,40 +301,6 @@ calculate_sha(char *buffer, uint32_t buffer_size, int type)
 	free(temp_buffer);
 
 	return sha;
-}
-
-
-/*
- * load_file
- *
- * Procedure that loads a local file into the specified buffer.
- */
-
-static void
-load_file(char *path, char **buffer, uint32_t *buffer_size)
-{
-	struct stat file;
-	int         fd;
-
-	if (stat(path, &file) == -1)
-		err(EXIT_FAILURE, "load_file: Cannot find %s", path);
-
-	if (file.st_size > *buffer_size) {
-		*buffer_size = file.st_size;
-
-		if ((*buffer = (char *)realloc(*buffer, *buffer_size + 1)) == NULL)
-			err(EXIT_FAILURE, "load_file: malloc");
-	}
-
-	if ((fd = open(path, O_RDONLY)) == -1)
-		err(EXIT_FAILURE, "load_file: Cannot read %s", path);
-
-	if (read(fd, *buffer, *buffer_size) != *buffer_size)
-		err(EXIT_FAILURE, "load_file: Problem reading %s", path);
-
-	close(fd);
-
-	*(*buffer + *buffer_size) = '\0';
 }
 
 
@@ -458,13 +460,16 @@ find_local_tree(connector *connection, char *base_path)
 
 /*
  * check_local_tree
+ *
+ * Procedure that compares the local repository tree with the data saved from the
+ * last run to see if anything has been modified.
  */
 
 static void
 check_local_tree(void)
 {
 	struct file_node *find = NULL, *found = NULL;
-	int    errors = 0;
+	int               errors = 0;
 
 	RB_FOREACH(find, Tree_Remote_Files, &Remote_Files) {
 		found = RB_FIND(Tree_Local_Files, &Local_Files, find);
@@ -1767,6 +1772,8 @@ main(int argc, char **argv)
 
 			RB_INSERT(Tree_Remote_Files, &Remote_Files, file);
 		}
+
+		free(remote_files);
 	}
 
 	/* Display connection parameters. */
