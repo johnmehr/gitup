@@ -182,7 +182,7 @@ RB_GENERATE(Tree_Objects, object_node, link, object_node_compare)
 /*
  * legible_sha
  *
- * Function that converts a 20 byte binary SHA checksum into 40 byte human-readable checksum.
+ * Function that converts a 20 byte binary SHA checksum into a 40 byte human-readable SHA checksum.
  */
 
 static char *
@@ -205,7 +205,7 @@ legible_sha(char *sha_buffer)
 /*
  * illegible_sha
  *
- * Function that converts a 40 byte human-readable checksum into a 20 byte binary SHA checksum.
+ * Function that converts a 40 byte human-readable SHA checksum into a 20 byte binary SHA checksum.
  */
 
 static char *
@@ -279,7 +279,7 @@ static char *
 calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 {
 	int   fd;
-	char *file_buffer, *position, *value, *eol, *sha = NULL;
+	char *file_buffer = NULL, *sha = NULL;
 
 	if (S_ISLNK(file_mode)) {
 	} else {
@@ -296,22 +296,6 @@ calculate_file_sha(char *path, ssize_t file_size, int file_mode)
 
 		close(fd);
 
-		/* Remove any revision tags. */
-/*
-		position = file_buffer;
-
-		while ((position = strstr(position, "$FreeBSD:"))) {
-			position += 8;
-			value = strchr(position, '$');
-			eol   = strchr(position, '\n');
-
-			if ((value) && ((eol == NULL) || (value < eol))) {
-				memmove(position, value, file_size - (value - file_buffer));
-				file_size -= (value - position);
-				file_buffer[file_size] = '\0';
-			}
-		}
-*/
 		/* Calculate the SHA checksum. */
 
 		sha = calculate_sha(file_buffer, file_size, 3);
@@ -925,7 +909,7 @@ fetch_pack(connector *connection)
 
 	/* If a pack file has been specified, attempt to load it. */
 
-	if ((connection->use_pack_file) && (lstat(connection->pack_file, &pack_file) != -1)) {
+	if ((connection->use_pack_file) && (lstat(connection->pack_file, &pack_file) != -1))
 		if ((fd = open(connection->pack_file, O_RDONLY)) != -1) {
 			if (pack_file.st_size > connection->response_size)
 				if ((connection->response = (char *)realloc(connection->response, pack_file.st_size + 1)) == NULL)
@@ -938,7 +922,6 @@ fetch_pack(connector *connection)
 
 			pack_size = connection->response_size - 20;
 		}
-	}
 
 	if ((stat(connection->remote_file_old, &remote_file) == 0) && (connection->clone == 0))
 		check_local_tree();
@@ -1631,7 +1614,7 @@ main(int argc, char **argv)
 	int                 option = 0, length = 0, fd = 0, remote_file_size = 0, count = 0;
 	char               *configuration_file = "./gitup.conf";
 	char               *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL;
-	struct stat         pack_file, remote_file;
+	struct stat         pack_file, temp_file;
 
 	connector connection = {
 		.ssl               = NULL,
@@ -1726,6 +1709,9 @@ main(int argc, char **argv)
 
 	/* Continue setting up the environment. */
 
+	if (stat(connection.path_target, &temp_file) == -1)
+		connection.clone = 1;
+
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
 
@@ -1744,8 +1730,8 @@ main(int argc, char **argv)
 	snprintf(connection.remote_file_old, length, "%s/%s", connection.path_work, argv[1]);
 	snprintf(connection.remote_file_new, length, "%s/%s.new", connection.path_work, argv[1]);
 
-	if (stat(connection.remote_file_old, &remote_file) != -1) {
-		remote_file_size = remote_file.st_size;
+	if (stat(connection.remote_file_old, &temp_file) != -1) {
+		remote_file_size = temp_file.st_size;
 
 		if ((remote_files = (char *)malloc(remote_file_size + 1)) == NULL)
 			err(EXIT_FAILURE, "main connection.path_remote_files malloc");
@@ -1806,7 +1792,7 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	if ((connection.use_pack_file == 0) || (connection.clone) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
+	if ((connection.use_pack_file == 0) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
 		get_commit_details(&connection);
 
 	fetch_pack(&connection);
