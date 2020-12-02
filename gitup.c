@@ -102,6 +102,37 @@ typedef struct {
 	int                  verbosity;
 } connector;
 
+static void     append_string(char **, unsigned int *, unsigned int *, char *, int);
+static void     apply_deltas(connector *);
+static char *   calculate_file_sha(char *, ssize_t, int);
+static char *   calculate_object_sha(char *, uint32_t, int);
+static void     check_local_tree(void);
+static void     extract_tree_item(struct file_node *, char **);
+static void     fetch_pack(connector *);
+static int      file_node_compare(const struct file_node *, const struct file_node *);
+static void     file_node_free(struct file_node *);
+static char *   find_local_tree(connector *, char *);
+static void     get_commit_details(connector *);
+static char *   illegible_sha(char *);
+static void     initiate_clone(connector *);
+static void     initiate_pull(connector *);
+static char *   legible_sha(char *);
+static void     load_configuration(connector *, char *, char *);
+static void     load_file(char *, char **, uint32_t *);
+static void     load_object(connector *, char *);
+static int      object_node_compare(const struct object_node *, const struct object_node *);
+static void     object_node_free(struct object_node *);
+static void     process_command(connector *, char *);
+static void     save_objects(connector *);
+static void     save_tree(connector *, char *, char *);
+static void     send_command(connector *, char *);
+static void     set_configuration_parameters(connector *, char *, size_t, const char *);
+static void     ssl_connect(connector *);
+static void     store_object(connector *, int, char *, int, int, int, char *);
+static uint32_t unpack_delta_integer(char *, int *, int);
+static void     unpack_objects(connector *);
+static uint32_t unpack_variable_length_integer(char *, int *);
+static void     usage(char *);
 
 /*
  * node_compare
@@ -1700,7 +1731,7 @@ main(int argc, char **argv)
 		.response          = NULL,
 		.response_blocks   = 0,
 		.response_size     = 0,
-		.clone             = 0,
+		.clone             = 1,
 		.object            = NULL,
 		.objects           = 0,
 		.pack_file         = NULL,
