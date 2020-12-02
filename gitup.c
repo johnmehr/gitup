@@ -262,7 +262,7 @@ load_file(char *path, char **buffer, uint32_t *buffer_size)
 /*
  * calculate_object_sha
  *
- * Function that adds git's "type file-size\0" header and returns the SHA checksum.
+ * Function that adds git's "type file-size\0" header to a buffer and returns the SHA checksum.
  */
 
 static char *
@@ -438,7 +438,7 @@ find_local_tree(connector *connection, char *base_path)
 		RB_INSERT(Tree_Temp_Files, &Temp_Files, &directories[x]);
 
 	RB_FOREACH(found, Tree_Temp_Files, &Temp_Files) {
-		snprintf(line, MAXNAMLEN + 8, "%o %s", found->mode, found->path + strlen(base_path) + 1);
+		snprintf(line, sizeof(line), "%o %s", found->mode, found->path + strlen(base_path) + 1);
 		sha = illegible_sha(found->sha);
 
 		append_string(&buffer, &buffer_size, &length, line, strlen(line));
@@ -1252,7 +1252,7 @@ apply_deltas(connector *connection)
 
 		/* Follow the chain of ofs-deltas down to the base object. */
 
-		while (delta->type >= 6) {
+		while (delta->type == 6) {
 			deltas[delta_count++] = delta->index;
 			delta = connection->object[delta->index_delta];
 		}
@@ -1262,7 +1262,7 @@ apply_deltas(connector *connection)
 		lookup.sha = delta->sha;
 
 		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-			errc(EXIT_FAILURE, ENOENT, "apply_deltas: can't find %05d -> %d\n", delta->index, delta->index_delta);
+			errc(EXIT_FAILURE, ENOENT, "apply_deltas: can't find %05d -> %d/%s\n", delta->index, delta->index_delta, delta->ref_delta_sha);
 
 		if ((merge_buffer = (char *)malloc(base->buffer_size)) == NULL)
 			err(EXIT_FAILURE, "apply_deltas: malloc");
@@ -1641,7 +1641,7 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
-	int                 option = 0, length = 0, fd = 0, count = 0;
+	int                 option = 0, length = 0, count = 0;
 	uint32_t            remote_file_size = 0;
 	char               *configuration_file = "./gitup.conf";
 	char               *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL;
