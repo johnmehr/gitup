@@ -111,7 +111,7 @@ static void     extract_tree_item(struct file_node *, char **);
 static void     fetch_pack(connector *);
 static int      file_node_compare(const struct file_node *, const struct file_node *);
 static void     file_node_free(struct file_node *);
-static char *   find_local_tree(connector *, char *);
+static void     find_local_tree(connector *, char *);
 static void     get_commit_details(connector *);
 static char *   illegible_sha(char *);
 static void     initiate_clone(connector *);
@@ -576,40 +576,43 @@ load_remote_file_list(connector *connection)
  * separate red-black trees.
  */
 
-static char *
+static void
 find_local_tree(connector *connection, char *base_path)
 {
 	DIR              *directory = NULL;
 	struct stat       file;
 	struct dirent    *entry = NULL;
-	struct file_node *new_node, files[BUFFER_UNIT_SMALL], directories[BUFFER_UNIT_SMALL], *found = NULL;
-	char             *full_path = NULL, *buffer = NULL, line[MAXNAMLEN + 8], *sha = NULL, *null = "\0";
-	int               file_name_size = 0, file_count = 0, directory_count = 0;
-	int               full_path_size = strlen(base_path) + MAXNAMLEN + 3;
-	uint32_t          buffer_size = 0, length = 0;
+	struct file_node *new_node = NULL, find, *found = NULL;
+	char             *full_path = NULL;
+	int               file_name_size = 0, full_path_size = strlen(base_path) + MAXNAMLEN + 3;
 
 	if ((full_path = (char *)malloc(full_path_size)) == NULL)
 		err(EXIT_FAILURE, "find_local_tree: full_path malloc");
+
+	/* Add the base path. */
+
+	find.path = base_path;
+
+	if ((found = RB_FIND(Tree_Remote, &Remote_Tree, &find)) == NULL)
+		errc(EXIT_FAILURE, ENOENT, "find_local_tree: %s cannot be found", full_path);
+
+	if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+		err(EXIT_FAILURE, "find_local_tree: malloc");
+
+	new_node->mode = found->mode;
+	new_node->sha  = strdup(found->sha);
+	new_node->path = strdup(base_path);
+
+	RB_INSERT(Tree_Local, &Local_Tree, new_node);
 
 	/* Process the directory's contents. */
 
 	if ((lstat(base_path, &file) != -1) && ((directory = opendir(base_path)) != NULL)) {
 		while ((entry = readdir(directory)) != NULL) {
-			snprintf(full_path,
-				full_path_size,
-				"%s/%s",
-				base_path,
-				entry->d_name);
+			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
 
 			if (lstat(full_path, &file) == -1)
 				err(EXIT_FAILURE, "find_local_tree: %s", full_path);
-
-			if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-				err(EXIT_FAILURE, "find_local_tree: malloc");
-
-			new_node->mode = file.st_mode;
-			new_node->sha  = NULL;
-			new_node->path = strdup(full_path);
 
 			file_name_size = strlen(entry->d_name);
 
@@ -627,49 +630,21 @@ find_local_tree(connector *connection, char *base_path)
 				}
 
 			if (S_ISDIR(file.st_mode)) {
-				new_node->mode = 040000;
-				new_node->sha  = find_local_tree(connection, full_path);
+				find_local_tree(connection, full_path);
+			} else {
+				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+					err(EXIT_FAILURE, "find_local_tree: malloc");
+
+				new_node->mode = file.st_mode;
+				new_node->sha  = calculate_file_sha(full_path, file.st_size, file.st_mode);
 				new_node->path = strdup(full_path);
 
-				RB_INSERT(Tree_Local_Directories, &Local_Directories, new_node);
-				directories[directory_count++] = *new_node;
-			} else {
-				new_node->sha = calculate_file_sha(full_path, file.st_size, file.st_mode);
-
-				RB_INSERT(Tree_Local_Files, &Local_Files, new_node);
-				files[file_count++] = *new_node;
+				RB_INSERT(Tree_Local, &Local_Tree, new_node);
 			}
 		}
 
 		closedir(directory);
 	}
-
-	/* Reconstruct the tree object originally found in the pack file. */
-
-	for (int x = 0; x < file_count; x++)
-		RB_INSERT(Tree_Temp_Files, &Temp_Files, &files[x]);
-
-	for (int x = 0; x < directory_count; x++)
-		RB_INSERT(Tree_Temp_Files, &Temp_Files, &directories[x]);
-
-	RB_FOREACH(found, Tree_Temp_Files, &Temp_Files) {
-		snprintf(line, sizeof(line), "%o %s", found->mode, found->path + strlen(base_path) + 1);
-		sha = illegible_sha(found->sha);
-
-		append_string(&buffer, &buffer_size, &length, line, strlen(line));
-		append_string(&buffer, &buffer_size, &length, null, 1);
-		append_string(&buffer, &buffer_size, &length, sha, 20);
-
-		free(sha);
-		RB_REMOVE(Tree_Temp_Files, &Temp_Files, found);
-	}
-
-//	write(1, buffer, length); write(1, "\n\n\n", 3);
-//	printf("%s %s\n", calculate_object_sha(buffer, length, 2), base_path);
-
-	free(full_path);
-
-	return calculate_object_sha(buffer, length, 2);
 }
 
 
@@ -1967,7 +1942,8 @@ main(int argc, char **argv)
 
 	load_remote_file_list(&connection);
 
-	find_local_tree(&connection, connection.path_target);
+	if (connection.clone == 0)
+		find_local_tree(&connection, connection.path_target);
 
 	/* Display connection parameters. */
 
