@@ -288,14 +288,14 @@ prune_tree(connector *connection, char *base_path)
 				prune_tree(connection, full_path);
 			} else {
 				if ((remove(full_path) != 0) && (errno != ENOENT))
-					err(EXIT_FAILURE, "Cannot remove %s", base_path);
+					err(EXIT_FAILURE, "prune_tree: cannot remove %s", full_path);
 			}
 		}
 
 		closedir(directory);
 
 		if (rmdir(base_path) != 0)
-			err(EXIT_FAILURE, "Cannot remove %s", base_path);
+			err(EXIT_FAILURE, "prune_tree: cannot remove %s", base_path);
 	}
 }
 
@@ -1132,7 +1132,7 @@ fetch_pack(connector *connection)
 		/* Find the start of the pack data and remove the header. */
 
 		if ((pack_start = strstr(connection->response, "PACK")) == NULL)
-			errc(EXIT_FAILURE, EFTYPE, "unpack_objects: %s\n", connection->response);
+			errc(EXIT_FAILURE, EFTYPE, "fetch_pack: malformed pack data\n%s\n", connection->response);
 
 		pack_start -= 5;
 		connection->response_size -= (pack_start - connection->response + 11);
@@ -1163,13 +1163,13 @@ fetch_pack(connector *connection)
 	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)sha_buffer);
 
 	if (memcmp(connection->response + pack_size, sha_buffer, 20) != 0)
-		errc(EXIT_FAILURE, EAUTH, "unpack_objects: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
+		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
 
 	/* Save the pack data. */
 
 	if (connection->keep_pack_file) {
 		if ((fd = open(connection->pack_file, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-			err(EXIT_FAILURE, "write file failure %s", path);
+			err(EXIT_FAILURE, "fetch_pack: write file failure %s", path);
 
 		chmod(connection->pack_file, 0644);
 		write(fd, connection->response, connection->response_size);
@@ -1296,10 +1296,10 @@ unpack_objects(connector *connection)
 					break;
 
 			if (index_delta == 0)
-				errc(EXIT_FAILURE, EINVAL, "Cannot find ofs-delta base object");
+				errc(EXIT_FAILURE, EINVAL, "unpack_objects: cannot find ofs-delta base object");
 		}
 
-		/* Extract ref-delta checksum. */
+		/* Extract the ref-delta checksum. */
 
 		if (object_type == 7) {
 			if ((ref_delta_sha = (char *)malloc(21)) == NULL)
@@ -1438,7 +1438,7 @@ apply_deltas(connector *connection)
 			lookup.sha = delta->sha;
 		}
 
-		/* Find ref-delta base object. */
+		/* Find the ref-delta base object. */
 
 		if (delta->type == 7) {
 			deltas[delta_count++] = delta->index;
@@ -1719,7 +1719,7 @@ save_objects(connector *connection)
 	/* Recursively start processing the tree. */
 
 	if (((fd = open(connection->remote_file_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "save_tree: write file failure %s", connection->remote_file_new);
+		err(EXIT_FAILURE, "save_objects: write file failure %s", connection->remote_file_new);
 
 	chmod(connection->remote_file_new, 0644);
 	write(fd, connection->want, strlen(connection->want));
@@ -1730,7 +1730,7 @@ save_objects(connector *connection)
 	remove(connection->remote_file_old);
 
 	if ((rename(connection->remote_file_new, connection->remote_file_old)) != 0)
-		err(EXIT_FAILURE, "Cannot rename %s", connection->remote_file_old);
+		err(EXIT_FAILURE, "save_objects: cannot rename %s", connection->remote_file_old);
 
 	free(tree);
 }
@@ -1749,12 +1749,12 @@ set_configuration_parameters(connector *connection, char *buffer, size_t length,
 	char *bracketed_section, *item, *line;
 
 	if ((bracketed_section = (char *)malloc(strlen(section) + 4)) == NULL)
-		err(EXIT_FAILURE, "set_configuration bracketed_section malloc");
+		err(EXIT_FAILURE, "set_configuration_parameters: bracketed_section malloc");
 
 	snprintf(bracketed_section, strlen(section) + 4, "[%s]\n", section);
 
 	if ((item = strstr(buffer, bracketed_section)) == NULL)
-		errc(EXIT_FAILURE, EINVAL, "Cannot find [%s] in gitup.conf", section);
+		errc(EXIT_FAILURE, EINVAL, "set_configuration_parameters: cannot find [%s] in gitup.conf", section);
 
 	item += strlen(bracketed_section);
 
@@ -1955,9 +1955,9 @@ main(int argc, char **argv)
 	/* Continue setting up the environment. */
 
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
+		err(EXIT_FAILURE, "main: cannot create %s", connection.path_work);
 
-	/* If the remote file list or the destination folder are missing, then clone. */
+	/* If the remote file list or the destination folder are missing, then force a clone. */
 
 	if ((stat(connection.path_target, &temp_file) == -1) || (connection.have == NULL))
 		connection.clone = 1;
@@ -2015,7 +2015,7 @@ main(int argc, char **argv)
 			prune_tree(&connection, file->path);
 		} else {
 			if ((remove(file->path) != 0) && (errno != ENOENT))
-				err(EXIT_FAILURE, "Cannot remove %s", file->path);
+				err(EXIT_FAILURE, "main: cannot remove %s", file->path);
 		}
 
 		file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, file));
