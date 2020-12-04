@@ -191,21 +191,13 @@ object_node_free(struct object_node *node)
 }
 
 
-static RB_HEAD(Tree_Remote_Files, file_node) Remote_Files = RB_INITIALIZER(&Remote_Files);
-RB_PROTOTYPE(Tree_Remote_Files, file_node, link, file_node_compare)
-RB_GENERATE(Tree_Remote_Files, file_node, link, file_node_compare)
+static RB_HEAD(Tree_Remote, file_node) Remote_Tree = RB_INITIALIZER(&Remote_Tree);
+RB_PROTOTYPE(Tree_Remote, file_node, link, file_node_compare)
+RB_GENERATE(Tree_Remote, file_node, link, file_node_compare)
 
-static RB_HEAD(Tree_Local_Files, file_node) Local_Files = RB_INITIALIZER(&Local_Files);
-RB_PROTOTYPE(Tree_Local_Files, file_node, link, file_node_compare)
-RB_GENERATE(Tree_Local_Files, file_node, link, file_node_compare)
-
-static RB_HEAD(Tree_Local_Directories, file_node) Local_Directories = RB_INITIALIZER(&Local_Directories);
-RB_PROTOTYPE(Tree_Local_Directories, file_node, link, file_node_compare)
-RB_GENERATE(Tree_Local_Directories, file_node, link, file_node_compare)
-
-static RB_HEAD(Tree_Temp_Files, file_node) Temp_Files = RB_INITIALIZER(&Temp_Files);
-RB_PROTOTYPE(Tree_Temp_Files, file_node, link, file_node_compare)
-RB_GENERATE(Tree_Temp_Files, file_node, link, file_node_compare)
+static RB_HEAD(Tree_Local, file_node) Local_Tree = RB_INITIALIZER(&Local_Tree);
+RB_PROTOTYPE(Tree_Local, file_node, link, file_node_compare)
+RB_GENERATE(Tree_Local, file_node, link, file_node_compare)
 
 static RB_HEAD(Tree_Objects, object_node) Objects = RB_INITIALIZER(&Objects);
 RB_PROTOTYPE(Tree_Objects, object_node, link, object_node_compare)
@@ -452,8 +444,8 @@ check_local_tree(void)
 	struct file_node *find = NULL, *found = NULL;
 	int               errors = 0;
 
-	RB_FOREACH(find, Tree_Remote_Files, &Remote_Files) {
-		found = RB_FIND(Tree_Local_Files, &Local_Files, find);
+	RB_FOREACH(find, Tree_Remote, &Remote_Tree) {
+		found = RB_FIND(Tree_Local, &Local_Tree, find);
 
 		if (found == NULL) {
 			printf(" ! Local file %s is missing.\n", find->path);
@@ -1017,8 +1009,8 @@ initiate_pull(connector *connection)
 
 	/* Loop through the local files, adding any missing or modified files to the wants. */
 /*
-	RB_FOREACH(find, Tree_Remote_Files, &Remote_Files) {
-		found = RB_FIND(Tree_Local_Files, &Local_Files, find);
+	RB_FOREACH(find, Tree_Remote, &Remote_Tree) {
+		found = RB_FIND(Tree_Local, &Local_Tree, find);
 
 		if ((found == NULL) || (strncmp(found->sha, find->sha, 40) != 0)) {
 			snprintf(have, sizeof(have), "0032want %s\n", find->sha);
@@ -1607,7 +1599,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 			memcpy(file.path, full_path, sizeof(full_path));
 
 			found_object = RB_FIND(Tree_Objects, &Objects, &object);
-			found_file   = RB_FIND(Tree_Local_Files, &Local_Files, &file);
+			found_file   = RB_FIND(Tree_Local, &Local_Tree, &file);
 
 			if (found_object == NULL)
 				errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, object.sha);
@@ -1643,7 +1635,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 					new_file_node->sha  = strdup(found_object->sha);
 					new_file_node->path = strdup(full_path);
 
-					RB_INSERT(Tree_Remote_Files, &Remote_Files, new_file_node);
+					RB_INSERT(Tree_Remote, &Remote_Tree, new_file_node);
 				} else {
 					free(found_file->sha);
 
@@ -1702,7 +1694,7 @@ save_objects(connector *connection)
 	write(fd, connection->want, strlen(connection->want));
 	write(fd, "\n", 1);
 
-	RB_FOREACH(file, Tree_Remote_Files, &Remote_Files) {
+	RB_FOREACH(file, Tree_Remote, &Remote_Tree) {
 		snprintf(temp, BUFFER_UNIT_SMALL, "%o\t%s\t%s\n", file->mode, file->sha, file->path);
 		write(fd, temp, strlen(temp));
 	}
@@ -1985,14 +1977,11 @@ main(int argc, char **argv)
 	RB_FOREACH(object, Tree_Objects, &Objects)
 		RB_REMOVE(Tree_Objects, &Objects, object);
 
-	RB_FOREACH(file, Tree_Local_Files, &Local_Files)
-		file_node_free(RB_REMOVE(Tree_Local_Files, &Local_Files, file));
+	RB_FOREACH(file, Tree_Local, &Local_Tree)
+		file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, file));
 
-	RB_FOREACH(file, Tree_Remote_Files, &Remote_Files)
-		file_node_free(RB_REMOVE(Tree_Remote_Files, &Remote_Files, file));
-
-	RB_FOREACH(file, Tree_Local_Directories, &Local_Directories)
-		file_node_free(RB_REMOVE(Tree_Local_Directories, &Local_Directories, file));
+	RB_FOREACH(file, Tree_Remote, &Remote_Tree)
+		file_node_free(RB_REMOVE(Tree_Remote, &Remote_Tree, file));
 
 	for (int o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
