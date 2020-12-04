@@ -500,7 +500,7 @@ load_remote_file_list(connector *connection)
 				connection->have = strdup(line);
 
 				if (connection->verbosity)
-					printf("# Have: %s\n", connection->have);
+					fprintf(stderr, "# Have: %s\n", connection->have);
 
 				continue;
 			}
@@ -1121,11 +1121,6 @@ fetch_pack(connector *connection)
 		pack_size = connection->response_size - 20;
 		}
 
-	/* If we're pulling and the remote file exists, check the local tree for problems. */
-
-	if ((stat(connection->remote_file_old, &remote_file) == 0) && (connection->clone == 0))
-		check_local_tree();
-
 	/* If no pack data has been loaded, fetch it from the server. */
 
 	if (connection->response_size == 0) {
@@ -1440,6 +1435,7 @@ apply_deltas(connector *connection)
 		while (delta->type == 6) {
 			deltas[delta_count++] = delta->index;
 			delta = connection->object[delta->index_delta];
+			lookup.sha = delta->sha;
 		}
 
 		/* Find ref-delta base object. */
@@ -1448,11 +1444,9 @@ apply_deltas(connector *connection)
 			deltas[delta_count++] = delta->index;
 			lookup.sha = delta->ref_delta_sha;
 			load_object(connection, lookup.sha);
-			}
+		}
 
 		/* Lookup the base object and setup the merge buffer. */
-
-		lookup.sha = delta->sha;
 
 		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
 			errc(EXIT_FAILURE, ENOENT, "apply_deltas: can't find %05d -> %d/%s\n", delta->index, delta->index_delta, delta->ref_delta_sha);
@@ -1567,12 +1561,12 @@ extract_tree_item(struct file_node *file, char **position)
  */
 
 static void
-save_tree(connector *connection, int fd, char *sha, char *base_path)
+save_tree(connector *connection, int remote_descriptor, char *sha, char *base_path)
 {
 	struct object_node object, *found_object = NULL, *tree = NULL;
 	struct file_node   file, *found_file = NULL, *new_file_node = NULL, *remote_file = NULL;
 	char               full_path[BUFFER_UNIT_SMALL], line[BUFFER_UNIT_SMALL], *position = NULL, *buffer = NULL;
-	unsigned int       buffer_size = 0, buffer_length = 0;
+	unsigned int       buffer_size = 0, buffer_length = 0, fd;
 
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "save_tree: Cannot create %s", base_path);
@@ -1615,7 +1609,7 @@ save_tree(connector *connection, int fd, char *sha, char *base_path)
 		/* Recursively walk the trees and save the files/links. */
 
 		if (S_ISDIR(file.mode)) {
-			save_tree(connection, fd, file.sha, full_path);
+			save_tree(connection, remote_descriptor, file.sha, full_path);
 		} else {
 			/* Locate the pack file object and local copy of the file. */
 
@@ -1684,8 +1678,8 @@ save_tree(connector *connection, int fd, char *sha, char *base_path)
 		}
 	}
 
-	write(fd, buffer, buffer_length);
-	write(fd, "\n", 1);
+	write(remote_descriptor, buffer, buffer_length);
+	write(remote_descriptor, "\n", 1);
 
 	free(buffer);
 	free(file.sha);
@@ -1730,10 +1724,14 @@ save_objects(connector *connection)
 	chmod(connection->remote_file_new, 0644);
 	write(fd, connection->want, strlen(connection->want));
 	write(fd, "\n", 1);
-
 	save_tree(connection, fd, tree, connection->path_target);
-
 	close(fd);
+
+	remove(connection->remote_file_old);
+
+	if ((rename(connection->remote_file_new, connection->remote_file_old)) != 0)
+		err(EXIT_FAILURE, "Cannot rename %s", connection->remote_file_old);
+
 	free(tree);
 }
 
@@ -1859,10 +1857,8 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
-	int                 option = 0, length = 0, count = 0;
-	uint32_t            remote_file_size = 0;
+	int                 option = 0;
 	char               *configuration_file = "./gitup.conf";
-	char               *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL;
 	struct stat         pack_file, temp_file;
 
 	connector connection = {
@@ -1880,7 +1876,7 @@ main(int argc, char **argv)
 		.response          = NULL,
 		.response_blocks   = 0,
 		.response_size     = 0,
-		.clone             = 1,
+		.clone             = 0,
 		.object            = NULL,
 		.objects           = 0,
 		.pack_file         = NULL,
@@ -1958,16 +1954,13 @@ main(int argc, char **argv)
 
 	/* Continue setting up the environment. */
 
-	if (stat(connection.path_target, &temp_file) == -1)
-		connection.clone = 1;
-
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
 
-	load_remote_file_list(&connection);
+	/* If the remote file list or the destination folder are missing, then clone. */
 
-	if (connection.clone == 0)
-		find_local_tree(&connection, connection.path_target);
+	if ((stat(connection.path_target, &temp_file) == -1) || (connection.have == NULL))
+		connection.clone = 1;
 
 	/* Display connection parameters. */
 
@@ -1978,32 +1971,36 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Branch: %s\n", connection.branch);
 		fprintf(stderr, "# Target: %s\n", connection.path_target);
 
+		if (connection.use_pack_file)
+			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
+
 		if (connection.have)
 			fprintf(stderr, "# Have: %s\n", connection.have);
 
 		if (connection.want)
 			fprintf(stderr, "# Want: %s\n", connection.want);
-
-		if (connection.use_pack_file)
-			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
 	}
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
+	load_remote_file_list(&connection);
+
 	if ((connection.use_pack_file == 0) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
 		get_commit_details(&connection);
 
-	fetch_pack(&connection);
-	unpack_objects(&connection);
+	if ((connection.have == NULL) || (strncmp(connection.have, connection.want, 40) != 0)) {
+		fetch_pack(&connection);
+		unpack_objects(&connection);
 
-	if (connection.objects > 0) {
-		apply_deltas(&connection);
-		save_objects(&connection);
+		if (connection.objects > 0) {
+			if (connection.clone == 0) {
+				find_local_tree(&connection, connection.path_target);
+				check_local_tree();
+			}
 
-		remove(connection.remote_file_old);
-
-		if ((rename(connection.remote_file_new, connection.remote_file_old)) != 0)
-			err(EXIT_FAILURE, "Cannot rename %s", connection.remote_file_old);
+			apply_deltas(&connection);
+			save_objects(&connection);
+		}
 	}
 
 	/* Wrap it all up. */
@@ -2011,8 +2008,18 @@ main(int argc, char **argv)
 	RB_FOREACH(object, Tree_Objects, &Objects)
 		RB_REMOVE(Tree_Objects, &Objects, object);
 
-	RB_FOREACH(file, Tree_Local, &Local_Tree)
+	RB_FOREACH(file, Tree_Local, &Local_Tree) {
+		printf(" - %s\n", file->path);
+
+		if (S_ISDIR(file->mode)) {
+			prune_tree(&connection, file->path);
+		} else {
+			if ((remove(file->path) != 0) && (errno != ENOENT))
+				err(EXIT_FAILURE, "Cannot remove %s", file->path);
+		}
+
 		file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, file));
+	}
 
 	RB_FOREACH(file, Tree_Remote, &Remote_Tree)
 		file_node_free(RB_REMOVE(Tree_Remote, &Remote_Tree, file));
