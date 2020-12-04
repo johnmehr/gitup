@@ -1426,7 +1426,8 @@ apply_deltas(connector *connection)
 	uint32_t            offset = 0, length = 0, old_file_size = 0, new_file_size = 0, new_position = 0;
 	struct object_node *delta, *base, lookup;
 
-	for (int o = 0; o < connection->objects; o++) {
+	for (int o = connection->objects - 1; o >= 0; o--) {
+//	for (int o = 0; o < connection->objects; o++) {
 		merge_buffer = NULL;
 		delta        = connection->object[o];
 		delta_count  = 0;
@@ -1440,6 +1441,14 @@ apply_deltas(connector *connection)
 			deltas[delta_count++] = delta->index;
 			delta = connection->object[delta->index_delta];
 		}
+
+		/* Find ref-delta base object. */
+
+		if (delta->type == 7) {
+			deltas[delta_count++] = delta->index;
+			lookup.sha = delta->ref_delta_sha;
+			load_object(connection, lookup.sha);
+			}
 
 		/* Lookup the base object and setup the merge buffer. */
 
