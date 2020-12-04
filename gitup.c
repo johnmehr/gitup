@@ -126,7 +126,7 @@ static void     object_node_free(struct object_node *);
 static void     process_command(connector *, char *);
 static void     prune_tree(connector *, char *);
 static void     save_objects(connector *);
-static void     save_tree(connector *, char *, char *);
+static void     save_tree(connector *, int, char *, char *);
 static void     send_command(connector *, char *);
 static void     set_configuration_parameters(connector *, char *, size_t, const char *);
 static void     ssl_connect(connector *);
@@ -1567,15 +1567,29 @@ extract_tree_item(struct file_node *file, char **position)
  */
 
 static void
-save_tree(connector *connection, char *sha, char *base_path)
+save_tree(connector *connection, int fd, char *sha, char *base_path)
 {
 	struct object_node object, *found_object = NULL, *tree = NULL;
-	struct file_node   file, *found_file = NULL, *new_file_node = NULL;
-	char               full_path[BUFFER_UNIT_SMALL], *position = NULL;
-	int                fd;
+	struct file_node   file, *found_file = NULL, *new_file_node = NULL, *remote_file = NULL;
+	char               full_path[BUFFER_UNIT_SMALL], line[BUFFER_UNIT_SMALL], *position = NULL, *buffer = NULL;
+	unsigned int       buffer_size = 0, buffer_length = 0;
 
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "save_tree: Cannot create %s", base_path);
+
+	object.sha = sha;
+
+	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
+		errc(EXIT_FAILURE, ENOENT, "save_tree: tree %s - %s cannot be found", base_path, object.sha);
+
+	/* Remove the base path from the list of upcoming deletions. */
+
+	file.path = base_path;
+
+	if ((found_file = RB_FIND(Tree_Local, &Local_Tree, &file)) != NULL)
+		file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, found_file));
+
+	/* Add the base path to the output. */
 
 	if ((file.path = (char *)malloc(BUFFER_UNIT_SMALL + 1)) == NULL)
 		err(EXIT_FAILURE, "save_tree: malloc");
@@ -1583,10 +1597,8 @@ save_tree(connector *connection, char *sha, char *base_path)
 	if ((file.sha = (char *)malloc(41)) == NULL)
 		err(EXIT_FAILURE, "save_tree: malloc");
 
-	object.sha = sha;
-
-	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
-		errc(EXIT_FAILURE, ENOENT, "save_tree: tree %s - %s cannot be found", base_path, object.sha);
+	snprintf(line, sizeof(line), "%o\t%s\t%s/\n", 040000, sha, base_path);
+	append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
 
 	/* Process the tree items. */
 
@@ -1597,10 +1609,13 @@ save_tree(connector *connection, char *sha, char *base_path)
 
 		snprintf(full_path, sizeof(full_path), "%s/%s", base_path, file.path);
 
+		snprintf(line, sizeof(line), "%o\t%s\t%s\n", file.mode, file.sha, file.path);
+		append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
+
 		/* Recursively walk the trees and save the files/links. */
 
 		if (S_ISDIR(file.mode)) {
-			save_tree(connection, file.sha, full_path);
+			save_tree(connection, fd, file.sha, full_path);
 		} else {
 			/* Locate the pack file object and local copy of the file. */
 
@@ -1610,18 +1625,33 @@ save_tree(connector *connection, char *sha, char *base_path)
 			found_object = RB_FIND(Tree_Objects, &Objects, &object);
 			found_file   = RB_FIND(Tree_Local, &Local_Tree, &file);
 
-			if (found_object == NULL)
-				errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, object.sha);
+			/* If the object is missing during a pull, skip it. */
+
+			if (found_object == NULL) {
+				if (connection->clone == 1) {
+					errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, object.sha);
+				} else {
+					if (found_file != NULL)
+						file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, found_file));
+
+					continue;
+				}
+			}
 
 			/* If the local file hasn't changed, skip it. */
 
-			if ((found_file != NULL) && (strncmp(found_object->sha, found_file->sha, 40) == 0))
+			if ((found_file != NULL) && ((found_object == NULL) || (strncmp(found_object->sha, found_file->sha, 40) == 0))) {
+				file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, found_file));
 				continue;
+			}
 
 			/* Otherwise save it. */
 
 			if (connection->verbosity)
 				printf(" %c %s\n", (found_file == NULL ? '+' : '*'), full_path);
+
+			if (found_file != NULL)
+				file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, found_file));
 
 			if (S_ISLNK(file.mode)) {
 				if (symlink(found_object->buffer, full_path) == -1)
@@ -1636,7 +1666,7 @@ save_tree(connector *connection, char *sha, char *base_path)
 
 				/* Add/update the file details to the remote files tree. */
 
-				if (found_file == NULL) {
+				if ((remote_file = RB_FIND(Tree_Remote, &Remote_Tree, &file)) == NULL) {
 					if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 						err(EXIT_FAILURE, "save_tree: malloc");
 
@@ -1646,15 +1676,18 @@ save_tree(connector *connection, char *sha, char *base_path)
 
 					RB_INSERT(Tree_Remote, &Remote_Tree, new_file_node);
 				} else {
-					free(found_file->sha);
-
-					found_file->mode = file.mode;
-					found_file->sha  = strdup(found_object->sha);
+					free(remote_file->sha);
+					remote_file->mode = file.mode;
+					remote_file->sha  = strdup(found_object->sha);
 				}
 			}
 		}
 	}
 
+	write(fd, buffer, buffer_length);
+	write(fd, "\n", 1);
+
+	free(buffer);
 	free(file.sha);
 	free(file.path);
 }
@@ -1670,9 +1703,8 @@ static void
 save_objects(connector *connection)
 {
 	struct object_node *object = NULL, lookup;
-	struct file_node   *file = NULL;
-	char               *tree = NULL, temp[BUFFER_UNIT_SMALL];
-	int                 fd = 0;
+	char               *tree = NULL;
+	int                 fd;
 
 	/* Find the tree object referenced in the commit. */
 
@@ -1692,21 +1724,14 @@ save_objects(connector *connection)
 
 	/* Recursively start processing the tree. */
 
-	save_tree(connection, tree, connection->path_target);
-
-	/* Save the new list of remote files. */
-
-	if ((fd = open(connection->remote_file_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-		err(EXIT_FAILURE, "write file failure %s", connection->remote_file_new);
+	if (((fd = open(connection->remote_file_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
+		err(EXIT_FAILURE, "save_tree: write file failure %s", connection->remote_file_new);
 
 	chmod(connection->remote_file_new, 0644);
 	write(fd, connection->want, strlen(connection->want));
 	write(fd, "\n", 1);
 
-	RB_FOREACH(file, Tree_Remote, &Remote_Tree) {
-		snprintf(temp, BUFFER_UNIT_SMALL, "%o\t%s\t%s\n", file->mode, file->sha, file->path);
-		write(fd, temp, strlen(temp));
-	}
+	save_tree(connection, fd, tree, connection->path_target);
 
 	close(fd);
 	free(tree);
