@@ -657,32 +657,30 @@ find_local_tree(connector *connection, char *base_path)
 static void
 load_object(connector *connection, char *sha)
 {
-	struct file_node *find = NULL;
-	char             *buffer = NULL;
-	uint32_t          buffer_size = 0, found = 0;
+	struct file_node   *find = NULL;
+	char               *buffer = NULL;
+	uint32_t            buffer_size = 0, found = 0;
+	struct object_node *object = NULL, lookup;
 
-	/* Make sure the SHA passed in doesn't refer to a directory. */
+	lookup.sha = sha;
 
-	RB_FOREACH(find, Tree_Local_Directories, &Local_Directories)
-		if (strncmp(find->sha, sha, 40) == 0) {
-			found = 1;
-			break;
-			}
+	/* If the object doesn't exist and the SHA checksum references a file, load it and store it. */
 
-	/* Find the file the SHA references, load it and store it. */
-
-	if (!found)
-		RB_FOREACH(find, Tree_Local_Files, &Local_Files)
+	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL) {
+		RB_FOREACH(find, Tree_Local, &Local_Tree)
 			if (strncmp(find->sha, sha, 40) == 0) {
-				load_file(find->path, &buffer, &buffer_size);
-				store_object(connection, 3, buffer, buffer_size, 0, 0, NULL);
+				if (!S_ISDIR(find->mode)) {
+					load_file(find->path, &buffer, &buffer_size);
+					store_object(connection, 3, buffer, buffer_size, 0, 0, NULL);
+				}
 
 				found = 1;
 				break;
-				}
+			}
 
-	if (!found)
-		errc(EXIT_FAILURE, ENOENT, "load_object: local file for object %s not found", sha);
+		if (!found)
+			errc(EXIT_FAILURE, ENOENT, "load_object: local file for object %s not found", sha);
+	}
 }
 
 
