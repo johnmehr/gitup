@@ -120,6 +120,7 @@ static char *   legible_sha(char *);
 static void     load_configuration(connector *, char *, char *);
 static void     load_file(char *, char **, uint32_t *);
 static void     load_object(connector *, char *);
+static void     load_remote_file_list(connector *);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
 static void     process_command(connector *, char *);
@@ -468,6 +469,102 @@ check_local_tree(void)
 
 	if (errors) {
 		exit(EXIT_FAILURE);
+	}
+}
+
+
+/*
+ * load_remote_file_list
+ *
+ * Procedure that loads the list of remote files and checksums, if it exists.
+ */
+
+static void
+load_remote_file_list(connector *connection)
+{
+	struct file_node *file = NULL;
+	struct stat       temp_file;
+	char             *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL, *null = "\0";
+	char              temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL], *buffer = NULL, *temp_sha = NULL;
+	int               length = 0, count = 0;
+	uint32_t          remote_file_size = 0, buffer_size = 0, buffer_length = 0;
+
+	length = strlen(connection->path_work) + MAXNAMLEN;
+
+	if ((connection->remote_file_old = (char *)malloc(length)) == NULL)
+		err(EXIT_FAILURE, "load_remote_file_list: malloc");
+
+	if ((connection->remote_file_new = (char *)malloc(length)) == NULL)
+		err(EXIT_FAILURE, "load_remote_file_list: malloc");
+
+	snprintf(connection->remote_file_old, length, "%s/%s", connection->path_work, connection->section);
+	snprintf(connection->remote_file_new, length, "%s/%s.new", connection->path_work, connection->section);
+
+	if (stat(connection->remote_file_old, &temp_file) != -1) {
+		load_file(connection->remote_file_old, &remote_files, &remote_file_size);
+
+		while ((line = strsep(&remote_files, "\n"))) {
+			if (count++ == 0) {
+				connection->have = strdup(line);
+
+				if (connection->verbosity)
+					printf("# Have: %s\n", connection->have);
+
+				continue;
+			}
+
+			if (strlen(line) < 10) {
+				if (buffer != NULL) {
+					if (connection->clone == 0)
+						store_object(connection, 2, buffer, buffer_length, 0, 0, NULL);
+
+					buffer = NULL;
+					buffer_size = buffer_length = 0;
+				}
+
+				continue;
+			}
+
+			/* Split the line and save the data into the remote files tree. */
+
+			sha  = strchr(line, '\t') + 1;
+			path = strchr(sha,  '\t') + 1;
+
+			*(sha -  1) = '\0';
+			*(sha + 40) = '\0';
+
+			if ((file = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+				err(EXIT_FAILURE, "load_remote_file_list: malloc");
+
+			file->mode = strtol(line, (char **)NULL, 8);
+			file->sha  = strdup(sha);
+
+			if (path[strlen(path) - 1] == '/') {
+				snprintf(base_path, sizeof(base_path), "%s", path);
+				snprintf(temp, sizeof(temp), "%s", path);
+				temp[strlen(path) - 1] = '\0';
+			} else {
+				snprintf(temp, sizeof(temp), "%s%s", base_path, path);
+
+				/* Add the line to the buffer that will become the obj_tree for this directory. */
+
+				temp_sha = illegible_sha(sha);
+
+				append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
+				append_string(&buffer, &buffer_size, &buffer_length, " ", 1);
+				append_string(&buffer, &buffer_size, &buffer_length, path, strlen(path));
+				append_string(&buffer, &buffer_size, &buffer_length, null, 1);
+				append_string(&buffer, &buffer_size, &buffer_length, temp_sha, 20);
+
+				free(temp_sha);
+			}
+
+			file->path = strdup(temp);
+
+			RB_INSERT(Tree_Remote, &Remote_Tree, file);
+		}
+
+		free(remote_files);
 	}
 }
 
@@ -1868,51 +1965,9 @@ main(int argc, char **argv)
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "Cannot create %s", connection.path_work);
 
+	load_remote_file_list(&connection);
+
 	find_local_tree(&connection, connection.path_target);
-
-	/* Load the list of remote files and checksums, if they exist. */
-
-	length = strlen(connection.path_work) + MAXNAMLEN;
-
-	if ((connection.remote_file_old = (char *)malloc(length)) == NULL)
-		err(EXIT_FAILURE, "main connection.remote_file_old malloc");
-
-	if ((connection.remote_file_new = (char *)malloc(length)) == NULL)
-		err(EXIT_FAILURE, "main connection.remote_file_new malloc");
-
-	snprintf(connection.remote_file_old, length, "%s/%s", connection.path_work, argv[1]);
-	snprintf(connection.remote_file_new, length, "%s/%s.new", connection.path_work, argv[1]);
-
-	if (stat(connection.remote_file_old, &temp_file) != -1) {
-		load_file(connection.remote_file_old, &remote_files, &remote_file_size);
-
-		while ((line = strsep(&remote_files, "\n"))) {
-			if (count++ == 0)
-				connection.have = strdup(line);
-
-			if (strlen(line) <= 42)
-				continue;
-
-			/* Split the line and save the data into the remote files tree. */
-
-			if ((file = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-				err(EXIT_FAILURE, "main: malloc");
-
-			sha  = strchr(line, '\t') + 1;
-			path = strchr(sha,  '\t') + 1;
-
-			*(sha -  1) = '\0';
-			*(sha + 40) = '\0';
-
-			file->mode = strtol(line, (char **)NULL, 8);
-			file->sha  = strdup(sha);
-			file->path = strdup(path);
-
-			RB_INSERT(Tree_Remote_Files, &Remote_Files, file);
-		}
-
-		free(remote_files);
-	}
 
 	/* Display connection parameters. */
 
