@@ -123,6 +123,7 @@ static void     load_object(connector *, char *);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
 static void     process_command(connector *, char *);
+static void     prune_tree(connector *, char *);
 static void     save_objects(connector *);
 static void     save_tree(connector *, char *, char *);
 static void     send_command(connector *, char *);
@@ -255,6 +256,58 @@ illegible_sha(char *sha_buffer)
 
 
 /*
+ * prune_tree
+ *
+ * Procedure that recursively removes a directory.
+ */
+
+static void
+prune_tree(connector *connection, char *base_path)
+{
+	DIR           *directory = NULL;
+	struct dirent *entry = NULL;
+	char           full_path[strlen(base_path) + MAXNAMLEN + 1];
+	int            file_name_size = 0;
+
+	/* Sanity check the directory to prune. */
+
+	if (strnstr(base_path, connection->path_target, strlen(connection->path_target)) != base_path)
+		errc(EXIT_FAILURE, EACCES, "prune_tree: %s is not located in the %s tree", base_path, connection->path_target);
+
+	if (strnstr(base_path, "../", strlen(base_path)) != NULL)
+		errc(EXIT_FAILURE, EACCES, "prune_tree: Illegal path traverse in %s", base_path);
+
+	/* Remove the directory contents. */
+
+	if ((directory = opendir(base_path)) != NULL) {
+		while ((entry = readdir(directory)) != NULL) {
+			file_name_size = strlen(entry->d_name);
+
+			if ((file_name_size == 1) && (strcmp(entry->d_name, "." ) == 0))
+				continue;
+
+			if ((file_name_size == 2) && (strcmp(entry->d_name, "..") == 0))
+				continue;
+
+			snprintf(full_path, sizeof(full_path), "%s/%s", base_path, entry->d_name);
+
+			if (entry->d_type == DT_DIR) {
+				prune_tree(connection, full_path);
+			} else {
+				if ((remove(full_path) != 0) && (errno != ENOENT))
+					err(EXIT_FAILURE, "Cannot remove %s", base_path);
+			}
+		}
+
+		closedir(directory);
+
+		if (rmdir(base_path) != 0)
+			err(EXIT_FAILURE, "Cannot remove %s", base_path);
+	}
+}
+
+
+/*
  * load_file
  *
  * Procedure that loads a local file into the specified buffer.
@@ -382,6 +435,40 @@ append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_len
 	*string_length += addendum_size;
 
 	*(*buffer + *string_length) = '\0';
+}
+
+
+/*
+ * check_local_tree
+ *
+ * Procedure that compares the local repository tree with the data saved from the
+ * last run to see if anything has been modified.
+ */
+
+static void
+check_local_tree(void)
+{
+	struct file_node *find = NULL, *found = NULL;
+	int               errors = 0;
+
+	RB_FOREACH(find, Tree_Remote_Files, &Remote_Files) {
+		found = RB_FIND(Tree_Local_Files, &Local_Files, find);
+
+		if (found == NULL) {
+			printf(" ! Local file %s is missing.\n", find->path);
+			errors++;
+			continue;
+		}
+
+		if (strncmp(found->sha, find->sha, 40) != 0) {
+			printf(" ! Local file %s has been modified.\n", find->path);
+			errors++;
+		}
+	}
+
+	if (errors) {
+		exit(EXIT_FAILURE);
+	}
 }
 
 
@@ -524,40 +611,6 @@ load_object(connector *connection, char *sha)
 
 	if (!found)
 		errc(EXIT_FAILURE, ENOENT, "load_object: local file for object %s not found", sha);
-}
-
-
-/*
- * check_local_tree
- *
- * Procedure that compares the local repository tree with the data saved from the
- * last run to see if anything has been modified.
- */
-
-static void
-check_local_tree(void)
-{
-	struct file_node *find = NULL, *found = NULL;
-	int               errors = 0;
-
-	RB_FOREACH(find, Tree_Remote_Files, &Remote_Files) {
-		found = RB_FIND(Tree_Local_Files, &Local_Files, find);
-
-		if (found == NULL) {
-			printf(" ! Local file %s is missing.\n", find->path);
-			errors++;
-			continue;
-		}
-
-		if (strncmp(found->sha, find->sha, 40) != 0) {
-			printf(" ! Local file %s has been modified.\n", find->path);
-			errors++;
-		}
-	}
-
-	if (errors) {
-		exit(EXIT_FAILURE);
-	}
 }
 
 
