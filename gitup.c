@@ -498,10 +498,6 @@ load_remote_file_list(connector *connection)
 		while ((line = strsep(&remote_files, "\n"))) {
 			if (count++ == 0) {
 				connection->have = strdup(line);
-
-				if (connection->verbosity)
-					fprintf(stderr, "# Have: %s\n", connection->have);
-
 				continue;
 			}
 
@@ -1959,7 +1955,12 @@ main(int argc, char **argv)
 
 	/* If the remote file list or the destination folder are missing, then force a clone. */
 
-	if ((stat(connection.path_target, &temp_file) == -1) || (connection.have == NULL))
+	if (stat(connection.path_target, &temp_file) == -1)
+		connection.clone = 1;
+
+	load_remote_file_list(&connection);
+
+	if (connection.have == NULL)
 		connection.clone = 1;
 
 	/* Display connection parameters. */
@@ -1970,6 +1971,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Repository: %s\n", connection.repository);
 		fprintf(stderr, "# Branch: %s\n", connection.branch);
 		fprintf(stderr, "# Target: %s\n", connection.path_target);
+		fprintf(stderr, "# Action: %s\n", (connection.clone ? "Clone" : "Pull"));
 
 		if (connection.use_pack_file)
 			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
@@ -1983,12 +1985,10 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	load_remote_file_list(&connection);
-
 	if ((connection.use_pack_file == 0) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &pack_file) == -1)))
 		get_commit_details(&connection);
 
-	if ((connection.have == NULL) || (strncmp(connection.have, connection.want, 40) != 0)) {
+	if ((connection.have == NULL) || (connection.clone == 1) || (strncmp(connection.have, connection.want, 40) != 0)) {
 		fetch_pack(&connection);
 		unpack_objects(&connection);
 
