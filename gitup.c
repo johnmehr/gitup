@@ -49,18 +49,18 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "0.5"
+#define GITUP_VERSION     "0.8"
 #define GIT_VERSION       "2.28"
 #define BUFFER_UNIT_SMALL  4096
 #define BUFFER_UNIT_LARGE  1048576
 
 struct object_node {
 	RB_ENTRY(object_node) link;
-	char *sha;
+	char *hash;
 	int   type;
 	int   index;
 	int   index_delta;
-	char *ref_delta_sha;
+	char *ref_delta_hash;
 	int   pack_offset;
 	char *buffer;
 	int   buffer_size;
@@ -68,10 +68,12 @@ struct object_node {
 };
 
 struct file_node {
-	RB_ENTRY(file_node) link;
+	RB_ENTRY(file_node) link_hash;
+	RB_ENTRY(file_node) link_path;
 	mode_t  mode;
+	char   *hash;
 	char   *path;
-	char   *sha;
+	int     nuke;
 };
 
 typedef struct {
@@ -104,22 +106,23 @@ typedef struct {
 
 static void     append_string(char **, unsigned int *, unsigned int *, char *, int);
 static void     apply_deltas(connector *);
-static char *   calculate_file_sha(char *, ssize_t, int);
-static char *   calculate_object_sha(char *, uint32_t, int);
+static char *   calculate_file_hash(char *, ssize_t, int);
+static char *   calculate_object_hash(char *, uint32_t, int);
 static void     check_local_tree(void);
 static void     extract_tree_item(struct file_node *, char **);
 static void     fetch_pack(connector *);
-static int      file_node_compare(const struct file_node *, const struct file_node *);
+static int      file_node_compare_hash(const struct file_node *, const struct file_node *);
+static int      file_node_compare_path(const struct file_node *, const struct file_node *);
 static void     file_node_free(struct file_node *);
 static void     find_local_tree(connector *, char *);
 static void     get_commit_details(connector *);
-static char *   illegible_sha(char *);
+static char *   illegible_hash(char *);
 static void     initiate_clone(connector *);
 static void     initiate_pull(connector *);
-static char *   legible_sha(char *);
+static char *   legible_hash(char *);
 static void     load_configuration(connector *, char *, char *);
 static void     load_file(char *, char **, uint32_t *);
-static void     load_object(connector *, char *);
+static void     load_object(connector *, char *, char *);
 static void     load_remote_file_list(connector *);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
@@ -143,16 +146,23 @@ static void     usage(char *);
  */
 
 static int
-file_node_compare(const struct file_node *a, const struct file_node *b)
+file_node_compare_path(const struct file_node *a, const struct file_node *b)
 {
 	return (strcmp(a->path, b->path));
 }
 
 
 static int
+file_node_compare_hash(const struct file_node *a, const struct file_node *b)
+{
+	return (strcmp(a->hash, b->hash));
+}
+
+
+static int
 object_node_compare(const struct object_node *a, const struct object_node *b)
 {
-	return (strcmp(a->sha, b->sha));
+	return (strcmp(a->hash, b->hash));
 }
 
 
@@ -165,8 +175,8 @@ object_node_compare(const struct object_node *a, const struct object_node *b)
 static void
 file_node_free(struct file_node *node)
 {
-	if (node->sha != NULL)
-		free(node->sha);
+	if (node->hash != NULL)
+		free(node->hash);
 
 	if (node->path != NULL)
 		free(node->path);
@@ -178,11 +188,11 @@ file_node_free(struct file_node *node)
 static void
 object_node_free(struct object_node *node)
 {
-	if (node->sha != NULL)
-		free(node->sha);
+	if (node->hash != NULL)
+		free(node->hash);
 
-	if (node->ref_delta_sha != NULL)
-		free(node->ref_delta_sha);
+	if (node->ref_delta_hash != NULL)
+		free(node->ref_delta_hash);
 
 	if (node->buffer != NULL)
 		free(node->buffer);
@@ -191,60 +201,68 @@ object_node_free(struct object_node *node)
 }
 
 
-static RB_HEAD(Tree_Remote, file_node) Remote_Tree = RB_INITIALIZER(&Remote_Tree);
-RB_PROTOTYPE(Tree_Remote, file_node, link, file_node_compare)
-RB_GENERATE(Tree_Remote, file_node, link, file_node_compare)
+static RB_HEAD(Tree_Remote_Path, file_node) Remote_Path = RB_INITIALIZER(&Remote_Path);
+RB_PROTOTYPE(Tree_Remote_Path, file_node, link_path, file_node_compare_path)
+RB_GENERATE(Tree_Remote_Path,  file_node, link_path, file_node_compare_path)
 
-static RB_HEAD(Tree_Local, file_node) Local_Tree = RB_INITIALIZER(&Local_Tree);
-RB_PROTOTYPE(Tree_Local, file_node, link, file_node_compare)
-RB_GENERATE(Tree_Local, file_node, link, file_node_compare)
+static RB_HEAD(Tree_Remote_Hash, file_node) Remote_Hash = RB_INITIALIZER(&Remote_Hash);
+RB_PROTOTYPE(Tree_Remote_Hash, file_node, link_hash, file_node_compare_hash)
+RB_GENERATE(Tree_Remote_Hash,  file_node, link_hash, file_node_compare_hash)
+
+static RB_HEAD(Tree_Local_Path, file_node) Local_Path = RB_INITIALIZER(&Local_Path);
+RB_PROTOTYPE(Tree_Local_Path, file_node, link_path, file_node_compare_path)
+RB_GENERATE(Tree_Local_Path,  file_node, link_path, file_node_compare_path)
+
+static RB_HEAD(Tree_Local_Hash, file_node) Local_Hash = RB_INITIALIZER(&Local_Hash);
+RB_PROTOTYPE(Tree_Local_Hash, file_node, link_hash, file_node_compare_hash)
+RB_GENERATE(Tree_Local_Hash,  file_node, link_hash, file_node_compare_hash)
 
 static RB_HEAD(Tree_Objects, object_node) Objects = RB_INITIALIZER(&Objects);
 RB_PROTOTYPE(Tree_Objects, object_node, link, object_node_compare)
-RB_GENERATE(Tree_Objects, object_node, link, object_node_compare)
+RB_GENERATE(Tree_Objects,  object_node, link, object_node_compare)
 
 
 /*
- * legible_sha
+ * legible_hash
  *
  * Function that converts a 20 byte binary SHA checksum into a 40 byte human-readable SHA checksum.
  */
 
 static char *
-legible_sha(char *sha_buffer)
+legible_hash(char *hash_buffer)
 {
-	char *sha = NULL;
+	char *hash = NULL;
 
-	if ((sha = (char *)malloc(41)) == NULL)
-		err(EXIT_FAILURE, "legible_sha: malloc");
+	if ((hash = (char *)malloc(41)) == NULL)
+		err(EXIT_FAILURE, "legible_hash: malloc");
 
 	for (int x = 0; x < 20; x++)
-		snprintf(&sha[x * 2], 3, "%02x", (unsigned char)sha_buffer[x]);
+		snprintf(&hash[x * 2], 3, "%02x", (unsigned char)hash_buffer[x]);
 
-	sha[40] = '\0';
+	hash[40] = '\0';
 
-	return sha;
+	return hash;
 }
 
 
 /*
- * illegible_sha
+ * illegible_hash
  *
  * Function that converts a 40 byte human-readable SHA checksum into a 20 byte binary SHA checksum.
  */
 
 static char *
-illegible_sha(char *sha_buffer)
+illegible_hash(char *hash_buffer)
 {
-	char *sha = NULL;
+	char *hash = NULL;
 
-	if ((sha = (char *)malloc(20)) == NULL)
-		err(EXIT_FAILURE, "illegible_sha: malloc");
+	if ((hash = (char *)malloc(20)) == NULL)
+		err(EXIT_FAILURE, "illegible_hash: malloc");
 
 	for (int x = 0; x < 20; x++)
-		sha[x] = 16 * ((unsigned char)sha_buffer[x * 2] - (sha_buffer[x * 2] > 58 ? 87 : 48)) + (unsigned char)sha_buffer[x * 2 + 1] - (sha_buffer[x * 2 + 1] > 58 ? 87 : 48);
+		hash[x] = 16 * ((unsigned char)hash_buffer[x * 2] - (hash_buffer[x * 2] > 58 ? 87 : 48)) + (unsigned char)hash_buffer[x * 2 + 1] - (hash_buffer[x * 2 + 1] > 58 ? 87 : 48);
 
-	return sha;
+	return hash;
 }
 
 
@@ -337,23 +355,23 @@ load_file(char *path, char **buffer, uint32_t *buffer_size)
 
 
 /*
- * calculate_object_sha
+ * calculate_object_hash
  *
  * Function that adds git's "type file-size\0" header to a buffer and returns the SHA checksum.
  */
 
 static char *
-calculate_object_sha(char *buffer, uint32_t buffer_size, int type)
+calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 {
 	int   digits = buffer_size, header_width = 0;
-	char *sha = NULL, *sha_buffer = NULL, *temp_buffer = NULL;
+	char *hash = NULL, *hash_buffer = NULL, *temp_buffer = NULL;
 	char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs-delta", "ref-delta" };
 
-	if ((sha_buffer = (char *)malloc(21)) == NULL)
-		err(EXIT_FAILURE, "calculate_object_sha: malloc");
+	if ((hash_buffer = (char *)malloc(21)) == NULL)
+		err(EXIT_FAILURE, "calculate_object_hash: malloc");
 
 	if ((temp_buffer = (char *)malloc(buffer_size + 24)) == NULL)
-		err(EXIT_FAILURE, "calculate_object_sha: malloc");
+		err(EXIT_FAILURE, "calculate_object_hash: malloc");
 
 	/* Start with the git "type file-size\0" header. */
 
@@ -370,37 +388,38 @@ calculate_object_sha(char *buffer, uint32_t buffer_size, int type)
 
 	/* Calculate the SHA checksum. */
 
-	SHA1((unsigned char *)temp_buffer, buffer_size + header_width, (unsigned char *)sha_buffer);
+	SHA1((unsigned char *)temp_buffer, buffer_size + header_width, (unsigned char *)hash_buffer);
 
-	sha = legible_sha(sha_buffer);
+	hash = legible_hash(hash_buffer);
 
-	free(sha_buffer);
+	free(hash_buffer);
 	free(temp_buffer);
 
-	return sha;
+	return hash;
 }
 
 
 /*
- * calculate_file_sha
+ * calculate_file_hash
  *
  * Function that loads a local file and returns the SHA checksum.
  */
 
 static char *
-calculate_file_sha(char *path, ssize_t file_size, int file_mode)
+calculate_file_hash(char *path, ssize_t file_size, int file_mode)
 {
-	char     *buffer = NULL, *sha = NULL;
+	char     *buffer = NULL, *hash = NULL;
 	uint32_t  buffer_size = 0;
 
 	if (S_ISLNK(file_mode)) {
+		/* TO DO: Need examples to test what happens when we need to deal with links. */
 	} else {
 		load_file(path, &buffer, &buffer_size);
-		sha = calculate_object_sha(buffer, file_size, 3);
+		hash = calculate_object_hash(buffer, file_size, 3);
 		free(buffer);
 	}
 
-	return sha;
+	return hash;
 }
 
 
@@ -444,8 +463,8 @@ check_local_tree(void)
 	struct file_node *find = NULL, *found = NULL;
 	int               errors = 0;
 
-	RB_FOREACH(find, Tree_Remote, &Remote_Tree) {
-		found = RB_FIND(Tree_Local, &Local_Tree, find);
+	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
+		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
 
 		if (found == NULL) {
 			printf(" ! Local file %s is missing.\n", find->path);
@@ -453,7 +472,7 @@ check_local_tree(void)
 			continue;
 		}
 
-		if (strncmp(found->sha, find->sha, 40) != 0) {
+		if (strncmp(found->hash, find->hash, 40) != 0) {
 			printf(" ! Local file %s has been modified.\n", find->path);
 			errors++;
 		}
@@ -476,8 +495,8 @@ load_remote_file_list(connector *connection)
 {
 	struct file_node *file = NULL;
 	struct stat       temp_file;
-	char             *line = NULL, *sha = NULL, *path = NULL, *remote_files = NULL, *null = "\0";
-	char              temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL], *buffer = NULL, *temp_sha = NULL;
+	char             *line = NULL, *hash = NULL, *path = NULL, *remote_files = NULL, *null = "\0";
+	char              temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL], *buffer = NULL, *temp_hash = NULL;
 	int               length = 0, count = 0;
 	uint32_t          remote_file_size = 0, buffer_size = 0, buffer_length = 0;
 
@@ -496,12 +515,17 @@ load_remote_file_list(connector *connection)
 		load_file(connection->remote_file_old, &remote_files, &remote_file_size);
 
 		while ((line = strsep(&remote_files, "\n"))) {
+			/* The first line stores the "have". */
+
 			if (count++ == 0) {
 				connection->have = strdup(line);
 				continue;
 			}
 
-			if (strlen(line) < 10) {
+			/* Empty lines signify the end of a directory entry, so create an
+			   obj_tree for what has been read. */
+
+			if (strlen(line) == 0) {
 				if (buffer != NULL) {
 					if (connection->clone == 0)
 						store_object(connection, 2, buffer, buffer_length, 0, 0, NULL);
@@ -515,17 +539,17 @@ load_remote_file_list(connector *connection)
 
 			/* Split the line and save the data into the remote files tree. */
 
-			sha  = strchr(line, '\t') + 1;
-			path = strchr(sha,  '\t') + 1;
+			hash = strchr(line, '\t') + 1;
+			path = strchr(hash, '\t') + 1;
 
-			*(sha -  1) = '\0';
-			*(sha + 40) = '\0';
+			*(hash -  1) = '\0';
+			*(hash + 40) = '\0';
 
 			if ((file = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 				err(EXIT_FAILURE, "load_remote_file_list: malloc");
 
 			file->mode = strtol(line, (char **)NULL, 8);
-			file->sha  = strdup(sha);
+			file->hash = strdup(hash);
 
 			if (path[strlen(path) - 1] == '/') {
 				snprintf(base_path, sizeof(base_path), "%s", path);
@@ -536,20 +560,19 @@ load_remote_file_list(connector *connection)
 
 				/* Add the line to the buffer that will become the obj_tree for this directory. */
 
-				temp_sha = illegible_sha(sha);
-
+				temp_hash = illegible_hash(hash);
 				append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
 				append_string(&buffer, &buffer_size, &buffer_length, " ", 1);
 				append_string(&buffer, &buffer_size, &buffer_length, path, strlen(path));
 				append_string(&buffer, &buffer_size, &buffer_length, null, 1);
-				append_string(&buffer, &buffer_size, &buffer_length, temp_sha, 20);
-
-				free(temp_sha);
+				append_string(&buffer, &buffer_size, &buffer_length, temp_hash, 20);
+				free(temp_hash);
 			}
 
 			file->path = strdup(temp);
 
-			RB_INSERT(Tree_Remote, &Remote_Tree, file);
+			RB_INSERT(Tree_Remote_Hash, &Remote_Hash, file);
+			RB_INSERT(Tree_Remote_Path, &Remote_Path, file);
 		}
 
 		free(remote_files);
@@ -581,17 +604,19 @@ find_local_tree(connector *connection, char *base_path)
 
 	find.path = base_path;
 
-	if ((found = RB_FIND(Tree_Remote, &Remote_Tree, &find)) == NULL)
+	if ((found = RB_FIND(Tree_Remote_Path, &Remote_Path, &find)) == NULL)
 		errc(EXIT_FAILURE, ENOENT, "find_local_tree: %s cannot be found", full_path);
 
 	if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 		err(EXIT_FAILURE, "find_local_tree: malloc");
 
 	new_node->mode = found->mode;
-	new_node->sha  = strdup(found->sha);
+	new_node->hash = strdup(found->hash);
 	new_node->path = strdup(base_path);
+	new_node->nuke = 1;
 
-	RB_INSERT(Tree_Local, &Local_Tree, new_node);
+	RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
+	RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
 
 	/* Process the directory's contents. */
 
@@ -624,10 +649,12 @@ find_local_tree(connector *connection, char *base_path)
 					err(EXIT_FAILURE, "find_local_tree: malloc");
 
 				new_node->mode = file.st_mode;
-				new_node->sha  = calculate_file_sha(full_path, file.st_size, file.st_mode);
+				new_node->hash = calculate_file_hash(full_path, file.st_size, file.st_mode);
 				new_node->path = strdup(full_path);
+				new_node->nuke = 1;
 
-				RB_INSERT(Tree_Local, &Local_Tree, new_node);
+				RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
+				RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
 			}
 		}
 
@@ -639,35 +666,36 @@ find_local_tree(connector *connection, char *base_path)
 /*
  * load_object
  *
- * Procedure that loads a local file and adds it to the array/tree of pack file objects
+ * Procedure that loads a local file and adds it to the array/tree of pack file objects.
  */
 
 static void
-load_object(connector *connection, char *sha)
+load_object(connector *connection, char *hash, char *path)
 {
-	struct file_node   *find = NULL;
+	struct file_node   *find = NULL, lookup_file;
 	char               *buffer = NULL;
-	uint32_t            buffer_size = 0, found = 0;
-	struct object_node *object = NULL, lookup;
+	uint32_t            buffer_size = 0;
+	struct object_node *object = NULL, lookup_object;
 
-	lookup.sha = sha;
+	lookup_object.hash = hash;
+	lookup_file.hash   = hash;
+	lookup_file.path   = path;
 
-	/* If the object doesn't exist and the SHA checksum references a file, load it and store it. */
+	/* If the object doesn't exist, look for it first by hash, then by path and
+	   if found and the SHA checksum references a file, load it and store it. */
 
-	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL) {
-		RB_FOREACH(find, Tree_Local, &Local_Tree)
-			if (strncmp(find->sha, sha, 40) == 0) {
-				if (!S_ISDIR(find->mode)) {
-					load_file(find->path, &buffer, &buffer_size);
-					store_object(connection, 3, buffer, buffer_size, 0, 0, NULL);
-				}
+	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup_object)) == NULL) {
+		if ((find = RB_FIND(Tree_Local_Hash, &Local_Hash, &lookup_file)) == NULL)
+			find = RB_FIND(Tree_Local_Path, &Local_Path, &lookup_file);
 
-				found = 1;
-				break;
+		if (find) {
+			if (!S_ISDIR(find->mode)) {
+				load_file(find->path, &buffer, &buffer_size);
+				store_object(connection, 3, buffer, buffer_size, 0, 0, NULL);
 			}
-
-		if (!found)
-			errc(EXIT_FAILURE, ENOENT, "load_object: local file for object %s not found", sha);
+		} else {
+			errc(EXIT_FAILURE, ENOENT, "load_object: local file for object %s - %s not found", hash, path);
+		}
 	}
 }
 
@@ -1005,11 +1033,11 @@ initiate_pull(connector *connection)
 
 	/* Loop through the local files, adding any missing or modified files to the wants. */
 /*
-	RB_FOREACH(find, Tree_Remote, &Remote_Tree) {
-		found = RB_FIND(Tree_Local, &Local_Tree, find);
+	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
+		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
 
-		if ((found == NULL) || (strncmp(found->sha, find->sha, 40) != 0)) {
-			snprintf(have, sizeof(have), "0032want %s\n", find->sha);
+		if ((found == NULL) || (strncmp(found->hash, find->hash, 40) != 0)) {
+			snprintf(have, sizeof(have), "0032want %s\n", find->hash);
 			append_string(&want, &want_buffer_size, &want_size, have, strlen(have));
 		}
 	}
@@ -1104,7 +1132,7 @@ get_commit_details(connector *connection)
 static void
 fetch_pack(connector *connection)
 {
-	char        *pack_start = NULL, sha_buffer[20], path[BUFFER_UNIT_SMALL];
+	char        *pack_start = NULL, hash_buffer[20], path[BUFFER_UNIT_SMALL];
 	struct stat  pack_file, remote_file;
 	int          fd, chunk_size = 1, pack_size = 0, source = 0, target = 0;
 
@@ -1156,10 +1184,10 @@ fetch_pack(connector *connection)
 
 	/* Verify the pack data checksum. */
 
-	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)sha_buffer);
+	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)hash_buffer);
 
-	if (memcmp(connection->response + pack_size, sha_buffer, 20) != 0)
-		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch - expected %s, received %s", legible_sha(connection->response + pack_size), legible_sha(sha_buffer));
+	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
+		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch - expected %s, received %s", legible_hash(connection->response + pack_size), legible_hash(hash_buffer));
 
 	/* Save the pack data. */
 
@@ -1181,15 +1209,15 @@ fetch_pack(connector *connection)
  */
 
 static void
-store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, int index_delta, char *ref_delta_sha)
+store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, int index_delta, char *ref_delta_hash)
 {
 	struct object_node *object = NULL, find;
-	char               *sha = calculate_object_sha(buffer, buffer_size, type);
+	char               *hash = calculate_object_hash(buffer, buffer_size, type);
 
-	find.sha = sha;
+	find.hash = hash;
 
 	if ((object = RB_FIND(Tree_Objects, &Objects, &find)) != NULL) {
-		free(sha);
+		free(hash);
 	} else {
 		if (connection->objects % BUFFER_UNIT_SMALL == 0)
 			if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node **))) == NULL)
@@ -1198,18 +1226,18 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 		if ((object = (struct object_node *)malloc(sizeof(struct object_node))) == NULL)
 			err(EXIT_FAILURE, "store_object: malloc");
 
-		object->index         = connection->objects;
-		object->type          = type;
-		object->sha           = sha;
-		object->pack_offset   = pack_offset;
-		object->index_delta   = index_delta;
-		object->ref_delta_sha = (ref_delta_sha ? legible_sha(ref_delta_sha) : NULL);
-		object->buffer        = buffer;
-		object->buffer_size   = buffer_size;
-		object->data_size     = buffer_size;
+		object->index          = connection->objects;
+		object->type           = type;
+		object->hash           = hash;
+		object->pack_offset    = pack_offset;
+		object->index_delta    = index_delta;
+		object->ref_delta_hash = (ref_delta_hash ? legible_hash(ref_delta_hash) : NULL);
+		object->buffer         = buffer;
+		object->buffer_size    = buffer_size;
+		object->data_size      = buffer_size;
 
 		if (connection->verbosity > 1)
-			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", object->index, object->type, object->pack_offset, object->data_size, object->sha, object->index_delta, object->ref_delta_sha);
+			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", object->index, object->type, object->pack_offset, object->data_size, object->hash, object->index_delta, object->ref_delta_hash);
 
 		if (type < 6)
 			RB_INSERT(Tree_Objects, &Objects, object);
@@ -1217,7 +1245,7 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 		connection->object[connection->objects++] = object;
 /*
 		char full_path[BUFFER_UNIT_SMALL];
-		snprintf(full_path, sizeof(full_path), "./temp/b%05d-%d-%s.out", object->index, object->type, object->sha);
+		snprintf(full_path, sizeof(full_path), "./temp/b%05d-%d-%s.out", object->index, object->type, object->hash);
 
 		int fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC);
 		chmod(full_path, 0644);
@@ -1239,7 +1267,7 @@ unpack_objects(connector *connection)
 {
 	int            buffer_size = 0, total_objects = 0, object_type = 0, position = 4, index_delta = 0;
 	int            pack_offset = 0, lookup_offset = 0, stream_code = 0, version = 0, stream_bytes = 0;
-	char          *buffer = NULL, *ref_delta_sha = NULL;
+	char          *buffer = NULL, *ref_delta_hash = NULL;
 	uint32_t       file_size = 0, file_bits = 0;
 	unsigned char  zlib_out[16384];
 
@@ -1267,7 +1295,7 @@ unpack_objects(connector *connection)
 		index_delta   = 0;
 		file_size     = 0;
 		stream_bytes  = 0;
-		ref_delta_sha = NULL;
+		ref_delta_hash = NULL;
 
 		/* Extract the file size. */
 
@@ -1298,10 +1326,10 @@ unpack_objects(connector *connection)
 		/* Extract the ref-delta checksum. */
 
 		if (object_type == 7) {
-			if ((ref_delta_sha = (char *)malloc(21)) == NULL)
+			if ((ref_delta_hash = (char *)malloc(21)) == NULL)
 				err(EXIT_FAILURE, "unpack_objects: malloc");
 
-			memcpy(ref_delta_sha, connection->response + position, 20);
+			memcpy(ref_delta_hash, connection->response + position, 20);
 			position += 20;
 		}
 
@@ -1340,10 +1368,10 @@ unpack_objects(connector *connection)
 		inflateEnd(&stream);
 		position += stream.total_in;
 
-		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta, ref_delta_sha);
+		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta, ref_delta_hash);
 
-		if (ref_delta_sha != NULL)
-			free(ref_delta_sha);
+		if (ref_delta_hash != NULL)
+			free(ref_delta_hash);
 	}
 }
 
@@ -1418,7 +1446,6 @@ apply_deltas(connector *connection)
 	struct object_node *delta, *base, lookup;
 
 	for (int o = connection->objects - 1; o >= 0; o--) {
-//	for (int o = 0; o < connection->objects; o++) {
 		merge_buffer = NULL;
 		delta        = connection->object[o];
 		delta_count  = 0;
@@ -1431,21 +1458,21 @@ apply_deltas(connector *connection)
 		while (delta->type == 6) {
 			deltas[delta_count++] = delta->index;
 			delta = connection->object[delta->index_delta];
-			lookup.sha = delta->sha;
+			lookup.hash = delta->hash;
 		}
 
 		/* Find the ref-delta base object. */
 
 		if (delta->type == 7) {
 			deltas[delta_count++] = delta->index;
-			lookup.sha = delta->ref_delta_sha;
-			load_object(connection, lookup.sha);
+			lookup.hash = delta->ref_delta_hash;
+			load_object(connection, lookup.hash, NULL);
 		}
 
 		/* Lookup the base object and setup the merge buffer. */
 
 		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-			errc(EXIT_FAILURE, ENOENT, "apply_deltas: can't find %05d -> %d/%s\n", delta->index, delta->index_delta, delta->ref_delta_sha);
+			errc(EXIT_FAILURE, ENOENT, "apply_deltas: can't find %05d -> %d/%s\n", delta->index, delta->index_delta, delta->ref_delta_hash);
 
 		if ((merge_buffer = (char *)malloc(base->buffer_size)) == NULL)
 			err(EXIT_FAILURE, "apply_deltas: malloc");
@@ -1524,7 +1551,7 @@ apply_deltas(connector *connection)
 /*
  * extract_tree_item
  *
- * Procedure that extracts mode/path/sha items in a tree and returns them in a new file_node.
+ * Procedure that extracts mode/path/hash items in a tree and returns them in a new file_node.
  */
 
 static void
@@ -1546,9 +1573,9 @@ extract_tree_item(struct file_node *file, char **position)
 	/* Extract the file SHA checksum. */
 
 	for (int x = 0; x < 20; x++)
-		snprintf(&file->sha[x * 2], 3, "%02x", (unsigned char)*(*position)++);
+		snprintf(&file->hash[x * 2], 3, "%02x", (unsigned char)*(*position)++);
 
-	file->sha[40] = '\0';
+	file->hash[40] = '\0';
 }
 
 
@@ -1557,7 +1584,7 @@ extract_tree_item(struct file_node *file, char **position)
  */
 
 static void
-save_tree(connector *connection, int remote_descriptor, char *sha, char *base_path)
+save_tree(connector *connection, int remote_descriptor, char *hash, char *base_path)
 {
 	struct object_node object, *found_object = NULL, *tree = NULL;
 	struct file_node   file, *found_file = NULL, *new_file_node = NULL, *remote_file = NULL;
@@ -1567,27 +1594,27 @@ save_tree(connector *connection, int remote_descriptor, char *sha, char *base_pa
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "save_tree: Cannot create %s", base_path);
 
-	object.sha = sha;
+	object.hash = hash;
 
 	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
-		errc(EXIT_FAILURE, ENOENT, "save_tree: tree %s - %s cannot be found", base_path, object.sha);
+		errc(EXIT_FAILURE, ENOENT, "save_tree: tree %s - %s cannot be found", base_path, object.hash);
 
 	/* Remove the base path from the list of upcoming deletions. */
 
 	file.path = base_path;
 
-	if ((found_file = RB_FIND(Tree_Local, &Local_Tree, &file)) != NULL)
-		file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, found_file));
+	if ((found_file = RB_FIND(Tree_Local_Path, &Local_Path, &file)) != NULL)
+		found_file->nuke = 0;
 
 	/* Add the base path to the output. */
 
 	if ((file.path = (char *)malloc(BUFFER_UNIT_SMALL + 1)) == NULL)
 		err(EXIT_FAILURE, "save_tree: malloc");
 
-	if ((file.sha = (char *)malloc(41)) == NULL)
+	if ((file.hash = (char *)malloc(41)) == NULL)
 		err(EXIT_FAILURE, "save_tree: malloc");
 
-	snprintf(line, sizeof(line), "%o\t%s\t%s/\n", 040000, sha, base_path);
+	snprintf(line, sizeof(line), "%o\t%s\t%s/\n", 040000, hash, base_path);
 	append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
 
 	/* Process the tree items. */
@@ -1599,30 +1626,37 @@ save_tree(connector *connection, int remote_descriptor, char *sha, char *base_pa
 
 		snprintf(full_path, sizeof(full_path), "%s/%s", base_path, file.path);
 
-		snprintf(line, sizeof(line), "%o\t%s\t%s\n", file.mode, file.sha, file.path);
+		snprintf(line, sizeof(line), "%o\t%s\t%s\n", file.mode, file.hash, file.path);
 		append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
 
 		/* Recursively walk the trees and save the files/links. */
 
 		if (S_ISDIR(file.mode)) {
-			save_tree(connection, remote_descriptor, file.sha, full_path);
+			save_tree(connection, remote_descriptor, file.hash, full_path);
 		} else {
 			/* Locate the pack file object and local copy of the file. */
 
-			memcpy(object.sha, file.sha, 41);
+			memcpy(object.hash, file.hash, 41);
 			memcpy(file.path, full_path, sizeof(full_path));
 
 			found_object = RB_FIND(Tree_Objects, &Objects, &object);
-			found_file   = RB_FIND(Tree_Local, &Local_Tree, &file);
+			found_file   = RB_FIND(Tree_Local_Path, &Local_Path, &file);
 
-			/* If the object is missing during a pull, skip it. */
+			/* Missing objects can sometimes be found by searching the local tree. */
+
+			if (found_object == NULL) {
+				load_object(connection, file.hash, full_path);
+				found_object = RB_FIND(Tree_Objects, &Objects, &object);
+			}
+
+			/* If the object is still missing during a pull, skip it. */
 
 			if (found_object == NULL) {
 				if (connection->clone == 1) {
-					errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, object.sha);
+					errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, object.hash);
 				} else {
 					if (found_file != NULL)
-						file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, found_file));
+						found_file->nuke = 0;
 
 					continue;
 				}
@@ -1630,8 +1664,8 @@ save_tree(connector *connection, int remote_descriptor, char *sha, char *base_pa
 
 			/* If the local file hasn't changed, skip it. */
 
-			if ((found_file != NULL) && ((found_object == NULL) || (strncmp(found_object->sha, found_file->sha, 40) == 0))) {
-				file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, found_file));
+			if ((found_file != NULL) && ((found_object == NULL) || (strncmp(found_object->hash, found_file->hash, 40) == 0))) {
+				found_file->nuke = 0;
 				continue;
 			}
 
@@ -1640,8 +1674,8 @@ save_tree(connector *connection, int remote_descriptor, char *sha, char *base_pa
 			if (connection->verbosity)
 				printf(" %c %s\n", (found_file == NULL ? '+' : '*'), full_path);
 
-			if (found_file != NULL)
-				file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, found_file));
+			if (found_file)
+				found_file->nuke = 0;
 
 			if (S_ISLNK(file.mode)) {
 				if (symlink(found_object->buffer, full_path) == -1)
@@ -1656,19 +1690,21 @@ save_tree(connector *connection, int remote_descriptor, char *sha, char *base_pa
 
 				/* Add/update the file details to the remote files tree. */
 
-				if ((remote_file = RB_FIND(Tree_Remote, &Remote_Tree, &file)) == NULL) {
+				if ((remote_file = RB_FIND(Tree_Remote_Path, &Remote_Path, &file)) == NULL) {
 					if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 						err(EXIT_FAILURE, "save_tree: malloc");
 
 					new_file_node->mode = file.mode;
-					new_file_node->sha  = strdup(found_object->sha);
+					new_file_node->hash = strdup(found_object->hash);
 					new_file_node->path = strdup(full_path);
+					new_file_node->nuke = 0;
 
-					RB_INSERT(Tree_Remote, &Remote_Tree, new_file_node);
+					RB_INSERT(Tree_Remote_Hash, &Remote_Hash, new_file_node);
+					RB_INSERT(Tree_Remote_Path, &Remote_Path, new_file_node);
 				} else {
-					free(remote_file->sha);
+					free(remote_file->hash);
 					remote_file->mode = file.mode;
-					remote_file->sha  = strdup(found_object->sha);
+					remote_file->hash = strdup(found_object->hash);
 				}
 			}
 		}
@@ -1678,7 +1714,7 @@ save_tree(connector *connection, int remote_descriptor, char *sha, char *base_pa
 	write(remote_descriptor, "\n", 1);
 
 	free(buffer);
-	free(file.sha);
+	free(file.hash);
 	free(file.path);
 }
 
@@ -1698,7 +1734,7 @@ save_objects(connector *connection)
 
 	/* Find the tree object referenced in the commit. */
 
-	lookup.sha = connection->want;
+	lookup.hash = connection->want;
 
 	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
 		errc(EXIT_FAILURE, EINVAL, "save_objects: can't find %s\n", connection->want);
@@ -1971,7 +2007,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Repository: %s\n", connection.repository);
 		fprintf(stderr, "# Branch: %s\n", connection.branch);
 		fprintf(stderr, "# Target: %s\n", connection.path_target);
-		fprintf(stderr, "# Action: %s\n", (connection.clone ? "Clone" : "Pull"));
+		fprintf(stderr, "# Action: %s\n", (connection.clone ? "clone" : "pull"));
 
 		if (connection.use_pack_file)
 			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
@@ -2008,25 +2044,27 @@ main(int argc, char **argv)
 	RB_FOREACH(object, Tree_Objects, &Objects)
 		RB_REMOVE(Tree_Objects, &Objects, object);
 
-	RB_FOREACH(file, Tree_Local, &Local_Tree) {
-		printf(" - %s\n", file->path);
+	RB_FOREACH(file, Tree_Local_Path, &Local_Path) {
+		if (file->nuke) {
+			printf(" - %s\n", file->path);
 
-		if (S_ISDIR(file->mode)) {
-			prune_tree(&connection, file->path);
-		} else {
-			if ((remove(file->path) != 0) && (errno != ENOENT))
-				err(EXIT_FAILURE, "main: cannot remove %s", file->path);
+			if (S_ISDIR(file->mode)) {
+				prune_tree(&connection, file->path);
+			} else {
+				if ((remove(file->path) != 0) && (errno != ENOENT))
+					err(EXIT_FAILURE, "main: cannot remove %s", file->path);
+			}
 		}
 
-		file_node_free(RB_REMOVE(Tree_Local, &Local_Tree, file));
+		file_node_free(RB_REMOVE(Tree_Local_Path, &Local_Path, file));
 	}
 
-	RB_FOREACH(file, Tree_Remote, &Remote_Tree)
-		file_node_free(RB_REMOVE(Tree_Remote, &Remote_Tree, file));
+	RB_FOREACH(file, Tree_Remote_Path, &Remote_Path)
+		file_node_free(RB_REMOVE(Tree_Remote_Path, &Remote_Path, file));
 
 	for (int o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
-			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->pack_offset, connection.object[o]->data_size, connection.object[o]->sha, connection.object[o]->index_delta, connection.object[o]->ref_delta_sha);
+			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->pack_offset, connection.object[o]->data_size, connection.object[o]->hash, connection.object[o]->index_delta, connection.object[o]->ref_delta_hash);
 
 		object_node_free(connection.object[o]);
 	}
@@ -2078,6 +2116,8 @@ main(int argc, char **argv)
 		SSL_CTX_free(connection.ctx);
 		SSL_free(connection.ssl);
 	}
+
+	sync();
 
 	return (0);
 }
