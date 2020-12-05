@@ -1,0 +1,98 @@
+.\" Copyright (c) 2012-2016, John Mehr <jmehr@umn.edu>
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.\" $FreeBSD$
+.\"
+.Dd December 5, 2020
+.Dt gitup.conf
+.Os
+.Sh NAME
+.Nm gitup.conf
+.Nd Configuration file for gitup(1).
+.Sh DESCRIPTION
+The
+.Nm
+file stores configuration options and controls the behavior of gitup(1).  This file contains an arbitrary number of sections, each enclosed in square brackets, any of which can be passed as the first command line argument to gitup(1).  Options are placed one on each line, followed directly by an equals sign '=' and the value the option should be assigned.  Lines beginning with a '#' are ignored.  Additional, user defined sections can be added to
+.Nm
+as needed.
+.Pp
+When gitup(1) is run, the options in the [defaults] section are assigned first, followed by the options in the desired section (each of which will supersede any previously assigned default values), followed lastly by any command line options.
+.Sh OPTIONS
+The following options are currently supported by
+.Nm
+and can be added to any section:
+.Bl -tag -width "work_directory"
+.It Cm host
+The hostname/IP address of the git server.
+.It Cm port
+The port on the server to connect to.
+.It Cm repository
+The repository to use.
+.It Cm branch
+The repository branch to use.
+.It Cm target
+The local directory to store your copy of the repository.
+.It Cm verbosity
+How much of the transfer details to display.  0 = no output, 1 = show only names of the updated files/folders, 2 = also show commands sent to the server and additional debugging information.
+.It Cm work_directory
+The location to load/save the known remote files list.
+.El
+.Pp
+.Sh EXAMPLES
+With the following configuration options defined in
+.Nm
+.Pp
+[defaults]
+.br
+host=github.com
+.br
+port=443
+.br
+verbosity=1
+.br
+work_directory=/var/tmp/gitup
+.Pp
+[ports]
+.br
+repository=/freebsd/freebsd-ports
+.br
+branch=master
+.br
+target=/usr/ports
+.Pp
+Executing:
+.Pp
+.Dl "gitup ports"
+.Pp
+from the command line would result in a copy of the freebsd-ports/master branch downloaded to /usr/ports.  If /usr/ports doesn't exist, the repository is cloned.  If it does exist and /var/tmp/gitup/ports exists, the latest commit to the repository is pulled down.
+.Sh FILES
+.Bl -tag -width "/usr/local/etc/gitup.conf"
+.It /usr/local/etc/gitup.conf
+Default location of the
+.Nm
+configuration file.
+.Sh SEE ALSO
+.Xr gitup 1
+.Sh AUTHORS
+John Mehr <jmehr@umn.edu>
