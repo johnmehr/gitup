@@ -99,6 +99,8 @@ typedef struct {
 	char                *path_work;
 	char                *remote_file_old;
 	char                *remote_file_new;
+	char               **ignore;
+	int                  ignores;
 	int                  keep_pack_file;
 	int                  use_pack_file;
 	int                  verbosity;
@@ -204,10 +206,6 @@ object_node_free(struct object_node *node)
 static RB_HEAD(Tree_Remote_Path, file_node) Remote_Path = RB_INITIALIZER(&Remote_Path);
 RB_PROTOTYPE(Tree_Remote_Path, file_node, link_path, file_node_compare_path)
 RB_GENERATE(Tree_Remote_Path,  file_node, link_path, file_node_compare_path)
-
-static RB_HEAD(Tree_Remote_Hash, file_node) Remote_Hash = RB_INITIALIZER(&Remote_Hash);
-RB_PROTOTYPE(Tree_Remote_Hash, file_node, link_hash, file_node_compare_hash)
-RB_GENERATE(Tree_Remote_Hash,  file_node, link_hash, file_node_compare_hash)
 
 static RB_HEAD(Tree_Local_Path, file_node) Local_Path = RB_INITIALIZER(&Local_Path);
 RB_PROTOTYPE(Tree_Local_Path, file_node, link_path, file_node_compare_path)
@@ -561,17 +559,18 @@ load_remote_file_list(connector *connection)
 				/* Add the line to the buffer that will become the obj_tree for this directory. */
 
 				temp_hash = illegible_hash(hash);
+
 				append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
 				append_string(&buffer, &buffer_size, &buffer_length, " ", 1);
 				append_string(&buffer, &buffer_size, &buffer_length, path, strlen(path));
 				append_string(&buffer, &buffer_size, &buffer_length, null, 1);
 				append_string(&buffer, &buffer_size, &buffer_length, temp_hash, 20);
+
 				free(temp_hash);
 			}
 
 			file->path = strdup(temp);
 
-			RB_INSERT(Tree_Remote_Hash, &Remote_Hash, file);
 			RB_INSERT(Tree_Remote_Path, &Remote_Path, file);
 		}
 
@@ -595,17 +594,19 @@ find_local_tree(connector *connection, char *base_path)
 	struct dirent    *entry = NULL;
 	struct file_node *new_node = NULL, find, *found = NULL;
 	char             *full_path = NULL;
-	int               file_name_size = 0, full_path_size = strlen(base_path) + MAXNAMLEN + 3;
+	int               file_name_size = 0, full_path_size = strlen(base_path) + MAXNAMLEN + 3, ignore = 0, x = 0;
 
 	if ((full_path = (char *)malloc(full_path_size)) == NULL)
 		err(EXIT_FAILURE, "find_local_tree: full_path malloc");
 
-	/* Add the base path. */
+	/* Make sure the base path exists in the remote files list. */
 
 	find.path = base_path;
 
 	if ((found = RB_FIND(Tree_Remote_Path, &Remote_Path, &find)) == NULL)
-		errc(EXIT_FAILURE, ENOENT, "find_local_tree: %s cannot be found", full_path);
+		errc(EXIT_FAILURE, ENOENT, "find_local_tree: %s cannot be found in the remote files list.  Please manually remove it", base_path);
+
+	/* Add the base path to the local trees. */
 
 	if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 		err(EXIT_FAILURE, "find_local_tree: malloc");
@@ -643,7 +644,18 @@ find_local_tree(connector *connection, char *base_path)
 				}
 
 			if (S_ISDIR(file.st_mode)) {
-				find_local_tree(connection, full_path);
+				/* Check to see if the path is in the ignore list. */
+
+				for (x = 0, ignore = 0; x < connection->ignores; x++)
+					if (strnstr(full_path, *(connection->ignore + x), strlen(full_path)) != NULL) {
+						ignore = 1;
+
+						if (connection->verbosity)
+							fprintf(stderr, "# Ignoring: %s\n", connection->ignore[x]);
+					}
+
+				if (ignore == 0)
+					find_local_tree(connection, full_path);
 			} else {
 				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 					err(EXIT_FAILURE, "find_local_tree: malloc");
@@ -681,8 +693,8 @@ load_object(connector *connection, char *hash, char *path)
 	lookup_file.hash   = hash;
 	lookup_file.path   = path;
 
-	/* If the object doesn't exist, look for it first by hash, then by path and
-	   if found and the SHA checksum references a file, load it and store it. */
+	/* If the object doesn't exist, look for it first by hash, then by path and if
+	   it is found and the SHA checksum references a file, load it and store it. */
 
 	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup_object)) == NULL) {
 		if ((find = RB_FIND(Tree_Local_Hash, &Local_Hash, &lookup_file)) == NULL)
@@ -1001,14 +1013,10 @@ initiate_clone(connector *connection)
 static void
 initiate_pull(connector *connection)
 {
-	struct file_node *find = NULL, *found = NULL;
-	unsigned int      want_size = 0, want_buffer_size = BUFFER_UNIT_LARGE;
-	char             *want = NULL, have[51], *done = "0009done\n0000";
+	char *want = NULL;
 
-	if ((want = (char *)malloc(want_buffer_size)) == NULL)
+	if ((want = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
 		err(EXIT_FAILURE, "initiate_pull: malloc");
-
-	/* Start with the basic pull command. */
 
 	snprintf(want,
 		BUFFER_UNIT_SMALL,
@@ -1021,30 +1029,14 @@ initiate_pull(connector *connection)
 		"0034shallow %s"
 		"000cdeepen 1"
 		"0032want %s\n"
-		"0032have %s\n",
+		"0032have %s\n"
+		"0009done\n0000",
 		strlen(connection->agent) + 4,
 		connection->agent,
 		connection->want,
 		connection->have,
 		connection->want,
 		connection->have);
-
-	want_size = strlen(want);
-
-	/* Loop through the local files, adding any missing or modified files to the wants. */
-/*
-	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
-		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
-
-		if ((found == NULL) || (strncmp(found->hash, find->hash, 40) != 0)) {
-			snprintf(have, sizeof(have), "0032want %s\n", find->hash);
-			append_string(&want, &want_buffer_size, &want_size, have, strlen(have));
-		}
-	}
-*/
-	/* Finish the request. */
-
-	append_string(&want, &want_buffer_size, &want_size, done, strlen(done));
 
 	send_command(connection, want);
 }
@@ -1214,11 +1206,15 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 	struct object_node *object = NULL, find;
 	char               *hash = calculate_object_hash(buffer, buffer_size, type);
 
+	/* Check to make sure the object doesn't already exist. */
+
 	find.hash = hash;
 
 	if ((object = RB_FIND(Tree_Objects, &Objects, &find)) != NULL) {
 		free(hash);
 	} else {
+		/* Extend the array if needed, create a new node and add it. */
+
 		if (connection->objects % BUFFER_UNIT_SMALL == 0)
 			if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node **))) == NULL)
 				err(EXIT_FAILURE, "store_object: realloc");
@@ -1243,15 +1239,6 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 			RB_INSERT(Tree_Objects, &Objects, object);
 
 		connection->object[connection->objects++] = object;
-/*
-		char full_path[BUFFER_UNIT_SMALL];
-		snprintf(full_path, sizeof(full_path), "./temp/b%05d-%d-%s.out", object->index, object->type, object->hash);
-
-		int fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC);
-		chmod(full_path, 0644);
-		write(fd, object->buffer, object->data_size);
-		close(fd);
-*/
 	}
 }
 
@@ -1699,7 +1686,6 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 					new_file_node->path = strdup(full_path);
 					new_file_node->nuke = 0;
 
-					RB_INSERT(Tree_Remote_Hash, &Remote_Hash, new_file_node);
 					RB_INSERT(Tree_Remote_Path, &Remote_Path, new_file_node);
 				} else {
 					free(remote_file->hash);
@@ -1817,6 +1803,13 @@ set_configuration_parameters(connector *connection, char *buffer, size_t length,
 
 		if (strstr(line, "verbosity=") == line)
 			connection->verbosity = strtol(line + 10, (char **)NULL, 10);
+
+		if (strstr(line, "ignore=") == line) {
+			if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
+				err(EXIT_FAILURE, "set_configuration_parameters: malloc");
+
+			connection->ignore[connection->ignores++] = strdup(line + 7);
+			}
 	}
 
 	/* Put the returns that strsep took out back in for the next run. */
@@ -1889,7 +1882,7 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
-	int                 option = 0;
+	int                 option = 0, ignore = 0;
 	char               *configuration_file = "./gitup.conf";
 	struct stat         pack_file, temp_file;
 
@@ -1916,6 +1909,8 @@ main(int argc, char **argv)
 		.path_work         = NULL,
 		.remote_file_old   = NULL,
 		.remote_file_new   = NULL,
+		.ignore            = NULL,
+		.ignores           = 0,
 		.keep_pack_file    = 0,
 		.use_pack_file     = 0,
 		.verbosity         = 1,
@@ -2044,9 +2039,19 @@ main(int argc, char **argv)
 	RB_FOREACH(object, Tree_Objects, &Objects)
 		RB_REMOVE(Tree_Objects, &Objects, object);
 
+	RB_FOREACH(file, Tree_Local_Hash, &Local_Hash)
+		RB_REMOVE(Tree_Local_Hash, &Local_Hash, file);
+
 	RB_FOREACH(file, Tree_Local_Path, &Local_Path) {
 		if (file->nuke) {
 			printf(" - %s\n", file->path);
+
+			for (int x = 0, ignore = 0; x < connection.ignores; x++)
+				if (strnstr(file->path, connection.ignore[x], sizeof(file->path)) != NULL)
+					ignore = 1;
+
+			if (ignore)
+				continue;
 
 			if (S_ISDIR(file->mode)) {
 				prune_tree(&connection, file->path);
