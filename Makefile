@@ -1,4 +1,4 @@
-CC := clang
+CC = cc
 CFLAGS = -O2 -g
 LDFLAGS = -lssl -lcrypto -lz
 COMPILE = $(CC) $(CFLAGS)
