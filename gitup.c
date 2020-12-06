@@ -49,7 +49,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "0.8"
+#define GITUP_VERSION     "0.82"
 #define GIT_VERSION       "2.28"
 #define BUFFER_UNIT_SMALL  4096
 #define BUFFER_UNIT_LARGE  1048576
@@ -86,6 +86,7 @@ typedef struct {
 	char                *section;
 	char                *repository;
 	char                *branch;
+	char                *tag;
 	char                *have;
 	char                *want;
 	char                *response;
@@ -1070,6 +1071,9 @@ get_commit_details(connector *connection)
 		if (connection->response[x] == '\0')
 			connection->response[x] = '\n';
 
+	if (connection->verbosity > 1)
+		printf("%s\n", connection->response);
+
 	/* Extract the agent. */
 
 	position = strstr(connection->response, "agent=");
@@ -1082,12 +1086,18 @@ get_commit_details(connector *connection)
 	/* Extract the "want" checksum. */
 
 	if (connection->want == NULL) {
-		snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
+		if (connection->tag != NULL)
+			snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/tags/%s\n", connection->tag);
+		else
+			snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
 
 		position = strstr(connection->response, full_branch);
 
-		if (position == NULL)
-			errc(EXIT_FAILURE, EINVAL, "get_commit_details: %s doesn't exist in %s", connection->branch, connection->repository);
+		if (position == NULL) {
+			full_branch[strlen(full_branch) - 1] = '\0';
+
+			errc(EXIT_FAILURE, EINVAL, "get_commit_details: %s doesn't exist in %s", full_branch, connection->repository);
+		}
 
 		if ((connection->want = (char *)malloc(41)) == NULL)
 			err(EXIT_FAILURE, "get_commit_details: malloc");
@@ -1859,10 +1869,11 @@ usage(char *configuration_file)
 	fprintf(stderr, "  Options:\n");
 	fprintf(stderr, "    -c  Force gitup to clone the repository.\n");
 	fprintf(stderr, "    -h  Override the 'have' checksum.\n");
-	fprintf(stderr, "    -k  Path to save a copy of the pack data.\n");
+	fprintf(stderr, "    -k  Save a copy of the pack data to the current working directory.\n");
+	fprintf(stderr, "    -t  TFetch the commit referenced by the specified tag.\n");
 	fprintf(stderr, "    -u  Path to load a copy of the pack data, skipping the download.\n");
 	fprintf(stderr, "    -v  How verbose the output should be (0 = no output, 1 = the default\n");
-	fprintf(stderr, "          normal output, 2 = also show debugging information.\n");
+	fprintf(stderr, "          normal output, 2 = also show debugging information).\n");
 	fprintf(stderr, "    -V  Display gitup's version number and exit.\n");
 	fprintf(stderr, "    -w  Override the 'want' checksum.\n");
 	fprintf(stderr, "\n");
@@ -1896,6 +1907,7 @@ main(int argc, char **argv)
 		.section           = NULL,
 		.repository        = NULL,
 		.branch            = NULL,
+		.tag               = NULL,
 		.have              = NULL,
 		.want              = NULL,
 		.response          = NULL,
@@ -1932,7 +1944,7 @@ main(int argc, char **argv)
 		optind = 2;
 	}
 
-	while ((option = getopt(argc, argv, "ch:ku:Vv:w:")) != -1)
+	while ((option = getopt(argc, argv, "ch:kt:u:Vv:w:")) != -1)
 		switch (option) {
 			case 'c':
 				connection.clone = 1;
@@ -1942,6 +1954,9 @@ main(int argc, char **argv)
 				break;
 			case 'k':
 				connection.keep_pack_file = 1;
+				break;
+			case 't':
+				connection.tag = strdup(optarg);
 				break;
 			case 'u':
 				connection.use_pack_file = 1;
@@ -2091,6 +2106,9 @@ main(int argc, char **argv)
 
 	if (connection.repository)
 		free(connection.repository);
+
+	if (connection.tag)
+		free(connection.tag);
 
 	if (connection.branch)
 		free(connection.branch);
