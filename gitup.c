@@ -951,9 +951,9 @@ send_command(connector *connection, char *want)
 		err(EXIT_FAILURE, "send_command: malloc");
 
 	snprintf(command,
-		BUFFER_UNIT_LARGE,
+		BUFFER_UNIT_SMALL,
 		"POST %s/git-upload-pack HTTP/1.1\n"
-		"Host: github.com\n"
+		"Host: %s\n"
 		"User-Agent: git/%s\n"
 		"Accept-encoding: deflate, gzip\n"
 		"Content-type: application/x-git-upload-pack-request\n"
@@ -963,6 +963,7 @@ send_command(connector *connection, char *want)
 		"\r\n"
 		"%s",
 		connection->repository,
+		connection->host,
 		GIT_VERSION,
 		want_size,
 		want
