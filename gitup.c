@@ -407,11 +407,14 @@ calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 static char *
 calculate_file_hash(char *path, ssize_t file_size, int file_mode)
 {
-	char     *buffer = NULL, *hash = NULL;
-	uint32_t  buffer_size = 0;
+	char     *buffer = NULL, *hash = NULL, temp_path[BUFFER_UNIT_SMALL];
+	uint32_t  buffer_size = 0, bytes_read = 0;
 
 	if (S_ISLNK(file_mode)) {
-		/* TO DO: Need examples to test what happens when we need to deal with links. */
+		bytes_read = readlink(path, temp_path, BUFFER_UNIT_SMALL);
+		temp_path[bytes_read] = '\0';
+
+		hash = calculate_object_hash(temp_path, strlen(temp_path), 3);
 	} else {
 		load_file(path, &buffer, &buffer_size);
 		hash = calculate_object_hash(buffer, file_size, 3);
@@ -1014,10 +1017,7 @@ initiate_clone(connector *connection)
 static void
 initiate_pull(connector *connection)
 {
-	char *want = NULL;
-
-	if ((want = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
-		err(EXIT_FAILURE, "initiate_pull: malloc");
+	char want[BUFFER_UNIT_SMALL];
 
 	snprintf(want,
 		BUFFER_UNIT_SMALL,
@@ -1287,11 +1287,11 @@ unpack_objects(connector *connection)
 	/* Unpack the objects. */
 
 	while ((position < connection->response_size) && (total_objects-- > 0)) {
-		object_type   = (unsigned char)connection->response[position] >> 4 & 0x07;
-		pack_offset   = position;
-		index_delta   = 0;
-		file_size     = 0;
-		stream_bytes  = 0;
+		object_type    = (unsigned char)connection->response[position] >> 4 & 0x07;
+		pack_offset    = position;
+		index_delta    = 0;
+		file_size      = 0;
+		stream_bytes   = 0;
 		ref_delta_hash = NULL;
 
 		/* Extract the file size. */
@@ -1893,7 +1893,7 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
-	int                 option = 0, ignore = 0;
+	int                 x = 0, option = 0, ignore = 0;
 	char               *configuration_file = "./gitup.conf";
 	struct stat         pack_file, temp_file;
 
@@ -2061,7 +2061,7 @@ main(int argc, char **argv)
 		if (file->nuke) {
 			printf(" - %s\n", file->path);
 
-			for (int x = 0, ignore = 0; x < connection.ignores; x++)
+			for (x = 0, ignore = 0; x < connection.ignores; x++)
 				if (strnstr(file->path, connection.ignore[x], sizeof(file->path)) != NULL)
 					ignore = 1;
 
