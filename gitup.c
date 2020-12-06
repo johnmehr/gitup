@@ -1870,7 +1870,7 @@ usage(char *configuration_file)
 	fprintf(stderr, "    -c  Force gitup to clone the repository.\n");
 	fprintf(stderr, "    -h  Override the 'have' checksum.\n");
 	fprintf(stderr, "    -k  Save a copy of the pack data to the current working directory.\n");
-	fprintf(stderr, "    -t  TFetch the commit referenced by the specified tag.\n");
+	fprintf(stderr, "    -t  Fetch the commit referenced by the specified tag.\n");
 	fprintf(stderr, "    -u  Path to load a copy of the pack data, skipping the download.\n");
 	fprintf(stderr, "    -v  How verbose the output should be (0 = no output, 1 = the default\n");
 	fprintf(stderr, "          normal output, 2 = also show debugging information).\n");
