@@ -1895,7 +1895,7 @@ main(int argc, char **argv)
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
 	int                 x = 0, option = 0, ignore = 0;
-	char               *configuration_file = "./gitup.conf";
+	char               *configuration_file = GITUPCONF;
 	struct stat         pack_file, temp_file;
 
 	connector connection = {

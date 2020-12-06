@@ -93,8 +93,8 @@ Executing:
 .Pp
 from the command line would result in a copy of the freebsd-ports/master branch downloaded to /usr/ports.  If /usr/ports doesn't exist, the repository is cloned.  If it does exist and /var/tmp/gitup/ports exists, the latest commit to the repository is pulled down and the contents of /usr/ports/distfiles and /usr/ports/packages are ignored when removing stale directories.
 .Sh FILES
-.Bl -tag -width "/usr/local/etc/gitup.conf"
-.It /usr/local/etc/gitup.conf
+.Bl -tag -width "GITUPCONF"
+.It GITUPCONF
 Default location of the
 .Nm
 configuration file.

@@ -43,7 +43,7 @@
 .Nm
 is a minimalist, dependency-free program used to clone or synchronize a local copy of a git repository.  It is not intended to be a full-featured replacement for the devel/git port, but rather, is intended to provide a convenient way for users to update FreeBSD source files without having to install devel/git (and all of its related dependencies) and without the substantial disk overhead that normally accompany local git repositories.
 .Sh OPTIONS
-Configuration options are stored in /usr/local/etc/gitup.conf and are grouped into commonly used sections (additional custom sections can be added to this file).  The following command line options can be used to override the default and/or section values:
+Configuration options are stored in GITUPCONF and are grouped into commonly used sections (additional custom sections can be added to this file).  The following command line options can be used to override the default and/or section values:
 .Bl -tag -width Fl
 .It Fl c
 Force
@@ -65,8 +65,8 @@ Display the version number and exit.
 The "want" commit checksum of the repository to retrieve.
 .El
 .Sh FILES
-.Bl -tag -width "/usr/local/etc/gitup.conf"
-.It /usr/local/etc/gitup.conf
+.Bl -tag -width "GITUPCONF"
+.It GITUPCONF
 Default location of the
 .Nm
 configuration file.
@@ -90,7 +90,7 @@ relies on the known remote files lists stored in /var/tmp/gitup and the current 
 .Nm
 can update the local repository.
 .Sh EXAMPLES
-Using the configuration options for commonly used repositories/branches stored in /usr/local/etc/gitup.conf, to clone/pull a copy of the most recent revision of stable/12:
+Using the configuration options for commonly used repositories/branches stored in GITUPCONF, to clone/pull a copy of the most recent revision of stable/12:
 .Pp
 .Dl "gitup stable"
 .Pp
