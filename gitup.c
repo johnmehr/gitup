@@ -944,10 +944,9 @@ process_command(connector *connection, char *command)
 static void
 send_command(connector *connection, char *want)
 {
-	char *command   = NULL;
-	int   want_size = strlen(want);
+	char *command = NULL;
 
-	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
+	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
 		err(EXIT_FAILURE, "send_command: malloc");
 
 	snprintf(command,
@@ -959,13 +958,13 @@ send_command(connector *connection, char *want)
 		"Content-type: application/x-git-upload-pack-request\n"
 		"Accept: application/x-git-upload-pack-result\n"
 		"Git-Protocol: version=2\n"
-		"Content-length: %d\n"
+		"Content-length: %zu\n"
 		"\r\n"
 		"%s",
 		connection->repository,
 		connection->host,
 		GIT_VERSION,
-		want_size,
+		strlen(want),
 		want
 		);
 
@@ -1579,6 +1578,8 @@ extract_tree_item(struct file_node *file, char **position)
 
 /*
  * save_tree
+ *
+ * Procedure that processes all of the obj_trees and saves files that have been updated.
  */
 
 static void
@@ -1640,6 +1641,13 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 			found_object = RB_FIND(Tree_Objects, &Objects, &object);
 			found_file   = RB_FIND(Tree_Local_Path, &Local_Path, &file);
 
+			/* If the local file hasn't changed, skip it. */
+
+			if ((found_file != NULL) && (strncmp(file.hash, found_file->hash, 40) == 0)) {
+				found_file->nuke = 0;
+				continue;
+			}
+
 			/* Missing objects can sometimes be found by searching the local tree. */
 
 			if (found_object == NULL) {
@@ -1647,32 +1655,17 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 				found_object = RB_FIND(Tree_Objects, &Objects, &object);
 			}
 
-			/* If the object is still missing during a pull, skip it. */
+			/* If the object is still missing, exit. */
 
-			if (found_object == NULL) {
-				if (connection->clone == 1) {
-					errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, object.hash);
-				} else {
-					if (found_file != NULL)
-						found_file->nuke = 0;
-
-					continue;
-				}
-			}
-
-			/* If the local file hasn't changed, skip it. */
-
-			if ((found_file != NULL) && ((found_object == NULL) || (strncmp(found_object->hash, found_file->hash, 40) == 0))) {
-				found_file->nuke = 0;
-				continue;
-			}
+			if (found_object == NULL)
+				errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, file.hash);
 
 			/* Otherwise save it. */
 
 			if (connection->verbosity)
 				printf(" %c %s\n", (found_file == NULL ? '+' : '*'), full_path);
 
-			if (found_file)
+			if (found_file != NULL)
 				found_file->nuke = 0;
 
 			if (S_ISLNK(file.mode)) {
