@@ -965,8 +965,7 @@ send_command(connector *connection, char *want)
 		connection->host,
 		GIT_VERSION,
 		strlen(want),
-		want
-		);
+		want);
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "%s\n\n", command);
@@ -1643,9 +1642,11 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 
 			/* If the local file hasn't changed, skip it. */
 
-			if ((found_file != NULL) && (strncmp(file.hash, found_file->hash, 40) == 0)) {
+			if (found_file != NULL) {
 				found_file->nuke = 0;
-				continue;
+
+				if (strncmp(file.hash, found_file->hash, 40) == 0)
+					continue;
 			}
 
 			/* Missing objects can sometimes be found by searching the local tree. */
@@ -1664,9 +1665,6 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 
 			if (connection->verbosity)
 				printf(" %c %s\n", (found_file == NULL ? '+' : '*'), full_path);
-
-			if (found_file != NULL)
-				found_file->nuke = 0;
 
 			if (S_ISLNK(file.mode)) {
 				if (symlink(found_object->buffer, full_path) == -1)
