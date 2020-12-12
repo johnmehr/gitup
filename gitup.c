@@ -572,24 +572,24 @@ find_local_tree(connector *connection, char *base_path)
 	/* Make sure the base path exists in the remote files list. */
 
 	find.path = base_path;
-
-	if ((found = RB_FIND(Tree_Remote_Path, &Remote_Path, &find)) == NULL)
-		errc(EXIT_FAILURE, ENOENT, "find_local_tree: %s cannot be found in the remote files list.  Please manually remove it", base_path);
+	found     = RB_FIND(Tree_Remote_Path, &Remote_Path, &find);
 
 	/* Add the base path to the local trees. */
 
 	if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 		err(EXIT_FAILURE, "find_local_tree: malloc");
 
-	new_node->mode = found->mode;
-	new_node->hash = strdup(found->hash);
+	new_node->mode = (found ? found->mode : 040000);
+	new_node->hash = (found ? strdup(found->hash) : NULL);
 	new_node->path = strdup(base_path);
 	new_node->keep = 0;
 	new_node->save = 0;
 	new_node->new  = 0;
 
 	RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
-	RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
+
+	if (found)
+		RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
 
 	/* Process the directory's contents. */
 
