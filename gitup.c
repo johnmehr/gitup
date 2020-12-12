@@ -1794,7 +1794,7 @@ static void
 save_repairs(connector *connection)
 {
 	struct object_node  find_object, *found_object = NULL;
-	struct file_node   *found_file = NULL;
+	struct file_node   *local_file = NULL, *remote_file = NULL, *found_file = NULL;
 	struct stat         check_file;
 	char               *check_hash = NULL, *buffer_hash = NULL;
 	int                 missing = 0, update = 0;
@@ -1833,8 +1833,9 @@ save_repairs(connector *connection)
 
 	/* Make sure no files are deleted. */
 
-	RB_FOREACH(found_file, Tree_Local_Path, &Local_Path)
-		found_file->keep = 1;
+	RB_FOREACH(remote_file, Tree_Remote_Path, &Remote_Path)
+		if ((local_file = RB_FIND(Tree_Local_Path, &Local_Path, remote_file)) != NULL)
+			local_file->keep = 1;
 }
 
 
@@ -2247,7 +2248,7 @@ main(int argc, char **argv)
 		RB_REMOVE(Tree_Local_Hash, &Local_Hash, file);
 
 	RB_FOREACH(file, Tree_Local_Path, &Local_Path) {
-		if ((file->keep == 0) && (current_repository == 0)) {
+		if ((file->keep == 0) && ((current_repository == 0) || (connection.repair == 1))) {
 			for (x = 0, ignore = 0; x < connection.ignores; x++)
 				if (strnstr(file->path, connection.ignore[x], strlen(file->path)) != NULL)
 					ignore = 1;
