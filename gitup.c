@@ -475,19 +475,7 @@ load_remote_file_list(connector *connection)
 	struct stat       temp_file;
 	char             *line = NULL, *hash = NULL, *path = NULL, *remote_files = NULL, *null = "\0";
 	char              temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL], *buffer = NULL, *temp_hash = NULL;
-	int               length = 0, count = 0;
-	uint32_t          remote_file_size = 0, buffer_size = 0, buffer_length = 0;
-
-	length = strlen(connection->path_work) + MAXNAMLEN;
-
-	if ((connection->remote_file_old = (char *)malloc(length)) == NULL)
-		err(EXIT_FAILURE, "load_remote_file_list: malloc");
-
-	if ((connection->remote_file_new = (char *)malloc(length)) == NULL)
-		err(EXIT_FAILURE, "load_remote_file_list: malloc");
-
-	snprintf(connection->remote_file_old, length, "%s/%s", connection->path_work, connection->section);
-	snprintf(connection->remote_file_new, length, "%s/%s.new", connection->path_work, connection->section);
+	uint32_t          count = 0, remote_file_size = 0, buffer_size = 0, buffer_length = 0;
 
 	if (stat(connection->remote_file_old, &temp_file) != -1) {
 		load_file(connection->remote_file_old, &remote_files, &remote_file_size);
@@ -576,7 +564,7 @@ find_local_tree(connector *connection, char *base_path)
 	struct dirent    *entry = NULL;
 	struct file_node *new_node = NULL, find, *found = NULL;
 	char             *full_path = NULL;
-	int               file_name_size = 0, full_path_size = strlen(base_path) + MAXNAMLEN + 3, ignore = 0, x = 0;
+	int               file_name_size = 0, full_path_size = strlen(base_path) + MAXNAMLEN + 3;
 
 	if ((full_path = (char *)malloc(full_path_size)) == NULL)
 		err(EXIT_FAILURE, "find_local_tree: full_path malloc");
@@ -628,18 +616,7 @@ find_local_tree(connector *connection, char *base_path)
 				}
 
 			if (S_ISDIR(file.st_mode)) {
-				/* Check to see if the path is in the ignore list. */
-
-				for (x = 0, ignore = 0; x < connection->ignores; x++)
-					if (strnstr(full_path, *(connection->ignore + x), strlen(full_path)) != NULL) {
-						ignore = 1;
-
-						if (connection->verbosity)
-							fprintf(stderr, "# Ignoring: %s\n", connection->ignore[x]);
-					}
-
-				if (ignore == 0)
-					find_local_tree(connection, full_path);
+				find_local_tree(connection, full_path);
 			} else {
 				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 					err(EXIT_FAILURE, "find_local_tree: malloc");
@@ -1904,7 +1881,7 @@ save_objects(connector *connection)
 
 	/* Save the remote files list. */
 
-	if ((remove(connection->remote_file_old)) != 0)
+	if (((remove(connection->remote_file_old)) != 0) && (errno != ENOENT))
 		err(EXIT_FAILURE, "save_objects: cannot remove %s", connection->remote_file_old);
 
 	if ((rename(connection->remote_file_new, connection->remote_file_old)) != 0)
@@ -2056,7 +2033,7 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
-	int                 x = 0, option = 0, ignore = 0, current_repository = 0;
+	int                 x = 0, option = 0, ignore = 0, current_repository = 0, length = 0;
 	char               *command = NULL, *configuration_file = "./gitup.conf";
 	struct stat         check_file;
 
@@ -2166,7 +2143,29 @@ main(int argc, char **argv)
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "main: cannot create %s", connection.path_work);
 
-	load_remote_file_list(&connection);
+	length = strlen(connection.path_work) + MAXNAMLEN;
+
+	if ((connection.remote_file_old = (char *)malloc(length)) == NULL)
+		err(EXIT_FAILURE, "main: malloc");
+
+	if ((connection.remote_file_new = (char *)malloc(length)) == NULL)
+		err(EXIT_FAILURE, "main: malloc");
+
+	snprintf(connection.remote_file_old, length, "%s/%s", connection.path_work, connection.section);
+	snprintf(connection.remote_file_new, length, "%s/%s.new", connection.path_work, connection.section);
+
+	/* If the remote files list or repository are missing, then a clone must be performed. */
+
+	if (stat(connection.remote_file_old, &check_file) != 0)
+		connection.clone = 1;
+
+	if (stat(connection.path_target, &check_file) != 0)
+		connection.clone = 1;
+
+	if (connection.clone == 0) {
+		load_remote_file_list(&connection);
+		find_local_tree(&connection, connection.path_target);
+	}
 
 	/* Display connection parameters. */
 
@@ -2185,16 +2184,6 @@ main(int argc, char **argv)
 		if (connection.want)
 			fprintf(stderr, "# Want: %s\n", connection.want);
 	}
-
-	/* If the remote files list or repository are missing, then a clone must be performed. */
-
-	if (stat(connection.remote_file_old, &check_file) != 0)
-		connection.clone = 1;
-
-	if (stat(connection.path_target, &check_file) != 0)
-		connection.clone = 1;
-	else
-		find_local_tree(&connection, connection.path_target);
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
@@ -2259,19 +2248,17 @@ main(int argc, char **argv)
 
 	RB_FOREACH(file, Tree_Local_Path, &Local_Path) {
 		if ((file->keep == 0) && (current_repository == 0)) {
-			printf(" - %s\n", file->path);
-
 			for (x = 0, ignore = 0; x < connection.ignores; x++)
-				if (strnstr(file->path, connection.ignore[x], sizeof(file->path)) != NULL)
+				if (strnstr(file->path, connection.ignore[x], strlen(file->path)) != NULL)
 					ignore = 1;
 
-			if (ignore == 1)
-				continue;
+			if (ignore == 0) {
+				if (connection.verbosity)
+					printf(" - %s\n", file->path);
 
-			if (S_ISDIR(file->mode)) {
-				prune_tree(&connection, file->path);
-			} else {
-				if ((remove(file->path) != 0) && (errno != ENOENT))
+				if (S_ISDIR(file->mode))
+					prune_tree(&connection, file->path);
+				else if ((remove(file->path) != 0) && (errno != ENOENT))
 					err(EXIT_FAILURE, "main: cannot remove %s", file->path);
 			}
 		}
