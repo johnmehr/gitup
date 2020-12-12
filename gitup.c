@@ -1091,7 +1091,10 @@ build_repair_command(connector *connection)
 static void
 get_commit_details(connector *connection)
 {
-	char command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
+	char      command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
+	time_t    current = time(NULL);
+	struct tm now = *localtime(&current);
+	int       tries = 2, year = 0, quarter = 0;
 
 	/* Get the list of commits from the server. */
 
@@ -1127,28 +1130,39 @@ get_commit_details(connector *connection)
 
 	/* Extract the "want" checksum. */
 
-	if (connection->want == NULL) {
-		if (connection->tag != NULL)
-			snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/tags/%s\n", connection->tag);
-		else
-			snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
+	while ((tries-- > 0) && (connection->want == NULL)) {
+		if (strncmp(connection->branch, "quarterly", 9) == 0) {
+			/* If the current calendar quarter doesn't exist, try the previous one. */
 
-		position = strstr(connection->response, full_branch);
+			year    = 1900 + now.tm_year + ((tries == 0) && (now.tm_mon < 3) ? -1 : 0);
+			quarter = ((now.tm_mon / 3) + (tries == 0 ? 3 : 0)) % 4 + 1;
 
-		if (position == NULL) {
-			full_branch[strlen(full_branch) - 1] = '\0';
-
-			errc(EXIT_FAILURE, EINVAL, "get_commit_details: %s doesn't exist in %s", full_branch, connection->repository);
+			snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/branches/%04dQ%d\n", year, quarter);
+		} else {
+			if (connection->tag != NULL)
+				snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/tags/%s\n", connection->tag);
+			else
+				snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
 		}
 
-		if ((connection->want = (char *)malloc(41)) == NULL)
-			err(EXIT_FAILURE, "get_commit_details: malloc");
+		if ((position = strstr(connection->response, full_branch)) != NULL) {
+			if ((connection->want = (char *)malloc(41)) == NULL)
+				err(EXIT_FAILURE, "get_commit_details: malloc");
 
-		memcpy(connection->want, position - 40, 40);
-		connection->want[40] = '\0';
+			memcpy(connection->want, position - 40, 40);
+			connection->want[40] = '\0';
+		} else {
+			if (tries == 0) {
+				full_branch[strlen(full_branch) - 1] = '\0';
 
-		if (connection->verbosity)
-			printf("# Want: %s\n", connection->want);
+				errc(EXIT_FAILURE, EINVAL, "get_commit_details: %s doesn't exist in %s", full_branch, connection->repository);
+			}
+		}
+	}
+
+	if (connection->verbosity) {
+		fprintf(stderr, "# Want: %s\n", connection->want);
+		fprintf(stderr, "# Branch:%s", full_branch);
 	}
 
 	/* Create the pack file name. */
@@ -1260,6 +1274,7 @@ fetch_pack(connector *connection, char *command)
 	/* Process the pack data. */
 
 	unpack_objects(connection);
+
 	free(command);
 }
 
@@ -1652,10 +1667,10 @@ save_blob(connector *connection, int modified, int mode, char *path, char *buffe
 
 	if (S_ISLNK(mode)) {
 		if (symlink(buffer, path) == -1)
-			err(EXIT_FAILURE, "save_repairs: symlink failure %s -> %s", path, buffer);
+			err(EXIT_FAILURE, "save_blob: symlink failure %s -> %s", path, buffer);
 	} else {
 		if (((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-			err(EXIT_FAILURE, "save_repairs: write file failure %s", path);
+			err(EXIT_FAILURE, "save_blob: write file failure %s", path);
 
 		chmod(path, mode);
 		write(fd, buffer, data_size);
@@ -1887,6 +1902,14 @@ save_objects(connector *connection)
 	save_tree(connection, fd, tree, connection->path_target);
 	close(fd);
 
+	/* Save the remote files list. */
+
+	if ((remove(connection->remote_file_old)) != 0)
+		err(EXIT_FAILURE, "save_objects: cannot remove %s", connection->remote_file_old);
+
+	if ((rename(connection->remote_file_new, connection->remote_file_old)) != 0)
+		err(EXIT_FAILURE, "save_objects: cannot rename %s", connection->remote_file_old);
+
 	/* Save all of the new and modified files. */
 
 	RB_FOREACH(found_file, Tree_Remote_Path, &Remote_Path)
@@ -1898,13 +1921,6 @@ save_objects(connector *connection)
 
 			save_blob(connection, found_file->new, found_file->mode, found_file->path, found_object->buffer, found_object->data_size);
 		}
-
-	/* Save the remote files list. */
-
-	remove(connection->remote_file_old);
-
-	if ((rename(connection->remote_file_new, connection->remote_file_old)) != 0)
-		err(EXIT_FAILURE, "save_objects: cannot rename %s", connection->remote_file_old);
 
 	free(tree);
 }
@@ -2158,7 +2174,6 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Host: %s\n", connection.host);
 		fprintf(stderr, "# Port: %d\n", connection.port);
 		fprintf(stderr, "# Repository: %s\n", connection.repository);
-		fprintf(stderr, "# Branch: %s\n", connection.branch);
 		fprintf(stderr, "# Target: %s\n", connection.path_target);
 
 		if (connection.use_pack_file)
