@@ -24,7 +24,6 @@
  * SUCH DAMAGE.
  *
  * $FreeBSD$
- *
  */
 
 #include <sys/socket.h>
@@ -43,28 +42,29 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "0.83"
-#define GIT_VERSION       "2.28"
-#define BUFFER_UNIT_SMALL  4096
-#define BUFFER_UNIT_LARGE  1048576
+#define	GITUP_VERSION     "0.85"
+#define	GIT_VERSION       "2.28"
+#define	BUFFER_UNIT_SMALL  4096
+#define	BUFFER_UNIT_LARGE  1048576
 
 struct object_node {
 	RB_ENTRY(object_node) link;
-	char *hash;
-	int   type;
-	int   index;
-	int   index_delta;
-	char *ref_delta_hash;
-	int   pack_offset;
-	char *buffer;
-	int   buffer_size;
-	int   data_size;
+	char     *hash;
+	uint8_t   type;
+	uint32_t  index;
+	uint32_t  index_delta;
+	char     *ref_delta_hash;
+	uint32_t  pack_offset;
+	char     *buffer;
+	uint32_t  buffer_size;
+	uint32_t  data_size;
 };
 
 struct file_node {
@@ -73,9 +73,9 @@ struct file_node {
 	mode_t  mode;
 	char   *hash;
 	char   *path;
-	uint8_t keep;
-	uint8_t save;
-	uint8_t new;
+	bool    keep;
+	bool    save;
+	bool    new;
 };
 
 typedef struct {
@@ -94,8 +94,8 @@ typedef struct {
 	char                *response;
 	int                  response_blocks;
 	uint32_t             response_size;
-	int                  clone;
-	int                  repair;
+	bool                 clone;
+	bool                 repair;
 	struct object_node **object;
 	int                  objects;
 	char                *pack_file;
@@ -105,8 +105,8 @@ typedef struct {
 	char                *remote_file_new;
 	char               **ignore;
 	int                  ignores;
-	int                  keep_pack_file;
-	int                  use_pack_file;
+	bool                 keep_pack_file;
+	bool                 use_pack_file;
 	int                  verbosity;
 } connector;
 
@@ -135,7 +135,7 @@ static int      object_node_compare(const struct object_node *, const struct obj
 static void     object_node_free(struct object_node *);
 static void     process_command(connector *, char *);
 static void     prune_tree(connector *, char *);
-static void     save_blob(connector *, int, int, char *, char *, int);
+static void     save_file(char *, int, char *, int, int verbosity, bool);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
 static void     save_tree(connector *, int, char *, char *);
@@ -214,10 +214,6 @@ static RB_HEAD(Tree_Remote_Path, file_node) Remote_Path = RB_INITIALIZER(&Remote
 RB_PROTOTYPE(Tree_Remote_Path, file_node, link_path, file_node_compare_path)
 RB_GENERATE(Tree_Remote_Path,  file_node, link_path, file_node_compare_path)
 
-static RB_HEAD(Tree_Remote_Hash, file_node) Remote_Hash = RB_INITIALIZER(&Remote_Hash);
-RB_PROTOTYPE(Tree_Remote_Hash, file_node, link_hash, file_node_compare_hash)
-RB_GENERATE(Tree_Remote_Hash,  file_node, link_hash, file_node_compare_hash)
-
 static RB_HEAD(Tree_Local_Path, file_node) Local_Path = RB_INITIALIZER(&Local_Path);
 RB_PROTOTYPE(Tree_Local_Path, file_node, link_path, file_node_compare_path)
 RB_GENERATE(Tree_Local_Path,  file_node, link_path, file_node_compare_path)
@@ -250,7 +246,7 @@ legible_hash(char *hash_buffer)
 
 	hash[40] = '\0';
 
-	return hash;
+	return (hash);
 }
 
 
@@ -271,7 +267,7 @@ illegible_hash(char *hash_buffer)
 	for (int x = 0; x < 20; x++)
 		hash[x] = 16 * ((unsigned char)hash_buffer[x * 2] - (hash_buffer[x * 2] > 58 ? 87 : 48)) + (unsigned char)hash_buffer[x * 2 + 1] - (hash_buffer[x * 2 + 1] > 58 ? 87 : 48);
 
-	return hash;
+	return (hash);
 }
 
 
@@ -364,6 +360,34 @@ load_file(char *path, char **buffer, uint32_t *buffer_size)
 
 
 /*
+ * save_file
+ *
+ * Procedure that saves a blob/file.
+ */
+
+static void
+save_file(char *path, int mode, char *buffer, int data_size, int verbosity, bool modified)
+{
+	int fd;
+
+	if (verbosity > 0)
+		printf(" %c %s\n", (modified == true ? '*' : '+'), path);
+
+	if (S_ISLNK(mode)) {
+		if (symlink(buffer, path) == -1)
+			err(EXIT_FAILURE, "save_file: symlink failure %s -> %s", path, buffer);
+	} else {
+		if (((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
+			err(EXIT_FAILURE, "save_file: write file failure %s", path);
+
+		chmod(path, mode);
+		write(fd, buffer, data_size);
+		close(fd);
+	}
+}
+
+
+/*
  * calculate_object_hash
  *
  * Function that adds git's "type file-size\0" header to a buffer and returns the SHA checksum.
@@ -404,7 +428,7 @@ calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 	free(hash_buffer);
 	free(temp_buffer);
 
-	return hash;
+	return (hash);
 }
 
 
@@ -431,7 +455,7 @@ calculate_file_hash(char *path, int file_mode)
 		free(buffer);
 	}
 
-	return hash;
+	return (hash);
 }
 
 
@@ -493,7 +517,7 @@ load_remote_file_list(connector *connection)
 
 			if (strlen(line) == 0) {
 				if (buffer != NULL) {
-					if (connection->clone == 0)
+					if (connection->clone == false)
 						store_object(connection, 2, buffer, buffer_length, 0, 0, NULL);
 
 					buffer = NULL;
@@ -541,7 +565,6 @@ load_remote_file_list(connector *connection)
 			file->path = strdup(temp);
 
 			RB_INSERT(Tree_Remote_Path, &Remote_Path, file);
-			RB_INSERT(Tree_Remote_Hash, &Remote_Hash, file);
 		}
 
 		free(remote_files);
@@ -582,9 +605,9 @@ find_local_tree(connector *connection, char *base_path)
 	new_node->mode = (found ? found->mode : 040000);
 	new_node->hash = (found ? strdup(found->hash) : NULL);
 	new_node->path = strdup(base_path);
-	new_node->keep = 0;
-	new_node->save = 0;
-	new_node->new  = 0;
+	new_node->keep = (strlen(base_path) == strlen(connection->path_target));
+	new_node->save = false;
+	new_node->new  = false;
 
 	RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
 
@@ -624,9 +647,9 @@ find_local_tree(connector *connection, char *base_path)
 				new_node->mode = file.st_mode;
 				new_node->hash = calculate_file_hash(full_path, file.st_mode);
 				new_node->path = strdup(full_path);
-				new_node->keep = 0;
-				new_node->save = 0;
-				new_node->new  = 0;
+				new_node->keep = false;
+				new_node->save = false;
+				new_node->new  = false;
 
 				RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
 				RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
@@ -904,7 +927,9 @@ static void
 send_command(connector *connection, char *want)
 {
 	char   *command = NULL;
-	size_t  want_size = strlen(want);
+	size_t  want_size = 0;
+
+	want_size = strlen(want);
 
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
 		err(EXIT_FAILURE, "send_command: malloc");
@@ -966,7 +991,7 @@ build_clone_command(connector *connection)
 		connection->want,
 		connection->want);
 
-	return command;
+	return (command);
 }
 
 
@@ -1004,7 +1029,7 @@ build_pull_command(connector *connection)
 		connection->want,
 		connection->have);
 
-	return command;
+	return (command);
 }
 
 
@@ -1035,7 +1060,7 @@ build_repair_command(connector *connection)
 	}
 
 	if (want_length == 0)
-		return NULL;
+		return (NULL);
 
 	if (want_length > 3276800)
 		errc(EXIT_FAILURE, E2BIG, "build_repair_command: There are too many files to repair.  Please re-clone the repository.");
@@ -1057,7 +1082,7 @@ build_repair_command(connector *connection)
 		connection->agent,
 		want);
 
-	return command;
+	return (command);
 }
 
 
@@ -1069,8 +1094,8 @@ static void
 get_commit_details(connector *connection)
 {
 	char      command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
-	time_t    current = time(NULL);
-	struct tm now = *localtime(&current);
+	time_t    current;
+	struct tm now;
 	int       tries = 2, year = 0, quarter = 0;
 
 	/* Get the list of commits from the server. */
@@ -1111,6 +1136,8 @@ get_commit_details(connector *connection)
 		if (strncmp(connection->branch, "quarterly", 9) == 0) {
 			/* If the current calendar quarter doesn't exist, try the previous one. */
 
+			current = time(NULL);
+			now     = *localtime(&current);
 			year    = 1900 + now.tm_year + ((tries == 0) && (now.tm_mon < 3) ? -1 : 0);
 			quarter = ((now.tm_mon / 3) + (tries == 0 ? 3 : 0)) % 4 + 1;
 
@@ -1144,7 +1171,7 @@ get_commit_details(connector *connection)
 
 	/* Create the pack file name. */
 
-	if (connection->keep_pack_file) {
+	if (connection->keep_pack_file == true) {
 		int pack_file_name_size = strlen(connection->section) + 47;
 
 		if ((connection->pack_file = (char *)malloc(pack_file_name_size)) == NULL)
@@ -1195,8 +1222,8 @@ load_pack(connector *connection)
 static void
 fetch_pack(connector *connection, char *command)
 {
-	char *pack_start = NULL, hash_buffer[20], path[BUFFER_UNIT_SMALL];
-	int   fd, chunk_size = 1, pack_size = 0, source = 0, target = 0;
+	char *pack_start = NULL, hash_buffer[20];
+	int   chunk_size = 1, pack_size = 0, source = 0, target = 0;
 
 	/* Request the pack data. */
 
@@ -1239,14 +1266,8 @@ fetch_pack(connector *connection, char *command)
 
 	/* Save the pack data. */
 
-	if (connection->keep_pack_file) {
-		if ((fd = open(connection->pack_file, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-			err(EXIT_FAILURE, "fetch_pack: write file failure %s", path);
-
-		chmod(connection->pack_file, 0644);
-		write(fd, connection->response, connection->response_size);
-		close(fd);
-	}
+	if (connection->keep_pack_file == true)
+		save_file(connection->pack_file, 0644, connection->response, connection->response_size, 0, 0);
 
 	/* Process the pack data. */
 
@@ -1266,13 +1287,15 @@ static void
 store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, int index_delta, char *ref_delta_hash)
 {
 	struct object_node *object = NULL, find;
-	char               *hash = calculate_object_hash(buffer, buffer_size, type);
+	char               *hash = NULL;
+
+	hash = calculate_object_hash(buffer, buffer_size, type);
 
 	/* Check to make sure the object doesn't already exist. */
 
 	find.hash = hash;
 
-	if (((object = RB_FIND(Tree_Objects, &Objects, &find)) != NULL) && (connection->repair == 0)) {
+	if (((object = RB_FIND(Tree_Objects, &Objects, &find)) != NULL) && (connection->repair == false)) {
 		free(hash);
 	} else {
 		/* Extend the array if needed, create a new node and add it. */
@@ -1456,7 +1479,7 @@ unpack_delta_integer(char *data, int *position, int bits)
 		*position += read_bytes;
 	}
 
-	return result;
+	return (result);
 }
 
 
@@ -1474,7 +1497,7 @@ unpack_variable_length_integer(char *data, int *position)
 	do result += (data[*position] & 0x7F) << (7 * count++);
 	while (data[(*position)++] & 0x80);
 
-	return result;
+	return (result);
 }
 
 
@@ -1629,34 +1652,6 @@ extract_tree_item(struct file_node *file, char **position)
 
 
 /*
- * save_blob
- *
- * Procedure that saves a blob/file.
- */
-
-static void
-save_blob(connector *connection, int modified, int mode, char *path, char *buffer, int data_size)
-{
-	int fd;
-
-	if (connection->verbosity)
-		printf(" %c %s\n", (modified != 0 ? '+' : '*'), path);
-
-	if (S_ISLNK(mode)) {
-		if (symlink(buffer, path) == -1)
-			err(EXIT_FAILURE, "save_blob: symlink failure %s -> %s", path, buffer);
-	} else {
-		if (((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-			err(EXIT_FAILURE, "save_blob: write file failure %s", path);
-
-		chmod(path, mode);
-		write(fd, buffer, data_size);
-		close(fd);
-	}
-}
-
-
-/*
  * save_tree
  *
  * Procedure that processes all of the obj_trees and saves files that have been updated.
@@ -1683,9 +1678,9 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 	file.path = base_path;
 
 	if ((found_file = RB_FIND(Tree_Local_Path, &Local_Path, &file)) != NULL) {
-		found_file->keep = 1;
-		found_file->save = 0;
-		found_file->new  = 0;
+		found_file->keep = true;
+		found_file->save = false;
+		found_file->new  = false;
 	}
 
 	/* Add the base path to the output. */
@@ -1727,9 +1722,9 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 			/* If the local file hasn't changed, skip it. */
 
 			if (found_file != NULL) {
-				found_file->keep = 1;
-				found_file->save = 0;
-				found_file->new  = 0;
+				found_file->keep = true;
+				found_file->save = false;
+				found_file->new  = false;
 
 				if (strncmp(file.hash, found_file->hash, 40) == 0)
 					continue;
@@ -1756,18 +1751,17 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 				new_file_node->mode = file.mode;
 				new_file_node->hash = strdup(found_object->hash);
 				new_file_node->path = strdup(full_path);
-				new_file_node->keep = 1;
-				new_file_node->save = 1;
+				new_file_node->keep = true;
+				new_file_node->save = true;
 				new_file_node->new  = (found_file == NULL);
 
 				RB_INSERT(Tree_Remote_Path, &Remote_Path, new_file_node);
-				RB_INSERT(Tree_Remote_Hash, &Remote_Hash, new_file_node);
 			} else {
 				free(remote_file->hash);
 				remote_file->mode = file.mode;
 				remote_file->hash = strdup(found_object->hash);
-				remote_file->keep = 1;
-				remote_file->save = 1;
+				remote_file->keep = true;
+				remote_file->save = true;
 				remote_file->new  = (found_file == NULL);
 			}
 		}
@@ -1797,7 +1791,7 @@ save_repairs(connector *connection)
 	struct file_node   *local_file = NULL, *remote_file = NULL, *found_file = NULL;
 	struct stat         check_file;
 	char               *check_hash = NULL, *buffer_hash = NULL;
-	int                 missing = 0, update = 0;
+	bool                missing = false, update = false;
 
 	/* Loop through the remote file list, looking for objects that arrived in the pack data. */
 
@@ -1814,20 +1808,20 @@ save_repairs(connector *connection)
 				err(EXIT_FAILURE, "save_repairs: cannot create %s", found_file->path);
 		} else {
 			missing = stat(found_file->path, &check_file);
-			update  = 1;
+			update  = true;
 
 			/* Because identical files can exist in multiple places, only update the altered files. */
 
-			if (missing == 0) {
+			if (missing == false) {
 				check_hash  = calculate_file_hash(found_file->path, found_file->mode);
 				buffer_hash = calculate_object_hash(found_object->buffer, found_object->data_size, 3);
 
 				if (strncmp(check_hash, buffer_hash, 40) == 0)
-					update = 0;
+					update = false;
 			}
 
-			if (update)
-				save_blob(connection, missing, found_file->mode, found_file->path, found_object->buffer, found_object->data_size);
+			if (update == true)
+				save_file(found_file->path, found_file->mode, found_object->buffer, found_object->data_size, connection->verbosity, missing);
 		}
 	}
 
@@ -1835,7 +1829,7 @@ save_repairs(connector *connection)
 
 	RB_FOREACH(remote_file, Tree_Remote_Path, &Remote_Path)
 		if ((local_file = RB_FIND(Tree_Local_Path, &Local_Path, remote_file)) != NULL)
-			local_file->keep = 1;
+			local_file->keep = true;
 }
 
 
@@ -1897,7 +1891,7 @@ save_objects(connector *connection)
 			if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
 				errc(EXIT_FAILURE, EINVAL, "save_objects: can't find %s\n", found_file->hash);
 
-			save_blob(connection, found_file->new, found_file->mode, found_file->path, found_object->buffer, found_object->data_size);
+			save_file(found_file->path, found_file->mode, found_object->buffer, found_object->data_size, connection->verbosity, found_file->new);
 		}
 
 	free(tree);
@@ -2004,7 +1998,7 @@ load_configuration(connector *connection, char *configuration_file, char *sectio
 static void
 usage(char *configuration_file)
 {
-	fprintf(stderr, "Usage: gitup <section> [options]\n\n");
+	fprintf(stderr, "Usage: gitup <section> [-ckrV] [-h checksum] [-t tag] [-u pack file] [-v verbosity] [-w checksum]\n");
 	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
 	fprintf(stderr, "  Options:\n");
 	fprintf(stderr, "    -c  Force gitup to clone the repository.\n");
@@ -2034,7 +2028,8 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
-	int                 x = 0, option = 0, ignore = 0, current_repository = 0, length = 0;
+	int                 x = 0, option = 0, length = 0;
+	bool                ignore = false, current_repository = false;
 	char               *command = NULL, *configuration_file = "./gitup.conf";
 	struct stat         check_file;
 
@@ -2054,8 +2049,8 @@ main(int argc, char **argv)
 		.response          = NULL,
 		.response_blocks   = 0,
 		.response_size     = 0,
-		.clone             = 0,
-		.repair            = 0,
+		.clone             = false,
+		.repair            = false,
 		.object            = NULL,
 		.objects           = 0,
 		.pack_file         = NULL,
@@ -2065,8 +2060,8 @@ main(int argc, char **argv)
 		.remote_file_new   = NULL,
 		.ignore            = NULL,
 		.ignores           = 0,
-		.keep_pack_file    = 0,
-		.use_pack_file     = 0,
+		.keep_pack_file    = false,
+		.use_pack_file     = false,
 		.verbosity         = 1,
 		};
 
@@ -2089,22 +2084,22 @@ main(int argc, char **argv)
 	while ((option = getopt(argc, argv, "ch:krt:u:Vv:w:")) != -1)
 		switch (option) {
 			case 'c':
-				connection.clone = 1;
+				connection.clone = true;
 				break;
 			case 'h':
 				connection.have = strdup(optarg);
 				break;
 			case 'k':
-				connection.keep_pack_file = 1;
+				connection.keep_pack_file = true;
 				break;
 			case 'r':
-				connection.repair = 1;
+				connection.repair = true;
 				break;
 			case 't':
 				connection.tag = strdup(optarg);
 				break;
 			case 'u':
-				connection.use_pack_file = 1;
+				connection.use_pack_file = true;
 				connection.pack_file     = strdup(optarg);
 
 				/* Try and extract the want from the file name. */
@@ -2158,12 +2153,12 @@ main(int argc, char **argv)
 	/* If the remote files list or repository are missing, then a clone must be performed. */
 
 	if (stat(connection.remote_file_old, &check_file) != 0)
-		connection.clone = 1;
+		connection.clone = true;
 
 	if (stat(connection.path_target, &check_file) != 0)
-		connection.clone = 1;
+		connection.clone = true;
 
-	if (connection.clone == 0) {
+	if (connection.clone == false) {
 		load_remote_file_list(&connection);
 		find_local_tree(&connection, connection.path_target);
 	}
@@ -2176,7 +2171,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Repository: %s\n", connection.repository);
 		fprintf(stderr, "# Target: %s\n", connection.path_target);
 
-		if (connection.use_pack_file)
+		if (connection.use_pack_file == true)
 			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
 
 		if (connection.have)
@@ -2188,7 +2183,7 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	if ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &check_file) != -1)) {
+	if ((connection.use_pack_file == true) && (lstat(connection.pack_file, &check_file) != -1)) {
 		if (connection.verbosity)
 			fprintf(stderr, "# Action: %s\n", (connection.clone ? "clone" : "pull"));
 
@@ -2196,19 +2191,19 @@ main(int argc, char **argv)
 		apply_deltas(&connection);
 		save_objects(&connection);
 	} else {
-		if ((connection.use_pack_file == 0) || ((connection.use_pack_file == 1) && (lstat(connection.pack_file, &check_file) == -1)))
+		if ((connection.use_pack_file == false) || ((connection.use_pack_file == true) && (lstat(connection.pack_file, &check_file) == -1)))
 			get_commit_details(&connection);
 
 		if ((connection.have != NULL) && (connection.want != NULL) && (strncmp(connection.have, connection.want, 40) == 0))
-			current_repository = 1;
+			current_repository = true;
 
 		/* When pulling, first ensure the local tree is pristine. */
 
-		if ((connection.repair == 1) || (connection.clone == 0)) {
+		if ((connection.repair == true) || (connection.clone == false)) {
 			command = build_repair_command(&connection);
 
 			if (command != NULL) {
-				connection.repair = 1;
+				connection.repair = true;
 
 				if (connection.verbosity)
 					fprintf(stderr, "# Action: repair\n");
@@ -2221,11 +2216,11 @@ main(int argc, char **argv)
 
 		/* Process the clone or pull. */
 
-		if ((current_repository == 0) && (connection.repair == 0)) {
+		if ((current_repository == false) && (connection.repair == false)) {
 			if (connection.verbosity)
 				fprintf(stderr, "# Action: %s\n", (connection.clone ? "clone" : "pull"));
 
-			if (connection.clone == 0)
+			if (connection.clone == false)
 				command = build_pull_command(&connection);
 			else
 				command = build_clone_command(&connection);
@@ -2236,7 +2231,7 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (connection.repair)
+	if (connection.repair == true)
 		fprintf(stderr, "# The local repository has been repaired.  Please rerun gitup to pull the latest commit.\n");
 
 	/* Wrap it all up. */
@@ -2248,12 +2243,12 @@ main(int argc, char **argv)
 		RB_REMOVE(Tree_Local_Hash, &Local_Hash, file);
 
 	RB_FOREACH(file, Tree_Local_Path, &Local_Path) {
-		if ((file->keep == 0) && ((current_repository == 0) || (connection.repair == 1))) {
-			for (x = 0, ignore = 0; x < connection.ignores; x++)
+		if ((file->keep == false) && ((current_repository == false) || (connection.repair == true))) {
+			for (x = 0, ignore = false; x < connection.ignores; x++)
 				if (strnstr(file->path, connection.ignore[x], strlen(file->path)) != NULL)
-					ignore = 1;
+					ignore = true;
 
-			if (ignore == 0) {
+			if (ignore == false) {
 				if (connection.verbosity)
 					printf(" - %s\n", file->path);
 
@@ -2266,9 +2261,6 @@ main(int argc, char **argv)
 
 		file_node_free(RB_REMOVE(Tree_Local_Path, &Local_Path, file));
 	}
-
-	RB_FOREACH(file, Tree_Remote_Hash, &Remote_Hash)
-		RB_REMOVE(Tree_Remote_Hash, &Remote_Hash, file);
 
 	RB_FOREACH(file, Tree_Remote_Path, &Remote_Path)
 		file_node_free(RB_REMOVE(Tree_Remote_Path, &Remote_Path, file));
