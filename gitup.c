@@ -143,9 +143,9 @@ static void     send_command(connector *, char *);
 static void     set_configuration_parameters(connector *, char *, size_t, const char *);
 static void     ssl_connect(connector *);
 static void     store_object(connector *, int, char *, int, int, int, char *);
-static uint32_t unpack_delta_integer(char *, int *, int);
+static uint32_t unpack_delta_integer(char *, uint32_t *, int);
 static void     unpack_objects(connector *);
-static uint32_t unpack_variable_length_integer(char *, int *);
+static uint32_t unpack_variable_length_integer(char *, uint32_t *);
 static void     usage(const char *);
 
 /*
@@ -1096,10 +1096,11 @@ build_repair_command(connector *connection)
 static void
 get_commit_details(connector *connection)
 {
-	char      command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
-	time_t    current;
-	struct tm now;
-	int       tries = 2, year = 0, quarter = 0;
+	char       command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
+	time_t     current;
+	struct tm  now;
+	int        tries = 2, year = 0, quarter = 0;
+	uint32_t   x = 0;
 
 	/* Get the list of commits from the server. */
 
@@ -1117,7 +1118,7 @@ get_commit_details(connector *connection)
 
 	/* Change all \0 characters to \n to make it easy to find the data. */
 
-	for (uint32_t x = 0; x < connection->response_size; x++)
+	for (x = 0; x < connection->response_size; x++)
 		if (connection->response[x] == '\0')
 			connection->response[x] = '\n';
 
@@ -1458,7 +1459,7 @@ unpack_objects(connector *connection)
  */
 
 static uint32_t
-unpack_delta_integer(char *data, int *position, int bits)
+unpack_delta_integer(char *data, uint32_t *position, int bits)
 {
 	uint32_t result = 0, read_bytes = 0, temp = 0, mask = 8;
 
@@ -1493,7 +1494,7 @@ unpack_delta_integer(char *data, int *position, int bits)
  */
 
 static uint32_t
-unpack_variable_length_integer(char *data, int *position)
+unpack_variable_length_integer(char *data, uint32_t *position)
 {
 	uint32_t result = 0, count = 0;
 
