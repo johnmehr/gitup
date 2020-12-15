@@ -368,12 +368,12 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
  */
 
 static void
-save_file(char *path, int mode, char *buffer, int data_size, int verbosity, bool modified)
+save_file(char *path, int mode, char *buffer, int data_size, int verbosity, bool new)
 {
 	int fd;
 
 	if (verbosity > 0)
-		printf(" %c %s\n", (modified == true ? '*' : '+'), path);
+		printf(" %c %s\n", (new == true ? '+' : '*'), path);
 
 	if (S_ISLNK(mode)) {
 		if (symlink(buffer, path) == -1)
@@ -2159,16 +2159,15 @@ main(int argc, char **argv)
 
 	/* If the remote files list or repository are missing, then a clone must be performed. */
 
-	if (stat(connection.remote_file_old, &check_file) != 0)
-		connection.clone = true;
-
-	if (stat(connection.path_target, &check_file) != 0)
-		connection.clone = true;
-
-	if (connection.clone == false) {
+	if (stat(connection.remote_file_old, &check_file) == 0)
 		load_remote_file_list(&connection);
+	else
+		connection.clone = true;
+
+	if (stat(connection.path_target, &check_file) == 0)
 		find_local_tree(&connection, connection.path_target);
-	}
+	else
+		connection.clone = true;
 
 	/* Display connection parameters. */
 
