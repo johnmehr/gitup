@@ -2106,32 +2106,33 @@ main(int argc, char **argv)
 				connection.tag = strdup(optarg);
 				break;
 			case 'u':
-				connection.use_pack_file = true;
-				connection.pack_file     = strdup(optarg);
+				if (stat(optarg, &check_file) == 0) {
+					connection.use_pack_file = true;
+					connection.pack_file     = strdup(optarg);
 
-				/* Try and extract the want from the file name. */
+					/* Try and extract the want from the file name. */
 
-				length    = strlen(optarg);
-				start     = optarg;
-				temp      = optarg;
-				extension = strnstr(optarg, ".pack", length);
+					length    = strlen(optarg);
+					start     = optarg;
+					temp      = optarg;
+					extension = strnstr(optarg, ".pack", length);
 
-				while ((temp = strchr(start, '/')) != NULL)
-					start = temp + 1;
+					while ((temp = strchr(start, '/')) != NULL)
+						start = temp + 1;
 
-				want = strnstr(start, connection.section, length - (start - optarg));
+					want = strnstr(start, connection.section, length - (start - optarg));
 
-				if (want == NULL)
-					break;
-				else
-					want += strlen(connection.section) + 1;
+					if (want == NULL)
+						break;
+					else
+						want += strlen(connection.section) + 1;
 
-				if (extension != NULL)
-					*extension = '\0';
+					if (extension != NULL)
+						*extension = '\0';
 
-				if (strlen(want) == 40)
-					connection.want = strdup(want);
-
+					if (strlen(want) == 40)
+						connection.want = strdup(want);
+				}
 				break;
 			case 'w':
 				connection.want = strdup(optarg);
