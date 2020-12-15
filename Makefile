@@ -1,8 +1,11 @@
-CC = cc
-CFLAGS = -O2 -g
-LDFLAGS = -lssl -lcrypto -lz
-COMPILE = $(CC) $(CFLAGS)
+PROG= gitup
+SRCS= gitup.c
 
-gitup: gitup.c 
-	$(COMPILE) -o $@ $< $(LDFLAGS)
+LDADD= -lssl -lz -lcrypto
+
+WARNS= 6
+
+MAN= gitup.1 gitup.conf.5
+
+.include <bsd.prog.mk>
 

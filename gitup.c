@@ -110,7 +110,7 @@ typedef struct {
 	int                  verbosity;
 } connector;
 
-static void     append_string(char **, unsigned int *, unsigned int *, char *, int);
+static void     append_string(char **, unsigned int *, unsigned int *, const char *, int);
 static void     apply_deltas(connector *);
 static char *   calculate_file_hash(char *, int);
 static char *   calculate_object_hash(char *, uint32_t, int);
@@ -126,8 +126,8 @@ static char *   build_clone_command(connector *);
 static char *   build_pull_command(connector *);
 static char *   build_repair_command(connector *);
 static char *   legible_hash(char *);
-static void     load_configuration(connector *, char *, char *);
-static void     load_file(char *, char **, uint32_t *);
+static void     load_configuration(connector *, const char *, char *);
+static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *);
 static void     load_remote_file_list(connector *);
@@ -146,7 +146,7 @@ static void     store_object(connector *, int, char *, int, int, int, char *);
 static uint32_t unpack_delta_integer(char *, int *, int);
 static void     unpack_objects(connector *);
 static uint32_t unpack_variable_length_integer(char *, int *);
-static void     usage(char *);
+static void     usage(const char *);
 
 /*
  * node_compare
@@ -237,11 +237,12 @@ static char *
 legible_hash(char *hash_buffer)
 {
 	char *hash = NULL;
+	int   x = 0;
 
 	if ((hash = (char *)malloc(41)) == NULL)
 		err(EXIT_FAILURE, "legible_hash: malloc");
 
-	for (int x = 0; x < 20; x++)
+	for (x = 0; x < 20; x++)
 		snprintf(&hash[x * 2], 3, "%02x", (unsigned char)hash_buffer[x]);
 
 	hash[40] = '\0';
@@ -260,11 +261,12 @@ static char *
 illegible_hash(char *hash_buffer)
 {
 	char *hash = NULL;
+	int   x = 0;
 
 	if ((hash = (char *)malloc(20)) == NULL)
 		err(EXIT_FAILURE, "illegible_hash: malloc");
 
-	for (int x = 0; x < 20; x++)
+	for (x = 0; x < 20; x++)
 		hash[x] = 16 * ((unsigned char)hash_buffer[x * 2] - (hash_buffer[x * 2] > 58 ? 87 : 48)) + (unsigned char)hash_buffer[x * 2 + 1] - (hash_buffer[x * 2 + 1] > 58 ? 87 : 48);
 
 	return (hash);
@@ -330,7 +332,7 @@ prune_tree(connector *connection, char *base_path)
  */
 
 static void
-load_file(char *path, char **buffer, uint32_t *buffer_size)
+load_file(const char *path, char **buffer, uint32_t *buffer_size)
 {
 	struct stat file;
 	int         fd;
@@ -396,9 +398,9 @@ save_file(char *path, int mode, char *buffer, int data_size, int verbosity, bool
 static char *
 calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 {
-	int   digits = buffer_size, header_width = 0;
-	char *hash = NULL, *hash_buffer = NULL, *temp_buffer = NULL;
-	char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs-delta", "ref-delta" };
+	int         digits = buffer_size, header_width = 0;
+	char       *hash = NULL, *hash_buffer = NULL, *temp_buffer = NULL;
+	const char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs-delta", "ref-delta" };
 
 	if ((hash_buffer = (char *)malloc(21)) == NULL)
 		err(EXIT_FAILURE, "calculate_object_hash: malloc");
@@ -466,7 +468,7 @@ calculate_file_hash(char *path, int file_mode)
  */
 
 static void
-append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_length, char *addendum, int addendum_size)
+append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_length, const char *addendum, int addendum_size)
 {
 	int adjust = 0;
 
@@ -497,8 +499,9 @@ load_remote_file_list(connector *connection)
 {
 	struct file_node *file = NULL;
 	struct stat       temp_file;
-	char             *line = NULL, *hash = NULL, *path = NULL, *remote_files = NULL, *null = "\0";
+	char             *line = NULL, *hash = NULL, *path = NULL, *remote_files = NULL;
 	char              temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL], *buffer = NULL, *temp_hash = NULL;
+	const char       *null = "\0";
 	uint32_t          count = 0, remote_file_size = 0, buffer_size = 0, buffer_length = 0;
 
 	if (stat(connection->remote_file_old, &temp_file) != -1) {
@@ -605,7 +608,7 @@ find_local_tree(connector *connection, char *base_path)
 	new_node->mode = (found ? found->mode : 040000);
 	new_node->hash = (found ? strdup(found->hash) : NULL);
 	new_node->path = strdup(base_path);
-	new_node->keep = (strlen(base_path) == strlen(connection->path_target));
+	new_node->keep = (strlen(base_path) == strlen(connection->path_target) ? true : false);
 	new_node->save = false;
 	new_node->new  = false;
 
@@ -1337,10 +1340,10 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 static void
 unpack_objects(connector *connection)
 {
-	int            buffer_size = 0, total_objects = 0, object_type = 0, position = 4, index_delta = 0;
-	int            pack_offset = 0, lookup_offset = 0, stream_code = 0, version = 0, stream_bytes = 0;
+	int            buffer_size = 0, total_objects = 0, object_type = 0, index_delta = 0;
+	int            stream_code = 0, version = 0, stream_bytes = 0, x = 0;
 	char          *buffer = NULL, *ref_delta_hash = NULL;
-	uint32_t       file_size = 0, file_bits = 0;
+	uint32_t       file_size = 0, file_bits = 0, pack_offset = 0, lookup_offset = 0, position = 4;
 	unsigned char  zlib_out[16384];
 
 	/* Check the pack version number. */
@@ -1353,7 +1356,7 @@ unpack_objects(connector *connection)
 
 	/* Determine the number of objects in the pack data. */
 
-	for (int x = 0; x < 4; x++, position++)
+	for (x = 0; x < 4; x++, position++)
 		total_objects = (total_objects << 8) + (unsigned char)connection->response[position];
 
 	if (connection->verbosity > 1)
@@ -1511,13 +1514,14 @@ unpack_variable_length_integer(char *data, int *position)
 static void
 apply_deltas(connector *connection)
 {
-	int                 position = 0, instruction = 0, length_bits = 0, offset_bits = 0, delta_count = -1;
-	int                 deltas[BUFFER_UNIT_SMALL], merge_buffer_size = 0, layer_buffer_size = 0;
-	char               *start, *merge_buffer = NULL, *layer_buffer = NULL;
-	uint32_t            offset = 0, length = 0, old_file_size = 0, new_file_size = 0, new_position = 0;
 	struct object_node *delta, *base, lookup;
+	int                 instruction = 0, length_bits = 0, x = 0, o = 0, offset_bits = 0;
+	int                 delta_count = -1, deltas[BUFFER_UNIT_SMALL];
+	char               *start, *merge_buffer = NULL, *layer_buffer = NULL;
+	uint32_t            offset = 0, position = 0, length = 0, layer_buffer_size = 0, merge_buffer_size = 0;
+	uint32_t            old_file_size = 0, new_file_size = 0, new_position = 0;
 
-	for (int o = connection->objects - 1; o >= 0; o--) {
+	for (o = connection->objects - 1; o >= 0; o--) {
 		merge_buffer = NULL;
 		delta        = connection->object[o];
 		delta_count  = 0;
@@ -1554,7 +1558,7 @@ apply_deltas(connector *connection)
 
 		/* Loop though the deltas to be applied. */
 
-		for (int x = delta_count - 1; x >= 0; x--) {
+		for (x = delta_count - 1; x >= 0; x--) {
 			delta         = connection->object[deltas[x]];
 			position      = 0;
 			new_position  = 0;
@@ -1629,7 +1633,7 @@ apply_deltas(connector *connection)
 static void
 extract_tree_item(struct file_node *file, char **position)
 {
-	int path_size = 0;
+	int x = 0, path_size = 0;
 
 	/* Extract the file mode. */
 
@@ -1644,7 +1648,7 @@ extract_tree_item(struct file_node *file, char **position)
 
 	/* Extract the file SHA checksum. */
 
-	for (int x = 0; x < 20; x++)
+	for (x = 0; x < 20; x++)
 		snprintf(&file->hash[x * 2], 3, "%02x", (unsigned char)*(*position)++);
 
 	file->hash[40] = '\0';
@@ -1908,7 +1912,8 @@ save_objects(connector *connection)
 static void
 set_configuration_parameters(connector *connection, char *buffer, size_t length, const char *section)
 {
-	char *bracketed_section, *item, *line;
+	char     *bracketed_section, *item, *line;
+	uint32_t  x = 0;
 
 	if ((bracketed_section = (char *)malloc(strlen(section) + 4)) == NULL)
 		err(EXIT_FAILURE, "set_configuration_parameters: bracketed_section malloc");
@@ -1958,7 +1963,7 @@ set_configuration_parameters(connector *connection, char *buffer, size_t length,
 
 	/* Put the returns that strsep took out back in for the next run. */
 
-	for (int x = 0; x < length; x++)
+	for (x = 0; x < length; x++)
 		if (buffer[x] == '\0')
 			buffer[x] = '\n';
 
@@ -1973,7 +1978,7 @@ set_configuration_parameters(connector *connection, char *buffer, size_t length,
  */
 
 static void
-load_configuration(connector *connection, char *configuration_file, char *section)
+load_configuration(connector *connection, const char *configuration_file, char *section)
 {
 	char     *buffer      = NULL;
 	uint32_t  buffer_size = 0;
@@ -1996,7 +2001,7 @@ load_configuration(connector *connection, char *configuration_file, char *sectio
  */
 
 static void
-usage(char *configuration_file)
+usage(const char *configuration_file)
 {
 	fprintf(stderr, "Usage: gitup <section> [-ckrV] [-h checksum] [-t tag] [-u pack file] [-v verbosity] [-w checksum]\n");
 	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
@@ -2028,10 +2033,11 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
-	int                 x = 0, option = 0, length = 0;
-	bool                ignore = false, current_repository = false;
-	char               *command = NULL, *configuration_file = "./gitup.conf";
 	struct stat         check_file;
+	const char         *configuration_file = "./gitup.conf";
+	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
+	int                 x = 0, o = 0, option = 0, length = 0;
+	bool                ignore = false, current_repository = false;
 
 	connector connection = {
 		.ssl               = NULL,
@@ -2104,15 +2110,15 @@ main(int argc, char **argv)
 
 				/* Try and extract the want from the file name. */
 
-				int   length    = strlen(optarg);
-				char *start     = optarg;
-				char *temp      = optarg;
-				char *extension = strnstr(optarg, ".pack", length);
+				length    = strlen(optarg);
+				start     = optarg;
+				temp      = optarg;
+				extension = strnstr(optarg, ".pack", length);
 
 				while ((temp = strchr(start, '/')) != NULL)
 					start = temp + 1;
 
-				char *want = strnstr(start, connection.section, length - (start - optarg));
+				want = strnstr(start, connection.section, length - (start - optarg));
 
 				if (want == NULL)
 					break;
@@ -2265,7 +2271,7 @@ main(int argc, char **argv)
 	RB_FOREACH(file, Tree_Remote_Path, &Remote_Path)
 		file_node_free(RB_REMOVE(Tree_Remote_Path, &Remote_Path, file));
 
-	for (int o = 0; o < connection.objects; o++) {
+	for (o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
 			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->pack_offset, connection.object[o]->data_size, connection.object[o]->hash, connection.object[o]->index_delta, connection.object[o]->ref_delta_hash);
 
