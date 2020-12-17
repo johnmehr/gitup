@@ -64,7 +64,6 @@ struct object_node {
 	uint32_t  pack_offset;
 	char     *buffer;
 	uint32_t  buffer_size;
-	uint32_t  data_size;
 };
 
 struct file_node {
@@ -101,8 +100,7 @@ typedef struct {
 	char                *pack_file;
 	char                *path_target;
 	char                *path_work;
-	char                *remote_file_old;
-	char                *remote_file_new;
+	char                *remote_files;
 	char               **ignore;
 	int                  ignores;
 	bool                 keep_pack_file;
@@ -368,7 +366,7 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
  */
 
 static void
-save_file(char *path, int mode, char *buffer, int data_size, int verbosity, bool new)
+save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, bool new)
 {
 	int fd;
 
@@ -383,7 +381,7 @@ save_file(char *path, int mode, char *buffer, int data_size, int verbosity, bool
 			err(EXIT_FAILURE, "save_file: write file failure %s", path);
 
 		chmod(path, mode);
-		write(fd, buffer, data_size);
+		write(fd, buffer, buffer_size);
 		close(fd);
 	}
 }
@@ -498,80 +496,77 @@ static void
 load_remote_file_list(connector *connection)
 {
 	struct file_node *file = NULL;
-	struct stat       temp_file;
 	char             *line = NULL, *hash = NULL, *path = NULL, *remote_files = NULL;
 	char              temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL], *buffer = NULL, *temp_hash = NULL;
 	const char       *null = "\0";
 	uint32_t          count = 0, remote_file_size = 0, buffer_size = 0, buffer_length = 0;
 
-	if (stat(connection->remote_file_old, &temp_file) != -1) {
-		load_file(connection->remote_file_old, &remote_files, &remote_file_size);
+	load_file(connection->remote_files, &remote_files, &remote_file_size);
 
-		while ((line = strsep(&remote_files, "\n"))) {
-			/* The first line stores the "have". */
+	while ((line = strsep(&remote_files, "\n"))) {
+		/* The first line stores the "have". */
 
-			if (count++ == 0) {
-				connection->have = strdup(line);
-				continue;
-			}
-
-			/* Empty lines signify the end of a directory entry, so create an
-			   obj_tree for what has been read. */
-
-			if (strlen(line) == 0) {
-				if (buffer != NULL) {
-					if (connection->clone == false)
-						store_object(connection, 2, buffer, buffer_length, 0, 0, NULL);
-
-					buffer = NULL;
-					buffer_size = buffer_length = 0;
-				}
-
-				continue;
-			}
-
-			/* Split the line and save the data into the remote files tree. */
-
-			hash = strchr(line, '\t') + 1;
-			path = strchr(hash, '\t') + 1;
-
-			*(hash -  1) = '\0';
-			*(hash + 40) = '\0';
-
-			if ((file = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-				err(EXIT_FAILURE, "load_remote_file_list: malloc");
-
-			file->mode = strtol(line, (char **)NULL, 8);
-			file->hash = strdup(hash);
-			file->save = 0;
-
-			if (path[strlen(path) - 1] == '/') {
-				snprintf(base_path, sizeof(base_path), "%s", path);
-				snprintf(temp, sizeof(temp), "%s", path);
-				temp[strlen(path) - 1] = '\0';
-			} else {
-				snprintf(temp, sizeof(temp), "%s%s", base_path, path);
-
-				/* Add the line to the buffer that will become the obj_tree for this directory. */
-
-				temp_hash = illegible_hash(hash);
-
-				append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
-				append_string(&buffer, &buffer_size, &buffer_length, " ", 1);
-				append_string(&buffer, &buffer_size, &buffer_length, path, strlen(path));
-				append_string(&buffer, &buffer_size, &buffer_length, null, 1);
-				append_string(&buffer, &buffer_size, &buffer_length, temp_hash, 20);
-
-				free(temp_hash);
-			}
-
-			file->path = strdup(temp);
-
-			RB_INSERT(Tree_Remote_Path, &Remote_Path, file);
+		if (count++ == 0) {
+			connection->have = strdup(line);
+			continue;
 		}
 
-		free(remote_files);
+		/* Empty lines signify the end of a directory entry, so create an
+		   obj_tree for what has been read. */
+
+		if (strlen(line) == 0) {
+			if (buffer != NULL) {
+				if (connection->clone == false)
+					store_object(connection, 2, buffer, buffer_length, 0, 0, NULL);
+
+				buffer = NULL;
+				buffer_size = buffer_length = 0;
+			}
+
+			continue;
+		}
+
+		/* Split the line and save the data into the remote files tree. */
+
+		hash = strchr(line, '\t') + 1;
+		path = strchr(hash, '\t') + 1;
+
+		*(hash -  1) = '\0';
+		*(hash + 40) = '\0';
+
+		if ((file = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+			err(EXIT_FAILURE, "load_remote_file_list: malloc");
+
+		file->mode = strtol(line, (char **)NULL, 8);
+		file->hash = strdup(hash);
+		file->save = 0;
+
+		if (path[strlen(path) - 1] == '/') {
+			snprintf(base_path, sizeof(base_path), "%s", path);
+			snprintf(temp, sizeof(temp), "%s", path);
+			temp[strlen(path) - 1] = '\0';
+		} else {
+			snprintf(temp, sizeof(temp), "%s%s", base_path, path);
+
+			/* Add the line to the buffer that will become the obj_tree for this directory. */
+
+			temp_hash = illegible_hash(hash);
+
+			append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
+			append_string(&buffer, &buffer_size, &buffer_length, " ", 1);
+			append_string(&buffer, &buffer_size, &buffer_length, path, strlen(path));
+			append_string(&buffer, &buffer_size, &buffer_length, null, 1);
+			append_string(&buffer, &buffer_size, &buffer_length, temp_hash, 20);
+
+			free(temp_hash);
+		}
+
+		file->path = strdup(temp);
+
+		RB_INSERT(Tree_Remote_Path, &Remote_Path, file);
 	}
+
+	free(remote_files);
 }
 
 
@@ -619,7 +614,7 @@ find_local_tree(connector *connection, char *base_path)
 
 	/* Process the directory's contents. */
 
-	if ((lstat(base_path, &file) != -1) && ((directory = opendir(base_path)) != NULL)) {
+	if ((stat(base_path, &file) != -1) && ((directory = opendir(base_path)) != NULL)) {
 		while ((entry = readdir(directory)) != NULL) {
 			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
 
@@ -661,6 +656,8 @@ find_local_tree(connector *connection, char *base_path)
 
 		closedir(directory);
 	}
+
+	free(full_path);
 }
 
 
@@ -1319,10 +1316,9 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 		object->ref_delta_hash = (ref_delta_hash ? legible_hash(ref_delta_hash) : NULL);
 		object->buffer         = buffer;
 		object->buffer_size    = buffer_size;
-		object->data_size      = buffer_size;
 
 		if (connection->verbosity > 1)
-			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", object->index, object->type, object->pack_offset, object->data_size, object->hash, object->index_delta, object->ref_delta_hash);
+			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", object->index, object->type, object->pack_offset, object->buffer_size, object->hash, object->index_delta, object->ref_delta_hash);
 
 		if (type < 6)
 			RB_INSERT(Tree_Objects, &Objects, object);
@@ -1577,7 +1573,7 @@ apply_deltas(connector *connection)
 
 			/* Loop through the copy/insert instructions and build up the layer buffer. */
 
-			while (position < delta->data_size) {
+			while (position < delta->buffer_size) {
 				instruction = (unsigned char)delta->buffer[position++];
 
 				if (instruction & 0x80) {
@@ -1703,7 +1699,7 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 
 	position = tree->buffer;
 
-	while (position - tree->buffer < tree->data_size) {
+	while (position - tree->buffer < tree->buffer_size) {
 		extract_tree_item(&file, &position);
 
 		snprintf(full_path, sizeof(full_path), "%s/%s", base_path, file.path);
@@ -1819,14 +1815,14 @@ save_repairs(connector *connection)
 
 			if (missing == false) {
 				check_hash  = calculate_file_hash(found_file->path, found_file->mode);
-				buffer_hash = calculate_object_hash(found_object->buffer, found_object->data_size, 3);
+				buffer_hash = calculate_object_hash(found_object->buffer, found_object->buffer_size, 3);
 
 				if (strncmp(check_hash, buffer_hash, 40) == 0)
 					update = false;
 			}
 
 			if (update == true)
-				save_file(found_file->path, found_file->mode, found_object->buffer, found_object->data_size, connection->verbosity, missing);
+				save_file(found_file->path, found_file->mode, found_object->buffer, found_object->buffer_size, connection->verbosity, missing);
 		}
 	}
 
@@ -1849,8 +1845,8 @@ save_objects(connector *connection)
 {
 	struct object_node *found_object = NULL, find_object;
 	struct file_node   *found_file = NULL;
-	char               *tree = NULL;
-	int                 fd;
+	char               *tree = NULL, *remote_files_new = NULL;
+	int                 fd, length = 0;
 
 	/* Find the tree object referenced in the commit. */
 
@@ -1870,10 +1866,17 @@ save_objects(connector *connection)
 
 	/* Recursively start processing the tree. */
 
-	if (((fd = open(connection->remote_file_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "save_objects: write file failure %s", connection->remote_file_new);
+	length = strlen(connection->remote_files) + 8;
 
-	chmod(connection->remote_file_new, 0644);
+	if ((remote_files_new = (char *)malloc(length)) == NULL)
+		err(EXIT_FAILURE, "save_objects: malloc");
+
+	snprintf(remote_files_new, length, "%s.new", connection->remote_files);
+
+	if (((fd = open(remote_files_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
+		err(EXIT_FAILURE, "save_objects: write file failure %s", remote_files_new);
+
+	chmod(remote_files_new, 0644);
 	write(fd, connection->want, strlen(connection->want));
 	write(fd, "\n", 1);
 	save_tree(connection, fd, tree, connection->path_target);
@@ -1881,11 +1884,11 @@ save_objects(connector *connection)
 
 	/* Save the remote files list. */
 
-	if (((remove(connection->remote_file_old)) != 0) && (errno != ENOENT))
-		err(EXIT_FAILURE, "save_objects: cannot remove %s", connection->remote_file_old);
+	if (((remove(connection->remote_files)) != 0) && (errno != ENOENT))
+		err(EXIT_FAILURE, "save_objects: cannot remove %s", connection->remote_files);
 
-	if ((rename(connection->remote_file_new, connection->remote_file_old)) != 0)
-		err(EXIT_FAILURE, "save_objects: cannot rename %s", connection->remote_file_old);
+	if ((rename(remote_files_new, connection->remote_files)) != 0)
+		err(EXIT_FAILURE, "save_objects: cannot rename %s", connection->remote_files);
 
 	/* Save all of the new and modified files. */
 
@@ -1896,9 +1899,10 @@ save_objects(connector *connection)
 			if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
 				errc(EXIT_FAILURE, EINVAL, "save_objects: can't find %s\n", found_file->hash);
 
-			save_file(found_file->path, found_file->mode, found_object->buffer, found_object->data_size, connection->verbosity, found_file->new);
+			save_file(found_file->path, found_file->mode, found_object->buffer, found_object->buffer_size, connection->verbosity, found_file->new);
 		}
 
+	free(remote_files_new);
 	free(tree);
 }
 
@@ -2039,6 +2043,7 @@ main(int argc, char **argv)
 	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
 	int                 x = 0, o = 0, option = 0, length = 0;
 	bool                ignore = false, current_repository = false;
+	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
 
 	connector connection = {
 		.ssl               = NULL,
@@ -2063,8 +2068,7 @@ main(int argc, char **argv)
 		.pack_file         = NULL,
 		.path_target       = NULL,
 		.path_work         = NULL,
-		.remote_file_old   = NULL,
-		.remote_file_new   = NULL,
+		.remote_files      = NULL,
 		.ignore            = NULL,
 		.ignores           = 0,
 		.keep_pack_file    = false,
@@ -2147,25 +2151,25 @@ main(int argc, char **argv)
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "main: cannot create %s", connection.path_work);
 
-	length = strlen(connection.path_work) + MAXNAMLEN;
+	length = strlen(connection.path_work) + strlen(connection.section) + 8;
 
-	if ((connection.remote_file_old = (char *)malloc(length)) == NULL)
+	if ((connection.remote_files = (char *)malloc(length)) == NULL)
 		err(EXIT_FAILURE, "main: malloc");
 
-	if ((connection.remote_file_new = (char *)malloc(length)) == NULL)
-		err(EXIT_FAILURE, "main: malloc");
-
-	snprintf(connection.remote_file_old, length, "%s/%s", connection.path_work, connection.section);
-	snprintf(connection.remote_file_new, length, "%s/%s.new", connection.path_work, connection.section);
+	snprintf(connection.remote_files, length, "%s/%s", connection.path_work, connection.section);
 
 	/* If the remote files list or repository are missing, then a clone must be performed. */
 
-	if (stat(connection.remote_file_old, &check_file) == 0)
+	path_target_exists  = (stat(connection.path_target,  &check_file) == 0 ? true : false);
+	remote_files_exists = (stat(connection.remote_files, &check_file) == 0 ? true : false);
+	pack_file_exists    = (stat(connection.pack_file,    &check_file) == 0 ? true : false);
+
+	if ((path_target_exists == true) && (remote_files_exists == true))
 		load_remote_file_list(&connection);
 	else
 		connection.clone = true;
 
-	if (stat(connection.path_target, &check_file) == 0)
+	if (path_target_exists == true)
 		find_local_tree(&connection, connection.path_target);
 	else
 		connection.clone = true;
@@ -2190,7 +2194,7 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	if ((connection.use_pack_file == true) && (lstat(connection.pack_file, &check_file) != -1)) {
+	if ((connection.use_pack_file == true) && (pack_file_exists == true)) {
 		if (connection.verbosity)
 			fprintf(stderr, "# Action: %s\n", (connection.clone ? "clone" : "pull"));
 
@@ -2198,7 +2202,7 @@ main(int argc, char **argv)
 		apply_deltas(&connection);
 		save_objects(&connection);
 	} else {
-		if ((connection.use_pack_file == false) || ((connection.use_pack_file == true) && (lstat(connection.pack_file, &check_file) == -1)))
+		if ((connection.use_pack_file == false) || ((connection.use_pack_file == true) && (pack_file_exists == false)))
 			get_commit_details(&connection);
 
 		if ((connection.have != NULL) && (connection.want != NULL) && (strncmp(connection.have, connection.want, 40) == 0))
@@ -2238,9 +2242,6 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (connection.repair == true)
-		fprintf(stderr, "# The local repository has been repaired.  Please rerun gitup to pull the latest commit.\n");
-
 	/* Wrap it all up. */
 
 	RB_FOREACH(object, Tree_Objects, &Objects)
@@ -2274,7 +2275,7 @@ main(int argc, char **argv)
 
 	for (o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
-			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->pack_offset, connection.object[o]->data_size, connection.object[o]->hash, connection.object[o]->index_delta, connection.object[o]->ref_delta_hash);
+			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->pack_offset, connection.object[o]->buffer_size, connection.object[o]->hash, connection.object[o]->index_delta, connection.object[o]->ref_delta_hash);
 
 		object_node_free(connection.object[o]);
 	}
@@ -2297,11 +2298,11 @@ main(int argc, char **argv)
 	if (connection.repository)
 		free(connection.repository);
 
-	if (connection.tag)
-		free(connection.tag);
-
 	if (connection.branch)
 		free(connection.branch);
+
+	if (connection.tag)
+		free(connection.tag);
 
 	if (connection.have)
 		free(connection.have);
@@ -2318,17 +2319,17 @@ main(int argc, char **argv)
 	if (connection.path_work)
 		free(connection.path_work);
 
-	if (connection.remote_file_old)
-		free(connection.remote_file_old);
-
-	if (connection.remote_file_new)
-		free(connection.remote_file_new);
+	if (connection.remote_files)
+		free(connection.remote_files);
 
 	if (connection.ssl) {
 		SSL_shutdown(connection.ssl);
 		SSL_CTX_free(connection.ctx);
 		SSL_free(connection.ssl);
 	}
+
+	if (connection.repair == true)
+		fprintf(stderr, "# The local repository has been repaired.  Please rerun gitup to pull the latest commit.\n");
 
 	sync();
 
