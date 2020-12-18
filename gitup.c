@@ -35,6 +35,7 @@
 #include <openssl/ssl.h>
 #include <openssl/ssl3.h>
 #include <openssl/err.h>
+#include <private/ucl/ucl.h>
 
 #include <ctype.h>
 #include <dirent.h>
@@ -49,7 +50,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.85"
+#define	GITUP_VERSION     "0.86"
 #define	GIT_VERSION       "2.28"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
@@ -138,7 +139,6 @@ static void     save_objects(connector *);
 static void     save_repairs(connector *);
 static void     save_tree(connector *, int, char *, char *);
 static void     send_command(connector *, char *);
-static void     set_configuration_parameters(connector *, char *, size_t, const char *);
 static void     ssl_connect(connector *);
 static void     store_object(connector *, int, char *, int, int, int, char *);
 static uint32_t unpack_delta_integer(char *, uint32_t *, int);
@@ -1302,7 +1302,7 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 		/* Extend the array if needed, create a new node and add it. */
 
 		if (connection->objects % BUFFER_UNIT_SMALL == 0)
-			if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node **))) == NULL)
+			if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node *))) == NULL)
 				err(EXIT_FAILURE, "store_object: realloc");
 
 		if ((object = (struct object_node *)malloc(sizeof(struct object_node))) == NULL)
@@ -1908,94 +1908,78 @@ save_objects(connector *connection)
 
 
 /*
- * set_configuration_parameters
- *
- * Procedure that parses a line of text from the config file, allocates
- * space and stores the values.
- */
-
-static void
-set_configuration_parameters(connector *connection, char *buffer, size_t length, const char *section)
-{
-	char     *bracketed_section, *item, *line;
-	uint32_t  x = 0;
-
-	if ((bracketed_section = (char *)malloc(strlen(section) + 4)) == NULL)
-		err(EXIT_FAILURE, "set_configuration_parameters: bracketed_section malloc");
-
-	snprintf(bracketed_section, strlen(section) + 4, "[%s]\n", section);
-
-	if ((item = strstr(buffer, bracketed_section)) == NULL)
-		errc(EXIT_FAILURE, EINVAL, "set_configuration_parameters: cannot find [%s] in gitup.conf", section);
-
-	item += strlen(bracketed_section);
-
-	while ((line = strsep(&item, "\n"))) {
-		if ((strlen(line) == 0) || (line[0] == '['))
-			break;
-
-		if (line[0] == '#')
-			continue;
-
-		if (strstr(line, "host=") == line)
-			connection->host = strdup(line + 5);
-
-		if (strstr(line, "port=") == line)
-			connection->port = strtol(line + 5, (char **)NULL, 10);
-
-		if (strstr(line, "repository=") == line)
-			connection->repository = strdup(line + 11);
-
-		if (strstr(line, "branch=") == line)
-			connection->branch = strdup(line + 7);
-
-		if (strstr(line, "target=") == line)
-			connection->path_target = strdup(line + 7);
-
-		if (strstr(line, "work_directory=") == line)
-			connection->path_work = strdup(line + 15);
-
-		if (strstr(line, "verbosity=") == line)
-			connection->verbosity = strtol(line + 10, (char **)NULL, 10);
-
-		if (strstr(line, "ignore=") == line) {
-			if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
-				err(EXIT_FAILURE, "set_configuration_parameters: malloc");
-
-			connection->ignore[connection->ignores++] = strdup(line + 7);
-			}
-	}
-
-	/* Put the returns that strsep took out back in for the next run. */
-
-	for (x = 0; x < length; x++)
-		if (buffer[x] == '\0')
-			buffer[x] = '\n';
-
-	free(bracketed_section);
-}
-
-
-/*
  * load_configuration
  *
  * Procedure that loads the section options from gitup.conf
  */
 
 static void
-load_configuration(connector *connection, const char *configuration_file, char *section)
+load_configuration(connector *connection, const char *configuration_file, char *wanted_section)
 {
-	char     *buffer      = NULL;
-	uint32_t  buffer_size = 0;
+	struct ucl_parser  *parser = NULL;
+	ucl_object_t       *object = NULL;
+	const ucl_object_t *section = NULL, *pair = NULL, *ignore = NULL;
+	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignore = NULL;
+	const char         *key = NULL, *value = NULL, *config_section = NULL;
+	bool                found = false;
 
-	load_file(configuration_file, &buffer, &buffer_size);
+	parser = ucl_parser_new(0);
 
-	set_configuration_parameters(connection, buffer, buffer_size, "defaults");
-	set_configuration_parameters(connection, buffer, buffer_size, section);
+	if (ucl_parser_add_file(parser, configuration_file) == false)
+		err(EXIT_FAILURE, "load_configuration: %s\n", ucl_parser_get_error(parser));
 
-	connection->section = strdup(section);
+	object = ucl_parser_get_object(parser);
 
-	free(buffer);
+	while ((section = ucl_iterate_object(object, &it, true))) {
+		config_section = ucl_object_key(section);
+
+		if (strncmp(wanted_section, config_section, strlen(config_section)) == 0)
+			found = true;
+		else if (strncmp(config_section, "defaults", 8) != 0)
+			continue;
+
+		while ((pair = ucl_iterate_object(section, &it_section, true))) {
+			key   = ucl_object_key(pair);
+			value = ucl_object_tostring(pair);
+
+			if (strstr(key, "branch") != NULL)
+				connection->branch = strdup(value);
+
+			if (strstr(key, "host") != NULL)
+				connection->host = strdup(value);
+
+			if ((strstr(key, "ignore") != NULL) && (ucl_object_type(pair) == UCL_ARRAY))
+				while ((ignore = ucl_iterate_object(pair, &it_ignore, true))) {
+					if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
+						err(EXIT_FAILURE, "set_configuration_parameters: malloc");
+
+					connection->ignore[connection->ignores++] = strdup(ucl_object_tostring_forced(ignore));
+				}
+
+			if (strstr(key, "port") != NULL)
+				connection->port = strtol(value, (char **)NULL, 10);
+
+			if (strstr(key, "repository") != NULL)
+				connection->repository = strdup(value);
+
+			if (strstr(key, "target") != NULL)
+				connection->path_target = strdup(value);
+
+			if (strstr(key, "verbosity") != NULL)
+				connection->verbosity = strtol(value, (char **)NULL, 10);
+
+			if (strstr(key, "work_directory") != NULL)
+				connection->path_work = strdup(value);
+		}
+	}
+
+	ucl_object_unref(object);
+	ucl_parser_free(parser);
+
+	if (found == false)
+		errc(EXIT_FAILURE, EINVAL, "set_configuration_parameters: cannot find [%s] in gitup.conf", wanted_section);
+
+	connection->section = strdup(wanted_section);
 }
 
 

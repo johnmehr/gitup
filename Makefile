@@ -1,7 +1,7 @@
 PROG= gitup
 SRCS= gitup.c
 
-LDADD= -lssl -lz -lcrypto
+LDADD= -lssl -lz -lcrypto -lprivateucl
 
 WARNS= 6
 

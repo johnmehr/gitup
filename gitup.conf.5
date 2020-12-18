@@ -35,11 +35,9 @@ The
 .Nm
 file stores configuration options and controls the behavior of gitup(1).
 .Pp
-This file contains an arbitrary number of sections, each enclosed in square
-brackets, any of which can be passed as the first command line argument to
-gitup(1).
-Options are placed one on each line, followed directly by an equals sign '='
-and the value the option should be assigned.
+This file contains an arbitrary number of sections, each of which can be passed
+as the first command line argument to gitup(1).
+Within each section, individual parameters are stored as key/value pairs.
 .Pp
 Lines beginning with a '#' are ignored.
 .Pp
@@ -47,7 +45,9 @@ Additional, user defined sections can be added to
 .Nm
 as needed.
 .Pp
-When gitup(1) is run, the options in the [defaults] section are assigned first,
+When gitup(1) is run, the options in the
+.Pa defaults
+section are assigned first,
 followed by the options in the desired section (each of which will supersede
 any previously assigned default values), followed lastly by any command line
 options.
@@ -81,27 +81,39 @@ The location to load/save the known remote files list.
 With the following configuration options defined in
 .Nm
 .Pp
-[defaults]
+{
 .br
-host=github.com
+    "defaults" : {
 .br
-port=443
+        "host"           : "github.com",
 .br
-verbosity=1
+        "port"           : "443",
 .br
-work_directory=/var/db/gitup
+        "verbosity"      : "1",
+.br
+        "work_directory" : "/var/db/gitup",
+.br
+    },
 .Pp
-[ports]
+    "ports" : {
 .br
-repository=/freebsd/freebsd-ports
+        "repository" : "/freebsd/freebsd-ports",
 .br
-branch=master
+        "branch"     : "master",
 .br
-target=/usr/ports
+        "target"     : "/usr/ports",
 .br
-ignore=/usr/ports/distfiles
+        "ignore"     : [
 .br
-ignore=/usr/ports/packages
+            "/usr/ports/distfiles",
+.br
+            "/usr/ports/packages",
+.br
+        ],
+.br
+    },
+.br
+}
 .Pp
 Executing:
 .Pp
