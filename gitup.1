@@ -86,7 +86,7 @@ The "want" commit checksum of the repository to retrieve.
 Default location of the
 .Nm
 configuration file.
-.It /var/tmp/gitup
+.It /var/db/gitup
 Default location where
 .Nm
 stores its lists of known files.
@@ -109,13 +109,13 @@ does not retain pack files downloaded from the repository (unless explicitly
 instructed to do so) and does not use a saved pack file (unless explicitly
 instructed to do so).
 .Nm
-relies on the known remote files lists stored in /var/tmp/gitup and the current
-state of the local repository to reconstruct data that would be stored in the
-pack file.
-Discrepancies in the local repository will be flagged as errors and will need
-to be manually restored before
+relies on the known remote files lists stored in /var/db/gitup and the current
+state of the local repository to reconstruct data that would normally be stored
+in the pack file.
+Discrepancies in the local repository will be flagged as errors and
 .Nm
-can update the local repository.
+will attempt to any restore any missing or modified files from the server,
+returning the local repository to a clean state.
 .Sh EXAMPLES
 Using the configuration options for commonly used repositories/branches stored
 in /usr/local/etc/gitup.conf, to clone/pull a copy of the most recent revision
