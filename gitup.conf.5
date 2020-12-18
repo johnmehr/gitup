@@ -33,11 +33,24 @@
 .Sh DESCRIPTION
 The
 .Nm
-file stores configuration options and controls the behavior of gitup(1).  This file contains an arbitrary number of sections, each enclosed in square brackets, any of which can be passed as the first command line argument to gitup(1).  Options are placed one on each line, followed directly by an equals sign '=' and the value the option should be assigned.  Lines beginning with a '#' are ignored.  Additional, user defined sections can be added to
+file stores configuration options and controls the behavior of gitup(1).
+.Pp
+This file contains an arbitrary number of sections, each enclosed in square
+brackets, any of which can be passed as the first command line argument to
+gitup(1).
+Options are placed one on each line, followed directly by an equals sign '='
+and the value the option should be assigned.
+.Pp
+Lines beginning with a '#' are ignored.
+.Pp
+Additional, user defined sections can be added to
 .Nm
 as needed.
 .Pp
-When gitup(1) is run, the options in the [defaults] section are assigned first, followed by the options in the desired section (each of which will supersede any previously assigned default values), followed lastly by any command line options.
+When gitup(1) is run, the options in the [defaults] section are assigned first,
+followed by the options in the desired section (each of which will supersede
+any previously assigned default values), followed lastly by any command line
+options.
 .Sh OPTIONS
 The following options are currently supported by
 .Nm
@@ -54,9 +67,12 @@ The repository branch to use.
 .It Cm target
 The local directory to store your copy of the repository.
 .It Cm ignore
-A directory in the local tree that should be ignored when deleting files.  This option can have multiple entries per section.
+A directory in the local tree that should be ignored when deleting files.  This
+option can have multiple entries per section.
 .It Cm verbosity
-How much of the transfer details to display.  0 = no output, 1 = show only names of the updated files/folders, 2 = also show commands sent to the server and additional debugging information.
+How much of the transfer details to display.  0 = no output, 1 = show only
+names of the updated files/folders, 2 = also show commands sent to the server
+and additional debugging information.
 .It Cm work_directory
 The location to load/save the known remote files list.
 .El
@@ -73,7 +89,7 @@ port=443
 .br
 verbosity=1
 .br
-work_directory=/var/tmp/gitup
+work_directory=/var/db/gitup
 .Pp
 [ports]
 .br
@@ -91,7 +107,12 @@ Executing:
 .Pp
 .Dl "gitup ports"
 .Pp
-from the command line would result in a copy of the freebsd-ports/master branch downloaded to /usr/ports.  If /usr/ports doesn't exist, the repository is cloned.  If it does exist and /var/tmp/gitup/ports exists, the latest commit to the repository is pulled down and the contents of /usr/ports/distfiles and /usr/ports/packages are ignored when removing stale directories.
+from the command line would result in a copy of the freebsd-ports/master branch
+downloaded to /usr/ports.
+If /usr/ports does not exist, the repository is cloned.
+If it does exist and /var/db/gitup/ports exists, the latest commit to the
+repository is pulled down and the contents of /usr/ports/distfiles and
+/usr/ports/packages are ignored when removing stale directories.
 .Sh FILES
 .Bl -tag -width "/usr/local/etc/gitup.conf"
 .It /usr/local/etc/gitup.conf
