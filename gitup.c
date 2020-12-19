@@ -912,6 +912,9 @@ process_command(connector *connection, char *command)
 		}
 	}
 
+	if (strstr(connection->response, "HTTP/1.1 200 OK") != connection->response)
+		err(EXIT_FAILURE, "process_command: read failure:\n%s\n", connection->response);
+
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
 
