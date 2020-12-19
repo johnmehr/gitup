@@ -125,7 +125,7 @@ static char *   build_clone_command(connector *);
 static char *   build_pull_command(connector *);
 static char *   build_repair_command(connector *);
 static char *   legible_hash(char *);
-static void     load_configuration(connector *, const char *, char *);
+static void     load_configuration(connector *, const char *);
 static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *);
@@ -368,7 +368,8 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
 static void
 save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, bool new)
 {
-	int fd;
+	struct stat file;
+	int         fd;
 
 	if (verbosity > 0)
 		printf(" %c %s\n", (new == true ? '+' : '*'), path);
@@ -377,6 +378,11 @@ save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, bo
 		if (symlink(buffer, path) == -1)
 			err(EXIT_FAILURE, "save_file: symlink failure %s -> %s", path, buffer);
 	} else {
+		/* If the file exists, make sure the permissions are intact. */
+
+		if (stat(path, &file) == 0)
+			chmod(path, mode);
+
 		if (((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
 			err(EXIT_FAILURE, "save_file: write file failure %s", path);
 
@@ -400,7 +406,7 @@ calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 	char       *hash = NULL, *hash_buffer = NULL, *temp_buffer = NULL;
 	const char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs-delta", "ref-delta" };
 
-	if ((hash_buffer = (char *)malloc(21)) == NULL)
+	if ((hash_buffer = (char *)malloc(20)) == NULL)
 		err(EXIT_FAILURE, "calculate_object_hash: malloc");
 
 	if ((temp_buffer = (char *)malloc(buffer_size + 24)) == NULL)
@@ -585,10 +591,7 @@ find_local_tree(connector *connection, char *base_path)
 	struct dirent    *entry = NULL;
 	struct file_node *new_node = NULL, find, *found = NULL;
 	char             *full_path = NULL;
-	int               file_name_size = 0, full_path_size = strlen(base_path) + MAXNAMLEN + 3;
-
-	if ((full_path = (char *)malloc(full_path_size)) == NULL)
-		err(EXIT_FAILURE, "find_local_tree: full_path malloc");
+	int               file_name_size = 0, full_path_size = 0;
 
 	/* Make sure the base path exists in the remote files list. */
 
@@ -616,11 +619,6 @@ find_local_tree(connector *connection, char *base_path)
 
 	if ((stat(base_path, &file) != -1) && ((directory = opendir(base_path)) != NULL)) {
 		while ((entry = readdir(directory)) != NULL) {
-			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
-
-			if (lstat(full_path, &file) == -1)
-				err(EXIT_FAILURE, "find_local_tree: %s", full_path);
-
 			file_name_size = strlen(entry->d_name);
 
 			if ((file_name_size == 1) && (strcmp(entry->d_name, "." ) == 0))
@@ -631,20 +629,30 @@ find_local_tree(connector *connection, char *base_path)
 
 			if ((file_name_size == 4) && (strcmp(entry->d_name, ".git") == 0)) {
 				fprintf(stderr, " ! A .git folder was found -- gitup does not update this folder which will cause problems for the official git client.\n");
-				fprintf(stderr, " ! If you wish to use gitup, please remove %s and rerun gitup.\n", full_path);
-
+				fprintf(stderr, " ! If you wish to use gitup, please remove %s/%s and rerun gitup.\n", base_path, entry->d_name);
 				exit(EXIT_FAILURE);
 				}
 
+			full_path_size = strlen(base_path) + strlen(entry->d_name) + 2;
+
+			if ((full_path = (char *)malloc(full_path_size + 1)) == NULL)
+				err(EXIT_FAILURE, "find_local_tree: full_path malloc");
+
+			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
+
+			if (stat(full_path, &file) == -1)
+				err(EXIT_FAILURE, "find_local_tree: %s", full_path);
+
 			if (S_ISDIR(file.st_mode)) {
 				find_local_tree(connection, full_path);
+				free(full_path);
 			} else {
 				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
 					err(EXIT_FAILURE, "find_local_tree: malloc");
 
 				new_node->mode = file.st_mode;
 				new_node->hash = calculate_file_hash(full_path, file.st_mode);
-				new_node->path = strdup(full_path);
+				new_node->path = full_path;
 				new_node->keep = false;
 				new_node->save = false;
 				new_node->new  = false;
@@ -656,8 +664,6 @@ find_local_tree(connector *connection, char *base_path)
 
 		closedir(directory);
 	}
-
-	free(full_path);
 }
 
 
@@ -1096,7 +1102,7 @@ get_commit_details(connector *connection)
 	char       command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
 	time_t     current;
 	struct tm  now;
-	int        tries = 2, year = 0, quarter = 0;
+	int        tries = 2, year = 0, quarter = 0, pack_file_name_size = 0;
 	uint32_t   x = 0;
 
 	/* Get the list of commits from the server. */
@@ -1173,9 +1179,9 @@ get_commit_details(connector *connection)
 	/* Create the pack file name. */
 
 	if (connection->keep_pack_file == true) {
-		int pack_file_name_size = strlen(connection->section) + 47;
+		pack_file_name_size = strlen(connection->section) + 47;
 
-		if ((connection->pack_file = (char *)malloc(pack_file_name_size)) == NULL)
+		if ((connection->pack_file = (char *)malloc(pack_file_name_size + 1)) == NULL)
 			err(EXIT_FAILURE, "get_commit_details: malloc");
 
 		snprintf(connection->pack_file, pack_file_name_size, "%s-%s.pack", connection->section, connection->want);
@@ -1398,7 +1404,7 @@ unpack_objects(connector *connection)
 		/* Extract the ref-delta checksum. */
 
 		if (object_type == 7) {
-			if ((ref_delta_hash = (char *)malloc(21)) == NULL)
+			if ((ref_delta_hash = (char *)malloc(20)) == NULL)
 				err(EXIT_FAILURE, "unpack_objects: malloc");
 
 			memcpy(ref_delta_hash, connection->response + position, 20);
@@ -1686,7 +1692,7 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 
 	/* Add the base path to the output. */
 
-	if ((file.path = (char *)malloc(BUFFER_UNIT_SMALL + 1)) == NULL)
+	if ((file.path = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
 		err(EXIT_FAILURE, "save_tree: malloc");
 
 	if ((file.hash = (char *)malloc(41)) == NULL)
@@ -1715,7 +1721,7 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 			/* Locate the pack file object and local copy of the file. */
 
 			memcpy(object.hash, file.hash, 41);
-			memcpy(file.path, full_path, sizeof(full_path));
+			memcpy(file.path, full_path, strlen(full_path) + 1);
 
 			found_object = RB_FIND(Tree_Objects, &Objects, &object);
 			found_file   = RB_FIND(Tree_Local_Path, &Local_Path, &file);
@@ -1914,7 +1920,7 @@ save_objects(connector *connection)
  */
 
 static void
-load_configuration(connector *connection, const char *configuration_file, char *wanted_section)
+load_configuration(connector *connection, const char *configuration_file)
 {
 	struct ucl_parser  *parser = NULL;
 	ucl_object_t       *object = NULL;
@@ -1933,7 +1939,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	while ((section = ucl_iterate_object(object, &it, true))) {
 		config_section = ucl_object_key(section);
 
-		if (strncmp(wanted_section, config_section, strlen(config_section)) == 0)
+		if (strncmp(connection->section, config_section, strlen(config_section)) == 0)
 			found = true;
 		else if (strncmp(config_section, "defaults", 8) != 0)
 			continue;
@@ -1953,7 +1959,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
 						err(EXIT_FAILURE, "set_configuration_parameters: malloc");
 
-					connection->ignore[connection->ignores++] = strdup(ucl_object_tostring_forced(ignore));
+					connection->ignore[connection->ignores++] = strdup(ucl_object_tostring(ignore));
 				}
 
 			if (strstr(key, "port") != NULL)
@@ -1977,9 +1983,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_parser_free(parser);
 
 	if (found == false)
-		errc(EXIT_FAILURE, EINVAL, "set_configuration_parameters: cannot find [%s] in gitup.conf", wanted_section);
-
-	connection->section = strdup(wanted_section);
+		errc(EXIT_FAILURE, EINVAL, "set_configuration_parameters: cannot find [%s] in gitup.conf", connection->section);
 }
 
 
@@ -2069,10 +2073,12 @@ main(int argc, char **argv)
 		if (argv[1][1] == 'V') {
 			fprintf(stdout, "gitup version %s\n", GITUP_VERSION);
 			exit(EXIT_SUCCESS);
+		} else {
+			usage(configuration_file);
 		}
-		else usage(configuration_file);
 	} else {
-		load_configuration(&connection, configuration_file, argv[1]);
+		connection.section = strdup(argv[1]);
+		load_configuration(&connection, configuration_file);
 		optind = 2;
 	}
 
