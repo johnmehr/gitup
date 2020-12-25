@@ -50,7 +50,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.86"
+#define	GITUP_VERSION     "0.87"
 #define	GIT_VERSION       "2.28"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
@@ -504,7 +504,6 @@ load_remote_file_list(connector *connection)
 	struct file_node *file = NULL;
 	char             *line = NULL, *hash = NULL, *path = NULL, *remote_files = NULL;
 	char              temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL], *buffer = NULL, *temp_hash = NULL;
-	const char       *null = "\0";
 	uint32_t          count = 0, remote_file_size = 0, buffer_size = 0, buffer_length = 0;
 
 	load_file(connection->remote_files, &remote_files, &remote_file_size);
@@ -561,7 +560,7 @@ load_remote_file_list(connector *connection)
 			append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
 			append_string(&buffer, &buffer_size, &buffer_length, " ", 1);
 			append_string(&buffer, &buffer_size, &buffer_length, path, strlen(path));
-			append_string(&buffer, &buffer_size, &buffer_length, null, 1);
+			append_string(&buffer, &buffer_size, &buffer_length, "\0", 1);
 			append_string(&buffer, &buffer_size, &buffer_length, temp_hash, 20);
 
 			free(temp_hash);
@@ -640,7 +639,7 @@ find_local_tree(connector *connection, char *base_path)
 
 			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
 
-			if (stat(full_path, &file) == -1)
+			if (lstat(full_path, &file) == -1)
 				err(EXIT_FAILURE, "find_local_tree: %s", full_path);
 
 			if (S_ISDIR(file.st_mode)) {
@@ -806,6 +805,9 @@ process_command(connector *connection, char *command)
 	int   bytes_to_write = strlen(command), error = 0, twirl = 0;
 	char  twirly[4] = { '|', '/', '-', '\\' };
 
+	if (connection->verbosity > 1)
+		fprintf(stderr, "%s\n\n", command);
+
 	/* Transmit the command to the server. */
 
 	ssl_connect(connection);
@@ -912,11 +914,11 @@ process_command(connector *connection, char *command)
 		}
 	}
 
-	if (strstr(connection->response, "HTTP/1.1 200 OK") != connection->response)
-		err(EXIT_FAILURE, "process_command: read failure:\n%s\n", connection->response);
-
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
+
+	if (strstr(connection->response, "HTTP/1.1 200 OK") != connection->response)
+		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
 
 	/* Remove the header. */
 
@@ -960,9 +962,6 @@ send_command(connector *connection, char *want)
 		GIT_VERSION,
 		want_size,
 		want);
-
-	if (connection->verbosity > 1)
-		fprintf(stderr, "%s\n\n", command);
 
 	process_command(connection, command);
 
@@ -1438,7 +1437,7 @@ unpack_objects(connector *connection)
 			stream_code      = inflate(&stream, Z_NO_FLUSH);
 			stream_bytes     = 16384 - stream.avail_out;
 
-			if ((buffer = (char *)realloc(buffer, buffer_size + stream_bytes)) == NULL)
+			if ((buffer = (char *)realloc(buffer, buffer_size + stream_bytes + 1)) == NULL)
 				err(EXIT_FAILURE, "unpack_objects: realloc");
 
 			memcpy(buffer + buffer_size, zlib_out, stream_bytes);
@@ -1448,6 +1447,7 @@ unpack_objects(connector *connection)
 
 		inflateEnd(&stream);
 		position += stream.total_in;
+		buffer[buffer_size] = '\0';
 
 		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta, ref_delta_hash);
 
@@ -1942,7 +1942,7 @@ load_configuration(connector *connection, const char *configuration_file)
 	while ((section = ucl_iterate_object(object, &it, true))) {
 		config_section = ucl_object_key(section);
 
-		if (strncmp(connection->section, config_section, strlen(config_section)) == 0)
+		if ((strlen(connection->section) == strlen(config_section)) && (strncmp(connection->section, config_section, strlen(config_section)) == 0))
 			found = true;
 		else if (strncmp(config_section, "defaults", 8) != 0)
 			continue;
@@ -2237,9 +2237,6 @@ main(int argc, char **argv)
 
 	/* Wrap it all up. */
 
-	RB_FOREACH(object, Tree_Objects, &Objects)
-		RB_REMOVE(Tree_Objects, &Objects, object);
-
 	RB_FOREACH(file, Tree_Local_Hash, &Local_Hash)
 		RB_REMOVE(Tree_Local_Hash, &Local_Hash, file);
 
@@ -2265,6 +2262,9 @@ main(int argc, char **argv)
 
 	RB_FOREACH(file, Tree_Remote_Path, &Remote_Path)
 		file_node_free(RB_REMOVE(Tree_Remote_Path, &Remote_Path, file));
+
+	RB_FOREACH(object, Tree_Objects, &Objects)
+		RB_REMOVE(Tree_Objects, &Objects, object);
 
 	for (o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
