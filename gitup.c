@@ -369,14 +369,20 @@ static void
 save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, bool new)
 {
 	struct stat file;
+	char        temp_buffer[buffer_size + 1];
 	int         fd;
 
 	if (verbosity > 0)
 		printf(" %c %s\n", (new == true ? '+' : '*'), path);
 
 	if (S_ISLNK(mode)) {
-		if (symlink(buffer, path) == -1)
-			err(EXIT_FAILURE, "save_file: symlink failure %s -> %s", path, buffer);
+		/* Make sure the buffer is null terminated, then save it as the file to link to. */
+
+		memcpy(temp_buffer, buffer, buffer_size);
+		temp_buffer[buffer_size] = '\0';
+
+		if (symlink(temp_buffer, path) == -1)
+			err(EXIT_FAILURE, "save_file: symlink failure %s -> %s", path, temp_buffer);
 	} else {
 		/* If the file exists, make sure the permissions are intact. */
 
@@ -1437,7 +1443,7 @@ unpack_objects(connector *connection)
 			stream_code      = inflate(&stream, Z_NO_FLUSH);
 			stream_bytes     = 16384 - stream.avail_out;
 
-			if ((buffer = (char *)realloc(buffer, buffer_size + stream_bytes + 1)) == NULL)
+			if ((buffer = (char *)realloc(buffer, buffer_size + stream_bytes)) == NULL)
 				err(EXIT_FAILURE, "unpack_objects: realloc");
 
 			memcpy(buffer + buffer_size, zlib_out, stream_bytes);
@@ -1447,7 +1453,6 @@ unpack_objects(connector *connection)
 
 		inflateEnd(&stream);
 		position += stream.total_in;
-		buffer[buffer_size] = '\0';
 
 		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta, ref_delta_hash);
 
