@@ -55,6 +55,10 @@
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
+#ifndef CONFIG_FILE_PATH
+#define CONFIG_FILE_PATH "./gitup.conf"
+#endif
+
 struct object_node {
 	RB_ENTRY(object_node) link;
 	char     *hash;
@@ -2035,7 +2039,7 @@ main(int argc, char **argv)
 	struct object_node *object = NULL;
 	struct file_node   *file   = NULL;
 	struct stat         check_file;
-	const char         *configuration_file = "./gitup.conf";
+	const char         *configuration_file = CONFIG_FILE_PATH;
 	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
 	int                 x = 0, o = 0, option = 0, length = 0;
 	bool                ignore = false, current_repository = false;
@@ -2330,6 +2334,5 @@ main(int argc, char **argv)
 		fprintf(stderr, "# The local repository has been repaired.  Please rerun gitup to pull the latest commit.\n");
 
 	sync();
-
 	return (0);
 }
