@@ -1,10 +1,11 @@
 PROG= gitup
 SRCS= gitup.c
 
-.if !empty(CONFIG_FILE_PATH)
-CFLAGS+=	-DCONFIG_FILE_PATH=\"${CONFIG_FILE_PATH}\"
+.if empty(CONFIG_FILE_PATH)
+CONFIG_FILE_PATH=	/usr/local/etc/gitup.conf
 .endif
 
+CFLAGS+=	-DCONFIG_FILE_PATH=\"${CONFIG_FILE_PATH}\"
 LDADD= -lssl -lz -lcrypto -lprivateucl
 
 WARNS= 6
