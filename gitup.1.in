@@ -49,7 +49,7 @@ source files without having to install devel/git (and all of its related
 dependencies) and without the substantial disk overhead that normally accompany
 local git repositories.
 .Sh OPTIONS
-Configuration options are stored in /usr/local/etc/gitup.conf and are grouped
+Configuration options are stored in %%CONFIG_FILE_PATH%% and are grouped
 into commonly used sections (additional custom sections can be added to this
 file).
 The following command line options can be used to override the default and/or
@@ -81,8 +81,8 @@ Display the version number and exit.
 The "want" commit checksum of the repository to retrieve.
 .El
 .Sh FILES
-.Bl -tag -width "/usr/local/etc/gitup.conf"
-.It /usr/local/etc/gitup.conf
+.Bl -tag -width "%%CONFIG_FILE_PATH%%"
+.It %%CONFIG_FILE_PATH%%
 Default location of the
 .Nm
 configuration file.
@@ -118,7 +118,7 @@ will attempt to any restore any missing or modified files from the server,
 returning the local repository to a clean state.
 .Sh EXAMPLES
 Using the configuration options for commonly used repositories/branches stored
-in /usr/local/etc/gitup.conf, to clone/pull a copy of the most recent revision
+in %%CONFIG_FILE_PATH%%, to clone/pull a copy of the most recent revision
 of stable/12:
 .Pp
 .Dl "gitup stable"
