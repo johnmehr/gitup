@@ -137,11 +137,11 @@ static void     load_remote_file_list(connector *);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
 static void     process_command(connector *, char *);
+static void     process_tree(connector *, int, char *, char *);
 static void     prune_tree(connector *, char *);
 static void     save_file(char *, int, char *, int, int verbosity, bool);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
-static void     save_tree(connector *, int, char *, char *);
 static void     send_command(connector *, char *);
 static void     ssl_connect(connector *);
 static void     store_object(connector *, int, char *, int, int, int, char *);
@@ -1673,11 +1673,11 @@ extract_tree_item(struct file_node *file, char **position)
 /*
  * save_tree
  *
- * Procedure that processes all of the obj_trees and saves files that have been updated.
+ * Procedure that processes all of the obj-trees and retains the current files.
  */
 
 static void
-save_tree(connector *connection, int remote_descriptor, char *hash, char *base_path)
+process_tree(connector *connection, int remote_descriptor, char *hash, char *base_path)
 {
 	struct object_node object, *found_object = NULL, *tree = NULL;
 	struct file_node   file, *found_file = NULL, *new_file_node = NULL, *remote_file = NULL;
@@ -1685,12 +1685,12 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 	unsigned int       buffer_size = 0, buffer_length = 0;
 
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "save_tree: Cannot create %s", base_path);
+		err(EXIT_FAILURE, "process_tree: Cannot create %s", base_path);
 
 	object.hash = hash;
 
 	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
-		errc(EXIT_FAILURE, ENOENT, "save_tree: tree %s - %s cannot be found", base_path, object.hash);
+		errc(EXIT_FAILURE, ENOENT, "process_tree: tree %s - %s cannot be found", base_path, object.hash);
 
 	/* Remove the base path from the list of upcoming deletions. */
 
@@ -1705,10 +1705,10 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 	/* Add the base path to the output. */
 
 	if ((file.path = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
-		err(EXIT_FAILURE, "save_tree: malloc");
+		err(EXIT_FAILURE, "process_tree: malloc");
 
 	if ((file.hash = (char *)malloc(41)) == NULL)
-		err(EXIT_FAILURE, "save_tree: malloc");
+		err(EXIT_FAILURE, "process_tree: malloc");
 
 	snprintf(line, sizeof(line), "%o\t%s\t%s/\n", 040000, hash, base_path);
 	append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
@@ -1725,10 +1725,10 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 		snprintf(line, sizeof(line), "%o\t%s\t%s\n", file.mode, file.hash, file.path);
 		append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
 
-		/* Recursively walk the trees and save the files/links. */
+		/* Recursively walk the trees and process the files/links. */
 
 		if (S_ISDIR(file.mode)) {
-			save_tree(connection, remote_descriptor, file.hash, full_path);
+			process_tree(connection, remote_descriptor, file.hash, full_path);
 		} else {
 			/* Locate the pack file object and local copy of the file. */
 
@@ -1759,13 +1759,13 @@ save_tree(connector *connection, int remote_descriptor, char *hash, char *base_p
 			/* If the object is still missing, exit. */
 
 			if (found_object == NULL)
-				errc(EXIT_FAILURE, ENOENT, "save_tree: file %s - %s cannot be found", full_path, file.hash);
+				errc(EXIT_FAILURE, ENOENT, "process_tree: file %s - %s cannot be found", full_path, file.hash);
 
 			/* Otherwise retain it. */
 
 			if ((remote_file = RB_FIND(Tree_Remote_Path, &Remote_Path, &file)) == NULL) {
 				if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE, "save_tree: malloc");
+					err(EXIT_FAILURE, "process_tree: malloc");
 
 				new_file_node->mode = file.mode;
 				new_file_node->hash = strdup(found_object->hash);
@@ -1863,9 +1863,9 @@ save_objects(connector *connection)
 {
 	struct object_node *found_object = NULL, find_object;
 	struct file_node   *found_file = NULL;
-	char               *tree = NULL, *remote_files_new = NULL;
+	char                tree[41], remote_files_new[BUFFER_UNIT_SMALL];
 	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
-	int                 fd, length = 0;
+	int                 fd;
 
 	/* Find the tree object referenced in the commit. */
 
@@ -1877,20 +1877,12 @@ save_objects(connector *connection)
 	if (memcmp(found_object->buffer, "tree ", 5) != 0)
 		errc(EXIT_FAILURE, EINVAL, "save_objects: first object is not a commit");
 
-	if ((tree = (char *)malloc(41)) == NULL)
-		err(EXIT_FAILURE, "save_objects: malloc");
-
 	memcpy(tree, found_object->buffer + 5, 40);
 	tree[40] = '\0';
 
 	/* Recursively start processing the tree. */
 
-	length = strlen(connection->remote_files) + 8;
-
-	if ((remote_files_new = (char *)malloc(length)) == NULL)
-		err(EXIT_FAILURE, "save_objects: malloc");
-
-	snprintf(remote_files_new, length, "%s.new", connection->remote_files);
+	snprintf(remote_files_new, BUFFER_UNIT_SMALL, "%s.new", connection->remote_files);
 
 	if (((fd = open(remote_files_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "save_objects: write file failure %s", remote_files_new);
@@ -1898,7 +1890,7 @@ save_objects(connector *connection)
 	chmod(remote_files_new, 0644);
 	write(fd, connection->want, strlen(connection->want));
 	write(fd, "\n", 1);
-	save_tree(connection, fd, tree, connection->path_target);
+	process_tree(connection, fd, tree, connection->path_target);
 	close(fd);
 
 	/* Save the remote files list. */
@@ -1913,7 +1905,7 @@ save_objects(connector *connection)
 
 	snprintf(gitup_revision_path, BUFFER_UNIT_SMALL, "%s/.gituprevision", connection->path_target);
 
-	snprintf(gitup_revision, BUFFER_UNIT_SMALL, "%s-%s", connection->branch, connection->want);
+	snprintf(gitup_revision, BUFFER_UNIT_SMALL, "%s:%s", connection->branch, connection->want);
 	gitup_revision[strlen(connection->branch) + 10] = '\0';
 
 	save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
@@ -1929,9 +1921,6 @@ save_objects(connector *connection)
 
 			save_file(found_file->path, found_file->mode, found_object->buffer, found_object->buffer_size, connection->verbosity, found_file->new);
 		}
-
-	free(remote_files_new);
-	free(tree);
 }
 
 
