@@ -126,8 +126,8 @@ If it does exist and /var/db/gitup/ports exists, the latest commit to the
 repository is pulled down and the contents of /usr/ports/distfiles and
 /usr/ports/packages are ignored when removing stale directories.
 .Sh FILES
-.Bl -tag -width "/usr/local/etc/gitup.conf"
-.It /usr/local/etc/gitup.conf
+.Bl -tag -width "%%CONFIG_FILE_PATH%%"
+.It %%CONFIG_FILE_PATH%%
 Default location of the
 .Nm
 configuration file.
