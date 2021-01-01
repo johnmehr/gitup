@@ -1,0 +1,7 @@
+.depend*
+gitup
+gitup.1.gz
+gitup.conf.5.gz
+gitup.debug
+gitup.full
+gitup.o
