@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2012-2020, John Mehr <jmehr@umn.edu>
+ * Copyright (c) 2012-2021, John Mehr <jmehr@umn.edu>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -50,7 +50,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.87"
+#define	GITUP_VERSION     "0.88"
 #define	GIT_VERSION       "2.28"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
@@ -662,7 +662,7 @@ find_local_tree(connector *connection, char *base_path)
 				new_node->mode = file.st_mode;
 				new_node->hash = calculate_file_hash(full_path, file.st_mode);
 				new_node->path = full_path;
-				new_node->keep = false;
+				new_node->keep = (strnstr(full_path, ".gituprevision", strlen(full_path)) != NULL ? true : false);
 				new_node->save = false;
 				new_node->new  = false;
 
@@ -1864,6 +1864,7 @@ save_objects(connector *connection)
 	struct object_node *found_object = NULL, find_object;
 	struct file_node   *found_file = NULL;
 	char               *tree = NULL, *remote_files_new = NULL;
+	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
 	int                 fd, length = 0;
 
 	/* Find the tree object referenced in the commit. */
@@ -1907,6 +1908,15 @@ save_objects(connector *connection)
 
 	if ((rename(remote_files_new, connection->remote_files)) != 0)
 		err(EXIT_FAILURE, "save_objects: cannot rename %s", connection->remote_files);
+
+	/* Save .gituprevision. */
+
+	snprintf(gitup_revision_path, BUFFER_UNIT_SMALL, "%s/.gituprevision", connection->path_target);
+
+	snprintf(gitup_revision, BUFFER_UNIT_SMALL, "%s-%s", connection->branch, connection->want);
+	gitup_revision[strlen(connection->branch) + 10] = '\0';
+
+	save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
 
 	/* Save all of the new and modified files. */
 
@@ -2334,5 +2344,6 @@ main(int argc, char **argv)
 		fprintf(stderr, "# The local repository has been repaired.  Please rerun gitup to pull the latest commit.\n");
 
 	sync();
+
 	return (0);
 }
