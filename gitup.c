@@ -129,7 +129,7 @@ static char *   build_clone_command(connector *);
 static char *   build_pull_command(connector *);
 static char *   build_repair_command(connector *);
 static char *   legible_hash(char *);
-static void     load_configuration(connector *, const char *);
+static int      load_configuration(connector *, const char *, char **, int);
 static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *);
@@ -1944,15 +1944,20 @@ save_objects(connector *connection)
  * Procedure that loads the section options from gitup.conf
  */
 
-static void
-load_configuration(connector *connection, const char *configuration_file)
+static int
+load_configuration(connector *connection, const char *configuration_file, char **argv, int argc)
 {
 	struct ucl_parser  *parser = NULL;
 	ucl_object_t       *object = NULL;
 	const ucl_object_t *section = NULL, *pair = NULL, *ignore = NULL;
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignore = NULL;
 	const char         *key = NULL, *value = NULL, *config_section = NULL;
-	bool                found = false;
+	char               *sections = NULL;
+	unsigned int        sections_size = 1024, sections_length = 0;
+	uint8_t             optind = 0, x = 0;
+
+	if ((sections = (char *)malloc(sections_size)) == NULL)
+		err(EXIT_FAILURE, "load_configuration: malloc");
 
 	parser = ucl_parser_new(0);
 
@@ -1961,13 +1966,23 @@ load_configuration(connector *connection, const char *configuration_file)
 
 	object = ucl_parser_get_object(parser);
 
-	while ((section = ucl_iterate_object(object, &it, true))) {
+	while ((connection->section == NULL) && (section = ucl_iterate_object(object, &it, true))) {
 		config_section = ucl_object_key(section);
 
-		if ((strlen(connection->section) == strlen(config_section)) && (strncmp(connection->section, config_section, strlen(config_section)) == 0))
-			found = true;
-		else if (strncmp(config_section, "defaults", 8) != 0)
-			continue;
+		for (x = 0; x < argc; x++)
+			if ((strlen(argv[x]) == strlen(config_section)) && (strncmp(argv[x], config_section, strlen(config_section)) == 0)) {
+				connection->section = strdup(argv[x]);
+				optind = x;
+			}
+
+		if (strncmp(config_section, "defaults", 8) != 0) {
+			append_string(&sections, &sections_size, &sections_length, "\t * ", 4);
+			append_string(&sections, &sections_size, &sections_length, config_section, strlen(config_section));
+			append_string(&sections, &sections_size, &sections_length, "\n", 1);
+
+			if (optind == 0)
+				continue;
+		}
 
 		while ((pair = ucl_iterate_object(section, &it_section, true))) {
 			key   = ucl_object_key(pair);
@@ -2007,8 +2022,13 @@ load_configuration(connector *connection, const char *configuration_file)
 	ucl_object_unref(object);
 	ucl_parser_free(parser);
 
-	if (found == false)
-		errc(EXIT_FAILURE, EINVAL, "set_configuration_parameters: cannot find [%s] in gitup.conf", connection->section);
+	if (optind == 0)
+		errc(EXIT_FAILURE, EINVAL, "\nCannot find a matching section in the command line arguments.  These are the configured sections:\n%s", sections);
+
+	if (sections != NULL)
+		free(sections);
+
+	return optind;
 }
 
 
@@ -2054,7 +2074,7 @@ main(int argc, char **argv)
 	struct stat         check_file;
 	const char         *configuration_file = CONFIG_FILE_PATH;
 	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
-	int                 x = 0, o = 0, option = 0, length = 0;
+	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
 	bool                ignore = false, current_repository = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
 
@@ -2094,20 +2114,9 @@ main(int argc, char **argv)
 	if (argc < 2)
 		usage(configuration_file);
 
-	if (argv[1][0] == '-') {
-		if (argv[1][1] == 'V') {
-			fprintf(stdout, "gitup version %s\n", GITUP_VERSION);
-			exit(EXIT_SUCCESS);
-		} else {
-			usage(configuration_file);
-		}
-	} else {
-		connection.section = strdup(argv[1]);
-		load_configuration(&connection, configuration_file);
-		optind = 2;
-	}
+	skip_optind = load_configuration(&connection, configuration_file, argv, argc);
 
-	while ((option = getopt(argc, argv, "ch:krt:u:Vv:w:")) != -1)
+	while ((option = getopt(argc, argv, "ch:krt:u:Vv:w:")) != -1) {
 		switch (option) {
 			case 'c':
 				connection.clone = true;
@@ -2156,10 +2165,17 @@ main(int argc, char **argv)
 			case 'w':
 				connection.want = strdup(optarg);
 				break;
+			case 'V':
+				fprintf(stdout, "gitup version %s\n", GITUP_VERSION);
+				exit(EXIT_SUCCESS);
 			case 'v':
 				connection.verbosity = strtol(optarg, (char **)NULL, 10);
 				break;
 		}
+
+		if (optind == skip_optind)
+			optind++;
+	}
 
 	/* Continue setting up the environment. */
 
