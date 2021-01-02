@@ -1151,6 +1151,8 @@ get_commit_details(connector *connection)
 
 	/* Extract the "want" checksum. */
 
+	full_branch[0] = '\0';
+
 	while ((tries-- > 0) && (connection->want == NULL)) {
 		if (strncmp(connection->branch, "quarterly", 9) == 0) {
 			/* If the current calendar quarter doesn't exist, try the previous one. */
@@ -1185,7 +1187,9 @@ get_commit_details(connector *connection)
 
 	if (connection->verbosity) {
 		fprintf(stderr, "# Want: %s\n", connection->want);
-		fprintf(stderr, "# Branch:%s", full_branch);
+
+		if (strlen(full_branch) > 0)
+			fprintf(stderr, "# Branch:%s", full_branch);
 	}
 
 	/* Create the pack file name. */
