@@ -1149,9 +1149,20 @@ get_commit_details(connector *connection)
 	connection->agent = strdup(position);
 	*end = '\n';
 
-	/* Extract the "want" checksum. */
+	/* Because there is no way to lookup commit history, if a want commit is
+	   specified, change the branch to (detached). */
 
 	full_branch[0] = '\0';
+
+	if (connection->want != NULL) {
+		if (connection->branch != NULL)
+			free(connection->branch);
+
+		connection->branch = strdup("(detached)");
+		snprintf(full_branch, BUFFER_UNIT_SMALL, " %s\n", connection->branch);
+	}
+
+	/* Extract the "want" checksum. */
 
 	while ((tries-- > 0) && (connection->want == NULL)) {
 		if (strncmp(connection->branch, "quarterly", 9) == 0) {
@@ -1176,21 +1187,20 @@ get_commit_details(connector *connection)
 
 			memcpy(connection->want, position - 40, 40);
 			connection->want[40] = '\0';
+
+			if (connection->verbosity)
+				fprintf(stderr, "# Want: %s\n", connection->want);
 		} else {
 			if (tries == 0) {
 				full_branch[strlen(full_branch) - 1] = '\0';
 
-				errc(EXIT_FAILURE, EINVAL, "get_commit_details: %s doesn't exist in %s", full_branch, connection->repository);
+				errc(EXIT_FAILURE, EINVAL, "get_commit_details:%s doesn't exist in %s", full_branch, connection->repository);
 			}
 		}
 	}
 
-	if (connection->verbosity) {
-		fprintf(stderr, "# Want: %s\n", connection->want);
-
-		if (strlen(full_branch) > 0)
-			fprintf(stderr, "# Branch:%s", full_branch);
-	}
+	if (strlen(full_branch) > 1)
+		fprintf(stderr, "# Branch:%s", full_branch);
 
 	/* Create the pack file name. */
 
