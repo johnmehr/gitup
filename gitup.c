@@ -1954,7 +1954,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	const char         *key = NULL, *value = NULL, *config_section = NULL;
 	char               *sections = NULL;
 	unsigned int        sections_size = 1024, sections_length = 0;
-	uint8_t             optind = 0, x = 0;
+	uint8_t             argument_index = 0, x = 0;
 
 	if ((sections = (char *)malloc(sections_size)) == NULL)
 		err(EXIT_FAILURE, "load_configuration: malloc");
@@ -1969,20 +1969,26 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	while ((connection->section == NULL) && (section = ucl_iterate_object(object, &it, true))) {
 		config_section = ucl_object_key(section);
 
+		/* Look for the section in the command line arguments. */
+
 		for (x = 0; x < argc; x++)
 			if ((strlen(argv[x]) == strlen(config_section)) && (strncmp(argv[x], config_section, strlen(config_section)) == 0)) {
 				connection->section = strdup(argv[x]);
-				optind = x;
+				argument_index = x;
 			}
+
+		/* Add the section to the list of known sections in case a valid section is not found. */
 
 		if (strncmp(config_section, "defaults", 8) != 0) {
 			append_string(&sections, &sections_size, &sections_length, "\t * ", 4);
 			append_string(&sections, &sections_size, &sections_length, config_section, strlen(config_section));
 			append_string(&sections, &sections_size, &sections_length, "\n", 1);
 
-			if (optind == 0)
+			if (argument_index == 0)
 				continue;
 		}
+
+		/* Iterate through the section's configuration parameters. */
 
 		while ((pair = ucl_iterate_object(section, &it_section, true))) {
 			key   = ucl_object_key(pair);
@@ -2022,13 +2028,13 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_unref(object);
 	ucl_parser_free(parser);
 
-	if (optind == 0)
+	if (argument_index == 0)
 		errc(EXIT_FAILURE, EINVAL, "\nCannot find a matching section in the command line arguments.  These are the configured sections:\n%s", sections);
 
 	if (sections != NULL)
 		free(sections);
 
-	return optind;
+	return argument_index;
 }
 
 
