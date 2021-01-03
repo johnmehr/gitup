@@ -958,7 +958,7 @@ send_command(connector *connection, char *want)
 	snprintf(command,
 		BUFFER_UNIT_SMALL + want_size,
 		"POST %s/git-upload-pack HTTP/1.1\n"
-		"Host: %s\n"
+		"Host: %s:%d\n"
 		"User-Agent: git/%s\n"
 		"Accept-encoding: deflate, gzip\n"
 		"Content-type: application/x-git-upload-pack-request\n"
@@ -969,6 +969,7 @@ send_command(connector *connection, char *want)
 		"%s",
 		connection->repository,
 		connection->host,
+		connection->port,
 		GIT_VERSION,
 		want_size,
 		want);
@@ -1122,11 +1123,12 @@ get_commit_details(connector *connection)
 	snprintf(command,
 		BUFFER_UNIT_SMALL,
 		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\n"
-		"Host: %s\n"
+		"Host: %s:%d\n"
 		"User-Agent: git/%s\n"
 		"\r\n",
 		connection->repository,
 		connection->host,
+		connection->port,
 		GIT_VERSION);
 
 	process_command(connection, command);
@@ -2033,6 +2035,24 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 	if (sections != NULL)
 		free(sections);
+
+	if (connection->branch == NULL)
+		errc(EXIT_FAILURE, EINVAL, "No branch found in [%s]", connection->section);
+
+	if (connection->host == NULL)
+		errc(EXIT_FAILURE, EDESTADDRREQ, "No host found in [%s]", connection->section);
+
+	if (connection->path_target == NULL)
+		errc(EXIT_FAILURE, EINVAL, "No target path found in [%s]", connection->section);
+
+	if (connection->path_work == NULL)
+		errc(EXIT_FAILURE, EINVAL, "No work directory found in [%s]", connection->section);
+
+	if (connection->port == 0)
+		errc(EXIT_FAILURE, EDESTADDRREQ, "No port found in [%s]", connection->section);
+
+	if (connection->repository == NULL)
+		errc(EXIT_FAILURE, EINVAL, "No repository found in [%s]", connection->section);
 
 	return argument_index;
 }
