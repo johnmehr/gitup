@@ -2354,6 +2354,7 @@ main(int argc, char **argv)
 		free(connection.remote_files);
 
 	if (connection.ssl) {
+		close(connection.socket_descriptor);
 		SSL_shutdown(connection.ssl);
 		SSL_CTX_free(connection.ctx);
 		SSL_free(connection.ssl);
