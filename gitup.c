@@ -959,7 +959,7 @@ send_command(connector *connection, char *want)
 		BUFFER_UNIT_SMALL + want_size,
 		"POST %s/git-upload-pack HTTP/1.1\n"
 		"Host: %s:%d\n"
-		"User-Agent: git/%s\n"
+		"User-Agent: git/%s (gitup/%s)\n"
 		"Accept-encoding: deflate, gzip\n"
 		"Content-type: application/x-git-upload-pack-request\n"
 		"Accept: application/x-git-upload-pack-result\n"
@@ -971,6 +971,7 @@ send_command(connector *connection, char *want)
 		connection->host,
 		connection->port,
 		GIT_VERSION,
+		GITUP_VERSION,
 		want_size,
 		want);
 
@@ -1124,12 +1125,13 @@ get_commit_details(connector *connection)
 		BUFFER_UNIT_SMALL,
 		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\n"
 		"Host: %s:%d\n"
-		"User-Agent: git/%s\n"
+		"User-Agent: git/%s (gitup/%s)\n"
 		"\r\n",
 		connection->repository,
 		connection->host,
 		connection->port,
-		GIT_VERSION);
+		GIT_VERSION,
+		GITUP_VERSION);
 
 	process_command(connection, command);
 
