@@ -89,7 +89,7 @@ typedef struct {
 	char                *host;
 	uint16_t             port;
 	char                *server_agent;
-	char                 user_agent[64];
+	char                 user_agent[32];
 	char                *section;
 	char                *repository;
 	char                *branch;
@@ -2151,6 +2151,9 @@ main(int argc, char **argv)
 		usage(configuration_file);
 
 	skip_optind = load_configuration(&connection, configuration_file, argv, argc);
+
+	if (skip_optind == 1)
+		optind++;
 
 	while ((option = getopt(argc, argv, "ch:krt:u:Vv:w:")) != -1) {
 		switch (option) {
