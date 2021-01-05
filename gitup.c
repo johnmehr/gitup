@@ -407,7 +407,7 @@ save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, bo
 /*
  * calculate_object_hash
  *
- * Function that adds git's "type file-size\0" header to a buffer and returns the SHA checksum.
+ * Function that adds Git's "type file-size\0" header to a buffer and returns the SHA checksum.
  */
 
 static char *
@@ -638,7 +638,7 @@ find_local_tree(connector *connection, char *base_path)
 				continue;
 
 			if ((file_name_size == 4) && (strcmp(entry->d_name, ".git") == 0)) {
-				fprintf(stderr, " ! A .git folder was found -- gitup does not update this folder which will cause problems for the official git client.\n");
+				fprintf(stderr, " ! A .git directory was found -- gitup does not update this directory which will cause problems for the official Git client.\n");
 				fprintf(stderr, " ! If you wish to use gitup, please remove %s/%s and rerun gitup.\n", base_path, entry->d_name);
 				exit(EXIT_FAILURE);
 				}
@@ -2108,7 +2108,7 @@ usage(const char *configuration_file)
 /*
  * main
  *
- * A lightweight, dependency-free program to clone/pull a git repository.
+ * A lightweight, dependency-free program to clone/pull a Git repository.
  */
 
 int
