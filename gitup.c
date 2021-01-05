@@ -88,7 +88,8 @@ typedef struct {
 	int                  socket_descriptor;
 	char                *host;
 	uint16_t             port;
-	char                *agent;
+	char                *server_agent;
+	char                 user_agent[64];
 	char                *section;
 	char                *repository;
 	char                *branch;
@@ -959,7 +960,7 @@ send_command(connector *connection, char *want)
 		BUFFER_UNIT_SMALL + want_size,
 		"POST %s/git-upload-pack HTTP/1.1\n"
 		"Host: %s:%d\n"
-		"User-Agent: git/%s (gitup/%s)\n"
+		"User-Agent: %s\n"
 		"Accept-encoding: deflate, gzip\n"
 		"Content-type: application/x-git-upload-pack-request\n"
 		"Accept: application/x-git-upload-pack-result\n"
@@ -970,8 +971,7 @@ send_command(connector *connection, char *want)
 		connection->repository,
 		connection->host,
 		connection->port,
-		GIT_VERSION,
-		GITUP_VERSION,
+		connection->user_agent,
 		want_size,
 		want);
 
@@ -1005,8 +1005,8 @@ build_clone_command(connector *connection)
 		"0032want %s\n"
 		"0032want %s\n"
 		"0009done\n0000",
-		strlen(connection->agent) + 4,
-		connection->agent,
+		strlen(connection->server_agent) + 4,
+		connection->server_agent,
 		connection->want,
 		connection->want,
 		connection->want);
@@ -1042,8 +1042,8 @@ build_pull_command(connector *connection)
 		"0032want %s\n"
 		"0032have %s\n"
 		"0009done\n0000",
-		strlen(connection->agent) + 4,
-		connection->agent,
+		strlen(connection->server_agent) + 4,
+		connection->server_agent,
 		connection->want,
 		connection->have,
 		connection->want,
@@ -1098,8 +1098,8 @@ build_repair_command(connector *connection)
 		"%s"
 		"000cdeepen 1"
 		"0009done\n0000",
-		strlen(connection->agent) + 4,
-		connection->agent,
+		strlen(connection->server_agent) + 4,
+		connection->server_agent,
 		want);
 
 	return (command);
@@ -1125,13 +1125,12 @@ get_commit_details(connector *connection)
 		BUFFER_UNIT_SMALL,
 		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\n"
 		"Host: %s:%d\n"
-		"User-Agent: git/%s (gitup/%s)\n"
+		"User-Agent: %s\n"
 		"\r\n",
 		connection->repository,
 		connection->host,
 		connection->port,
-		GIT_VERSION,
-		GITUP_VERSION);
+		connection->user_agent);
 
 	process_command(connection, command);
 
@@ -1150,7 +1149,7 @@ get_commit_details(connector *connection)
 	end      = strstr(position, "\n");
 
 	*end = '\0';
-	connection->agent = strdup(position);
+	connection->server_agent = strdup(position);
 	*end = '\n';
 
 	/* Because there is no way to lookup commit history, if a want commit is
@@ -2032,11 +2031,10 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_unref(object);
 	ucl_parser_free(parser);
 
+	/* Check to make sure all of the required information was found in the config file. */
+
 	if (argument_index == 0)
 		errc(EXIT_FAILURE, EINVAL, "\nCannot find a matching section in the command line arguments.  These are the configured sections:\n%s", sections);
-
-	if (sections != NULL)
-		free(sections);
 
 	if (connection->branch == NULL)
 		errc(EXIT_FAILURE, EINVAL, "No branch found in [%s]", connection->section);
@@ -2055,6 +2053,16 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 	if (connection->repository == NULL)
 		errc(EXIT_FAILURE, EINVAL, "No repository found in [%s]", connection->section);
+
+	if (sections != NULL)
+		free(sections);
+
+	/* Build the user agent string. */
+
+	if (strstr(connection->host, "freebsd.org") != NULL)
+		snprintf(connection->user_agent, sizeof(connection->user_agent), "gitup/%s", GITUP_VERSION);
+	else
+		snprintf(connection->user_agent, sizeof(connection->user_agent), "git/%s (gitup/%s)", GIT_VERSION, GITUP_VERSION);
 
 	return argument_index;
 }
@@ -2112,7 +2120,7 @@ main(int argc, char **argv)
 		.socket_descriptor = 0,
 		.host              = NULL,
 		.port              = 0,
-		.agent             = NULL,
+		.server_agent      = NULL,
 		.section           = NULL,
 		.repository        = NULL,
 		.branch            = NULL,
@@ -2348,8 +2356,8 @@ main(int argc, char **argv)
 	if (connection.host)
 		free(connection.host);
 
-	if (connection.agent)
-		free(connection.agent);
+	if (connection.server_agent)
+		free(connection.server_agent);
 
 	if (connection.section)
 		free(connection.section);
