@@ -808,9 +808,9 @@ ssl_connect(connector *connection)
 static void
 process_command(connector *connection, char *command)
 {
-	char  read_buffer[BUFFER_UNIT_SMALL];
-	char *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
-	int   chunk_size = -1, bytes_expected = 0, marker_offset = 0, data_start_offset = 0;
+	char  read_buffer[BUFFER_UNIT_SMALL], status[16];
+	char *marker_start = NULL, *marker_end = NULL, *data_start = NULL, *status_start = NULL, *status_end = NULL;
+	int   chunk_size = -1, bytes_expected = 0, marker_offset = 0, data_start_offset = 0, status_length = 0;
 	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
 	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
 	int   bytes_to_write = strlen(command), error = 0, twirl = 0;
@@ -917,7 +917,7 @@ process_command(connector *connection, char *command)
 			if (chunk_size == 0)
 				break;
 
-			marker_start += chunk_size;
+			marker_start   += chunk_size;
 			bytes_expected += chunk_size;
 
 			if (connection->verbosity == 1)
@@ -928,7 +928,16 @@ process_command(connector *connection, char *command)
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
 
-	if (strstr(connection->response, "HTTP/1.1 200 OK") != connection->response)
+	/* Check to see if the response is valid. */
+
+	if ((status_start = strstr(connection->response, "HTTP/1.1")) != connection->response)
+		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
+
+	status_end    = strstr(connection->response + 9, "\r\n");
+	status_length = status_end - status_start - 9;
+	memcpy(status, status_start + 9, (status_length > 16 ? 16 : status_length));
+
+	if (strncmp(status, "200 OK", 6) != 0)
 		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
 
 	/* Remove the header. */
@@ -958,14 +967,14 @@ send_command(connector *connection, char *want)
 
 	snprintf(command,
 		BUFFER_UNIT_SMALL + want_size,
-		"POST %s/git-upload-pack HTTP/1.1\n"
-		"Host: %s:%d\n"
-		"User-Agent: %s\n"
-		"Accept-encoding: deflate, gzip\n"
-		"Content-type: application/x-git-upload-pack-request\n"
-		"Accept: application/x-git-upload-pack-result\n"
-		"Git-Protocol: version=2\n"
-		"Content-length: %zu\n"
+		"POST %s/git-upload-pack HTTP/1.1\r\n"
+		"Host: %s:%d\r\n"
+		"User-Agent: %s\r\n"
+		"Accept-encoding: deflate, gzip\r\n"
+		"Content-type: application/x-git-upload-pack-request\r\n"
+		"Accept: application/x-git-upload-pack-result\r\n"
+		"Git-Protocol: version=2\r\n"
+		"Content-length: %zu\r\n"
 		"\r\n"
 		"%s",
 		connection->repository,
@@ -1123,9 +1132,9 @@ get_commit_details(connector *connection)
 
 	snprintf(command,
 		BUFFER_UNIT_SMALL,
-		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\n"
-		"Host: %s:%d\n"
-		"User-Agent: %s\n"
+		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\r\n"
+		"Host: %s:%d\r\n"
+		"User-Agent: %s\r\n"
 		"\r\n",
 		connection->repository,
 		connection->host,
