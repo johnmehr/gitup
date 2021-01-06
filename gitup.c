@@ -294,7 +294,7 @@ prune_tree(connector *connection, char *base_path)
 		errc(EXIT_FAILURE, EACCES, "prune_tree: %s is not located in the %s tree", base_path, connection->path_target);
 
 	if (strnstr(base_path, "../", strlen(base_path)) != NULL)
-		errc(EXIT_FAILURE, EACCES, "prune_tree: Illegal path traverse in %s", base_path);
+		errc(EXIT_FAILURE, EACCES, "prune_tree: illegal path traverse in %s", base_path);
 
 	/* Remove the directory contents. */
 
@@ -339,7 +339,7 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
 	int         fd;
 
 	if (stat(path, &file) == -1)
-		err(EXIT_FAILURE, "load_file: Cannot find %s", path);
+		err(EXIT_FAILURE, "load_file: cannot find %s", path);
 
 	if (file.st_size > 0) {
 		if (file.st_size > *buffer_size) {
@@ -350,10 +350,10 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
 		}
 
 		if ((fd = open(path, O_RDONLY)) == -1)
-			err(EXIT_FAILURE, "load_file: Cannot read %s", path);
+			err(EXIT_FAILURE, "load_file: cannot read %s", path);
 
 		if (read(fd, *buffer, *buffer_size) != *buffer_size)
-			err(EXIT_FAILURE, "load_file: Problem reading %s", path);
+			err(EXIT_FAILURE, "load_file: problem reading %s", path);
 
 		close(fd);
 
@@ -706,7 +706,7 @@ load_object(connector *connection, char *hash, char *path)
 				store_object(connection, 3, buffer, buffer_size, 0, 0, NULL);
 			}
 		} else {
-			errc(EXIT_FAILURE, ENOENT, "load_object: local file for object %s - %s not found", hash, path);
+			errc(EXIT_FAILURE, ENOENT, "load_object: local file for object %s -- %s not found", hash, path);
 		}
 	}
 }
@@ -750,7 +750,7 @@ ssl_connect(connector *connection)
 				err(EXIT_FAILURE, "ssl_connect: socket failure");
 
 			if (connect(connection->socket_descriptor, temp->ai_addr, temp->ai_addrlen) < 0)
-				err(EXIT_FAILURE, "ssl_connect: connect failure - %d", errno);
+				err(EXIT_FAILURE, "ssl_connect: connect failure (%d)", errno);
 		}
 
 		start = temp->ai_next;
@@ -771,7 +771,7 @@ ssl_connect(connector *connection)
 	SSL_set_fd(connection->ssl, connection->socket_descriptor);
 
 	while ((error = SSL_connect(connection->ssl)) == -1)
-		fprintf(stderr, "ssl_connect: SSL_connect error:%d\n", SSL_get_error(connection->ssl, error));
+		fprintf(stderr, "ssl_connect: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
 
 	option = 1;
 
@@ -852,7 +852,7 @@ process_command(connector *connection, char *command)
 			break;
 
 		if (bytes_read < 0)
-			err(EXIT_FAILURE, "process_command: SSL_read error: %d\n", SSL_get_error(connection->ssl, error));
+			err(EXIT_FAILURE, "process_command: SSL_read error: %d", SSL_get_error(connection->ssl, error));
 
 		/* Expand the buffer if needed, preserving the position and data_start if the buffer moves. */
 
@@ -874,7 +874,7 @@ process_command(connector *connection, char *command)
 		connection->response[total_bytes_read] = '\0';
 
 		if (connection->verbosity > 1)
-			fprintf(stderr, "\r==> bytes read:%d\tbytes_expected:%d\ttotal_bytes_read:%d", bytes_read, bytes_expected, total_bytes_read);
+			fprintf(stderr, "\r==> bytes read: %d\tbytes_expected: %d\ttotal_bytes_read: %d", bytes_read, bytes_expected, total_bytes_read);
 
 		/* Find the boundary between the header and the data. */
 
@@ -1239,7 +1239,7 @@ load_pack(connector *connection)
 	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)hash_buffer);
 
 	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
-		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch - expected %s, received %s", legible_hash(connection->response + pack_size), legible_hash(hash_buffer));
+		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch -- expected: %s, received: %s", legible_hash(connection->response + pack_size), legible_hash(hash_buffer));
 
 	/* Process the pack data. */
 
@@ -1266,7 +1266,7 @@ fetch_pack(connector *connection, char *command)
 	/* Find the start of the pack data and remove the header. */
 
 	if ((pack_start = strstr(connection->response, "PACK")) == NULL)
-		errc(EXIT_FAILURE, EFTYPE, "fetch_pack: malformed pack data\n%s\n", connection->response);
+		errc(EXIT_FAILURE, EFTYPE, "fetch_pack: malformed pack data:\n%s", connection->response);
 
 	pack_start -= 5;
 	connection->response_size -= (pack_start - connection->response + 11);
@@ -1296,7 +1296,7 @@ fetch_pack(connector *connection, char *command)
 	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)hash_buffer);
 
 	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
-		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch - expected %s, received %s", legible_hash(connection->response + pack_size), legible_hash(hash_buffer));
+		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch -- expected: %s, received: %s", legible_hash(connection->response + pack_size), legible_hash(hash_buffer));
 
 	/* Save the pack data. */
 
@@ -1390,7 +1390,7 @@ unpack_objects(connector *connection)
 		total_objects = (total_objects << 8) + (unsigned char)connection->response[position];
 
 	if (connection->verbosity > 1)
-		fprintf(stderr, "\npack version: %d, total_objects: %d, pack_size:% d\n\n", version, total_objects, connection->response_size);
+		fprintf(stderr, "\npack version: %d, total_objects: %d, pack_size: %d\n\n", version, total_objects, connection->response_size);
 
 	/* Unpack the objects. */
 
@@ -1578,7 +1578,7 @@ apply_deltas(connector *connection)
 		/* Lookup the base object and setup the merge buffer. */
 
 		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-			errc(EXIT_FAILURE, ENOENT, "apply_deltas: can't find %05d -> %d/%s\n", delta->index, delta->index_delta, delta->ref_delta_hash);
+			errc(EXIT_FAILURE, ENOENT, "apply_deltas: cannot find %05d -> %d/%s", delta->index, delta->index_delta, delta->ref_delta_hash);
 
 		if ((merge_buffer = (char *)malloc(base->buffer_size)) == NULL)
 			err(EXIT_FAILURE, "apply_deltas: malloc");
@@ -1700,12 +1700,12 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	unsigned int       buffer_size = 0, buffer_length = 0;
 
 	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "process_tree: Cannot create %s", base_path);
+		err(EXIT_FAILURE, "process_tree: cannot create %s", base_path);
 
 	object.hash = hash;
 
 	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
-		errc(EXIT_FAILURE, ENOENT, "process_tree: tree %s - %s cannot be found", base_path, object.hash);
+		errc(EXIT_FAILURE, ENOENT, "process_tree: tree %s -- %s cannot be found", base_path, object.hash);
 
 	/* Remove the base path from the list of upcoming deletions. */
 
@@ -1774,7 +1774,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 			/* If the object is still missing, exit. */
 
 			if (found_object == NULL)
-				errc(EXIT_FAILURE, ENOENT, "process_tree: file %s - %s cannot be found", full_path, file.hash);
+				errc(EXIT_FAILURE, ENOENT, "process_tree: file %s -- %s cannot be found", full_path, file.hash);
 
 			/* Otherwise retain it. */
 
@@ -1887,7 +1887,7 @@ save_objects(connector *connection)
 	find_object.hash = connection->want;
 
 	if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
-		errc(EXIT_FAILURE, EINVAL, "save_objects: can't find %s\n", connection->want);
+		errc(EXIT_FAILURE, EINVAL, "save_objects: cannot find %s", connection->want);
 
 	if (memcmp(found_object->buffer, "tree ", 5) != 0)
 		errc(EXIT_FAILURE, EINVAL, "save_objects: first object is not a commit");
@@ -1932,7 +1932,7 @@ save_objects(connector *connection)
 			find_object.hash = found_file->hash;
 
 			if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
-				errc(EXIT_FAILURE, EINVAL, "save_objects: can't find %s\n", found_file->hash);
+				errc(EXIT_FAILURE, EINVAL, "save_objects: cannot find %s", found_file->hash);
 
 			save_file(found_file->path, found_file->mode, found_object->buffer, found_object->buffer_size, connection->verbosity, found_file->new);
 		}
@@ -1963,7 +1963,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	parser = ucl_parser_new(0);
 
 	if (ucl_parser_add_file(parser, configuration_file) == false)
-		err(EXIT_FAILURE, "load_configuration: %s\n", ucl_parser_get_error(parser));
+		err(EXIT_FAILURE, "load_configuration: %s", ucl_parser_get_error(parser));
 
 	object = ucl_parser_get_object(parser);
 
