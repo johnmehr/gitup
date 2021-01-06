@@ -51,7 +51,6 @@
 #include <zlib.h>
 
 #define	GITUP_VERSION     "0.88"
-#define	GIT_VERSION       "2.28"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -88,8 +87,7 @@ typedef struct {
 	int                  socket_descriptor;
 	char                *host;
 	uint16_t             port;
-	char                *server_agent;
-	char                 user_agent[32];
+	char                *agent;
 	char                *section;
 	char                *repository;
 	char                *branch;
@@ -808,9 +806,9 @@ ssl_connect(connector *connection)
 static void
 process_command(connector *connection, char *command)
 {
-	char  read_buffer[BUFFER_UNIT_SMALL], status[16];
-	char *marker_start = NULL, *marker_end = NULL, *data_start = NULL, *status_start = NULL, *status_end = NULL;
-	int   chunk_size = -1, bytes_expected = 0, marker_offset = 0, data_start_offset = 0, status_length = 0;
+	char  read_buffer[BUFFER_UNIT_SMALL];
+	char *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
+	int   chunk_size = -1, bytes_expected = 0, marker_offset = 0, data_start_offset = 0;
 	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
 	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
 	int   bytes_to_write = strlen(command), error = 0, twirl = 0;
@@ -917,7 +915,7 @@ process_command(connector *connection, char *command)
 			if (chunk_size == 0)
 				break;
 
-			marker_start   += chunk_size;
+			marker_start += chunk_size;
 			bytes_expected += chunk_size;
 
 			if (connection->verbosity == 1)
@@ -928,16 +926,7 @@ process_command(connector *connection, char *command)
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
 
-	/* Check to see if the response is valid. */
-
-	if ((status_start = strstr(connection->response, "HTTP/1.1")) != connection->response)
-		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
-
-	status_end    = strstr(connection->response + 9, "\r\n");
-	status_length = status_end - status_start - 9;
-	memcpy(status, status_start + 9, (status_length > 16 ? 16 : status_length));
-
-	if (strncmp(status, "200 OK", 6) != 0)
+	if (strstr(connection->response, "HTTP/1.1 200 ") != connection->response)
 		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
 
 	/* Remove the header. */
@@ -969,7 +958,7 @@ send_command(connector *connection, char *want)
 		BUFFER_UNIT_SMALL + want_size,
 		"POST %s/git-upload-pack HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
-		"User-Agent: %s\r\n"
+		"User-Agent: gitup/%s\r\n"
 		"Accept-encoding: deflate, gzip\r\n"
 		"Content-type: application/x-git-upload-pack-request\r\n"
 		"Accept: application/x-git-upload-pack-result\r\n"
@@ -980,7 +969,7 @@ send_command(connector *connection, char *want)
 		connection->repository,
 		connection->host,
 		connection->port,
-		connection->user_agent,
+		GITUP_VERSION,
 		want_size,
 		want);
 
@@ -1014,8 +1003,8 @@ build_clone_command(connector *connection)
 		"0032want %s\n"
 		"0032want %s\n"
 		"0009done\n0000",
-		strlen(connection->server_agent) + 4,
-		connection->server_agent,
+		strlen(connection->agent) + 4,
+		connection->agent,
 		connection->want,
 		connection->want,
 		connection->want);
@@ -1051,8 +1040,8 @@ build_pull_command(connector *connection)
 		"0032want %s\n"
 		"0032have %s\n"
 		"0009done\n0000",
-		strlen(connection->server_agent) + 4,
-		connection->server_agent,
+		strlen(connection->agent) + 4,
+		connection->agent,
 		connection->want,
 		connection->have,
 		connection->want,
@@ -1107,8 +1096,8 @@ build_repair_command(connector *connection)
 		"%s"
 		"000cdeepen 1"
 		"0009done\n0000",
-		strlen(connection->server_agent) + 4,
-		connection->server_agent,
+		strlen(connection->agent) + 4,
+		connection->agent,
 		want);
 
 	return (command);
@@ -1134,12 +1123,12 @@ get_commit_details(connector *connection)
 		BUFFER_UNIT_SMALL,
 		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
-		"User-Agent: %s\r\n"
+		"User-Agent: gitup/%s\r\n"
 		"\r\n",
 		connection->repository,
 		connection->host,
 		connection->port,
-		connection->user_agent);
+		GITUP_VERSION);
 
 	process_command(connection, command);
 
@@ -1158,7 +1147,7 @@ get_commit_details(connector *connection)
 	end      = strstr(position, "\n");
 
 	*end = '\0';
-	connection->server_agent = strdup(position);
+	connection->agent = strdup(position);
 	*end = '\n';
 
 	/* Because there is no way to lookup commit history, if a want commit is
@@ -2066,13 +2055,6 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if (sections != NULL)
 		free(sections);
 
-	/* Build the user agent string. */
-
-	if (strstr(connection->host, "freebsd.org") != NULL)
-		snprintf(connection->user_agent, sizeof(connection->user_agent), "gitup/%s", GITUP_VERSION);
-	else
-		snprintf(connection->user_agent, sizeof(connection->user_agent), "git/%s (gitup/%s)", GIT_VERSION, GITUP_VERSION);
-
 	return argument_index;
 }
 
@@ -2129,7 +2111,7 @@ main(int argc, char **argv)
 		.socket_descriptor = 0,
 		.host              = NULL,
 		.port              = 0,
-		.server_agent      = NULL,
+		.agent             = NULL,
 		.section           = NULL,
 		.repository        = NULL,
 		.branch            = NULL,
@@ -2368,8 +2350,8 @@ main(int argc, char **argv)
 	if (connection.host)
 		free(connection.host);
 
-	if (connection.server_agent)
-		free(connection.server_agent);
+	if (connection.agent)
+		free(connection.agent);
 
 	if (connection.section)
 		free(connection.section);
