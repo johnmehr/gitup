@@ -97,7 +97,7 @@ With the following configuration options defined in
 .Pp
     "ports" : {
 .br
-        "repository" : "/freebsd/freebsd-ports",
+        "repository" : "/freebsd/freebsd-ports.git",
 .br
         "branch"     : "master",
 .br
