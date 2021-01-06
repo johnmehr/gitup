@@ -1176,10 +1176,14 @@ get_commit_details(connector *connection)
 
 			snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/branches/%04dQ%d\n", year, quarter);
 		} else {
-			if (connection->tag != NULL)
-				snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/tags/%s\n", connection->tag);
-			else
+			if (connection->tag != NULL) {
+				snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/tags/%s^{}\n", connection->tag);
+
+				if (strstr(connection->response, full_branch) == NULL)
+					snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/tags/%s\n", connection->tag);
+			} else {
 				snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
+			}
 		}
 
 		if ((position = strstr(connection->response, full_branch)) != NULL) {
@@ -1200,8 +1204,14 @@ get_commit_details(connector *connection)
 		}
 	}
 
-	if (strlen(full_branch) > 1)
+	if (strlen(full_branch) > 1) {
+		if ((end = strstr(full_branch, "^{}")) != NULL) {
+			*end++ = '\n';
+			*end   = '\0';
+		}
+
 		fprintf(stderr, "# Branch:%s", full_branch);
+	}
 
 	/* Create the pack file name. */
 
