@@ -48,6 +48,10 @@ but rather, is intended to provide a convenient way for users to update FreeBSD
 source files without having to install devel/git (and all of its related
 dependencies) and without the substantial disk overhead that normally accompany
 local Git repositories.
+.Pp
+.Nm
+currently only supports anonymous, encrypted transfers via the "Smart HTTP"
+protocol.
 .Sh OPTIONS
 Configuration options are stored in %%CONFIG_FILE_PATH%% and are grouped
 into commonly used sections (additional custom sections can be added to this
