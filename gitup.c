@@ -352,7 +352,7 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
 		if ((fd = open(path, O_RDONLY)) == -1)
 			err(EXIT_FAILURE, "load_file: cannot read %s", path);
 
-		if (read(fd, *buffer, *buffer_size) != *buffer_size)
+		if ((uint32_t)read(fd, *buffer, *buffer_size) != *buffer_size)
 			err(EXIT_FAILURE, "load_file: problem reading %s", path);
 
 		close(fd);
