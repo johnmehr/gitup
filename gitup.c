@@ -50,7 +50,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.88"
+#define	GITUP_VERSION     "0.89"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -1982,11 +1982,17 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 		/* Look for the section in the command line arguments. */
 
-		for (x = 0; x < argc; x++)
+		for (x = 0; x < argc; x++) {
+			if ((strlen(argv[x]) == 2) && (strncmp(argv[x], "-V", 2)) == 0) {
+				fprintf(stdout, "gitup version %s\n", GITUP_VERSION);
+				exit(EXIT_SUCCESS);
+			}
+
 			if ((strlen(argv[x]) == strlen(config_section)) && (strncmp(argv[x], config_section, strlen(config_section)) == 0)) {
 				connection->section = strdup(argv[x]);
 				argument_index = x;
 			}
+		}
 
 		/* Add the section to the list of known sections in case a valid section is not found. */
 
@@ -2156,7 +2162,7 @@ main(int argc, char **argv)
 	if (skip_optind == 1)
 		optind++;
 
-	while ((option = getopt(argc, argv, "ch:krt:u:Vv:w:")) != -1) {
+	while ((option = getopt(argc, argv, "ch:krt:u:v:w:")) != -1) {
 		switch (option) {
 			case 'c':
 				connection.clone = true;
@@ -2205,9 +2211,6 @@ main(int argc, char **argv)
 			case 'w':
 				connection.want = strdup(optarg);
 				break;
-			case 'V':
-				fprintf(stdout, "gitup version %s\n", GITUP_VERSION);
-				exit(EXIT_SUCCESS);
 			case 'v':
 				connection.verbosity = strtol(optarg, (char **)NULL, 10);
 				break;
