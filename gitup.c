@@ -988,7 +988,10 @@ send_command(connector *connection, char *want)
 static char *
 build_clone_command(connector *connection)
 {
-	char *command = NULL;
+	char    *command = NULL;
+	uint8_t  agent_length = 0;
+
+	agent_length = strlen(connection->agent) + 4;
 
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
 		err(EXIT_FAILURE, "build_clone_command: malloc");
@@ -996,14 +999,14 @@ build_clone_command(connector *connection)
 	snprintf(command,
 		BUFFER_UNIT_SMALL,
 		"0011command=fetch"
-		"%04lx%s0001"
+		"%04x%s0001"
 		"000fno-progress"
 		"000dofs-delta"
 		"0034shallow %s"
 		"0032want %s\n"
 		"0032want %s\n"
 		"0009done\n0000",
-		strlen(connection->agent) + 4,
+		agent_length,
 		connection->agent,
 		connection->want,
 		connection->want,
