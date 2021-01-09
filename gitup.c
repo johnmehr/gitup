@@ -1025,7 +1025,10 @@ build_clone_command(connector *connection)
 static char *
 build_pull_command(connector *connection)
 {
-	char *command = NULL;
+	char    *command = NULL;
+	uint8_t  agent_length = 0;
+
+	agent_length = strlen(connection->agent) + 4;
 
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
 		err(EXIT_FAILURE, "build_pull_command: malloc");
@@ -1033,7 +1036,7 @@ build_pull_command(connector *connection)
 	snprintf(command,
 		BUFFER_UNIT_SMALL,
 		"0011command=fetch"
-		"%04lx%s0001"
+		"%04x%s0001"
 		"000dthin-pack"
 		"000fno-progress"
 		"000dofs-delta"
@@ -1043,7 +1046,7 @@ build_pull_command(connector *connection)
 		"0032want %s\n"
 		"0032have %s\n"
 		"0009done\n0000",
-		strlen(connection->agent) + 4,
+		agent_length,
 		connection->agent,
 		connection->want,
 		connection->have,
@@ -1067,6 +1070,9 @@ build_repair_command(connector *connection)
 	struct file_node *find = NULL, *found = NULL;
 	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
 	uint32_t          want_size = 0, want_length = 0;
+	uint8_t           agent_length = 0;
+
+	agent_length = strlen(connection->agent) + 4;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
@@ -1092,14 +1098,14 @@ build_repair_command(connector *connection)
 	snprintf(command,
 		BUFFER_UNIT_SMALL + want_length,
 		"0011command=fetch"
-		"%04lx%s0001"
+		"%04x%s0001"
 		"000dthin-pack"
 		"000fno-progress"
 		"000dofs-delta"
 		"%s"
 		"000cdeepen 1"
 		"0009done\n0000",
-		strlen(connection->agent) + 4,
+		agent_length,
 		connection->agent,
 		want);
 
@@ -1745,7 +1751,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 
 	position = tree->buffer;
 
-	while (position - tree->buffer < tree->buffer_size) {
+	while ((uint32_t)(position - tree->buffer) < tree->buffer_size) {
 		extract_tree_item(&file, &position);
 
 		snprintf(full_path, sizeof(full_path), "%s/%s", base_path, file.path);
