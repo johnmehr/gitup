@@ -50,7 +50,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.89"
+#define	GITUP_VERSION     "0.90"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -1972,7 +1972,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	const ucl_object_t *section = NULL, *pair = NULL, *ignore = NULL;
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignore = NULL;
 	const char         *key = NULL, *value = NULL, *config_section = NULL;
-	char               *sections = NULL;
+	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
 	unsigned int        sections_size = 1024, sections_length = 0;
 	uint8_t             argument_index = 0, x = 0;
 
@@ -2031,7 +2031,12 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
 						err(EXIT_FAILURE, "set_configuration_parameters: malloc");
 
-					connection->ignore[connection->ignores++] = strdup(ucl_object_tostring(ignore));
+					snprintf(temp_path, sizeof(temp_path), "%s", ucl_object_tostring(ignore));
+
+					if (temp_path[0] != '/')
+						snprintf(temp_path, sizeof(temp_path), "%s/%s", connection->path_target, ucl_object_tostring(ignore));
+
+					connection->ignore[connection->ignores++] = strdup(temp_path);
 				}
 
 			if (strstr(key, "port") != NULL)
