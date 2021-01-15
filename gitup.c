@@ -2355,8 +2355,12 @@ main(int argc, char **argv)
 		file_node_free(RB_REMOVE(Tree_Local_Path, &Local_Path, file));
 	}
 
-	RB_FOREACH(file, Tree_Remote_Path, &Remote_Path)
+	RB_FOREACH(file, Tree_Remote_Path, &Remote_Path) {
+		if (connection.verbosity > 1)
+			printf("Freeing %o\t%s\t%s\n", file->mode, file->hash, file->path);
+
 		file_node_free(RB_REMOVE(Tree_Remote_Path, &Remote_Path, file));
+	}
 
 	RB_FOREACH(object, Tree_Objects, &Objects)
 		RB_REMOVE(Tree_Objects, &Objects, object);
