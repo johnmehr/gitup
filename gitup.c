@@ -1970,7 +1970,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	struct ucl_parser  *parser = NULL;
 	ucl_object_t       *object = NULL;
 	const ucl_object_t *section = NULL, *pair = NULL, *ignore = NULL;
-	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignore = NULL;
+	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
 	const char         *key = NULL, *value = NULL, *config_section = NULL;
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
 	unsigned int        sections_size = 1024, sections_length = 0;
@@ -2027,7 +2027,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 				connection->host = strdup(value);
 
 			if ((strstr(key, "ignore") != NULL) && (ucl_object_type(pair) == UCL_ARRAY))
-				while ((ignore = ucl_iterate_object(pair, &it_ignore, true))) {
+				while ((ignore = ucl_iterate_object(pair, &it_ignores, true))) {
 					if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
 						err(EXIT_FAILURE, "set_configuration_parameters: malloc");
 
