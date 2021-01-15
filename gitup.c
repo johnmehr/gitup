@@ -2126,8 +2126,8 @@ usage(const char *configuration_file)
 int
 main(int argc, char **argv)
 {
-	struct object_node *object = NULL;
-	struct file_node   *file   = NULL;
+	struct object_node *object = NULL, *next_object = NULL;
+	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
 	const char         *configuration_file = CONFIG_FILE_PATH;
 	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
@@ -2332,10 +2332,10 @@ main(int argc, char **argv)
 
 	/* Wrap it all up. */
 
-	RB_FOREACH(file, Tree_Local_Hash, &Local_Hash)
+	RB_FOREACH_SAFE(file, Tree_Local_Hash, &Local_Hash, next_file)
 		RB_REMOVE(Tree_Local_Hash, &Local_Hash, file);
 
-	RB_FOREACH(file, Tree_Local_Path, &Local_Path) {
+	RB_FOREACH_SAFE(file, Tree_Local_Path, &Local_Path, next_file) {
 		if ((file->keep == false) && ((current_repository == false) || (connection.repair == true))) {
 			for (x = 0, ignore = false; x < connection.ignores; x++)
 				if (strnstr(file->path, connection.ignore[x], strlen(file->path)) != NULL)
@@ -2352,17 +2352,16 @@ main(int argc, char **argv)
 			}
 		}
 
-		file_node_free(RB_REMOVE(Tree_Local_Path, &Local_Path, file));
+		RB_REMOVE(Tree_Local_Path, &Local_Path, file);
+		file_node_free(file);
 	}
 
-	RB_FOREACH(file, Tree_Remote_Path, &Remote_Path) {
-		if (connection.verbosity > 1)
-			printf("Freeing %o\t%s\t%s\n", file->mode, file->hash, file->path);
-
-		file_node_free(RB_REMOVE(Tree_Remote_Path, &Remote_Path, file));
+	RB_FOREACH_SAFE(file, Tree_Remote_Path, &Remote_Path, next_file) {
+		RB_REMOVE(Tree_Remote_Path, &Remote_Path, file);
+		file_node_free(file);
 	}
 
-	RB_FOREACH(object, Tree_Objects, &Objects)
+	RB_FOREACH_SAFE(object, Tree_Objects, &Objects, next_object)
 		RB_REMOVE(Tree_Objects, &Objects, object);
 
 	for (o = 0; o < connection.objects; o++) {
