@@ -1120,19 +1120,22 @@ build_repair_command(connector *connection)
 static void
 get_commit_details(connector *connection)
 {
-	char       command[BUFFER_UNIT_SMALL], full_branch[BUFFER_UNIT_SMALL], *position = NULL, *end = NULL;
+	char       command[BUFFER_UNIT_SMALL], ref[BUFFER_UNIT_SMALL], peeled[BUFFER_UNIT_SMALL], want[41];
+	char      *position = NULL, *end = NULL;
 	time_t     current;
 	struct tm  now;
 	int        tries = 2, year = 0, quarter = 0, pack_file_name_size = 0;
-	uint32_t   x = 0;
+	uint8_t    agent_length = 0;
+	bool       detached = (connection->want != NULL ? true : false);
 
-	/* Get the list of commits from the server. */
+	/* Send the initial info/refs command. */
 
 	snprintf(command,
 		BUFFER_UNIT_SMALL,
 		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
 		"User-Agent: gitup/%s\r\n"
+		"Git-Protocol: version=2\r\n"
 		"\r\n",
 		connection->repository,
 		connection->host,
@@ -1141,14 +1144,13 @@ get_commit_details(connector *connection)
 
 	process_command(connection, command);
 
-	/* Change all \0 characters to \n to make it easy to find the data. */
-
-	for (x = 0; x < connection->response_size; x++)
-		if (connection->response[x] == '\0')
-			connection->response[x] = '\n';
-
 	if (connection->verbosity > 1)
 		printf("%s\n", connection->response);
+
+	/* Make sure the server supports the version 2 protocol. */
+
+	if (strnstr(connection->response, "version 2", strlen(connection->response)) == NULL)
+		err(EXIT_FAILURE, "%s does not support the version 2 wire protocol", connection->host);
 
 	/* Extract the agent. */
 
@@ -1159,22 +1161,35 @@ get_commit_details(connector *connection)
 	connection->agent = strdup(position);
 	*end = '\n';
 
-	/* Because there is no way to lookup commit history, if a want commit is
-	   specified, change the branch to (detached). */
+	agent_length = strlen(connection->agent) + 4;
 
-	full_branch[0] = '\0';
+	/* Fetch the list of refs. */
 
-	if (connection->want != NULL) {
-		if (connection->branch != NULL)
-			free(connection->branch);
+	snprintf(command,
+		BUFFER_UNIT_SMALL,
+		"0014command=ls-refs\n"
+		"%04x%s"
+		"0016object-format=sha1"
+		"0001"
+		"0009peel\n"
+		"000csymrefs\n"
+		"0014ref-prefix HEAD\n"
+		"001bref-prefix refs/heads/\n"
+		"001aref-prefix refs/tags/\n"
+		"0000",
+		agent_length,
+		connection->agent);
 
-		connection->branch = strdup("(detached)");
-		snprintf(full_branch, BUFFER_UNIT_SMALL, " %s\n", connection->branch);
-	}
+	send_command(connection, command);
+
+	if (connection->verbosity > 1)
+		printf("%s\n", connection->response);
 
 	/* Extract the "want" checksum. */
 
-	while ((tries-- > 0) && (connection->want == NULL)) {
+	want[0] = '\0';
+
+	while ((tries-- > 0) && (want[0] == '\0') && (detached == false)) {
 		if (strncmp(connection->branch, "quarterly", 9) == 0) {
 			/* If the current calendar quarter doesn't exist, try the previous one. */
 
@@ -1183,44 +1198,49 @@ get_commit_details(connector *connection)
 			year    = 1900 + now.tm_year + ((tries == 0) && (now.tm_mon < 3) ? -1 : 0);
 			quarter = ((now.tm_mon / 3) + (tries == 0 ? 3 : 0)) % 4 + 1;
 
-			snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/branches/%04dQ%d\n", year, quarter);
+			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/branches/%04dQ%d", year, quarter);
+		} else if (connection->tag != NULL) {
+			snprintf(ref, BUFFER_UNIT_SMALL, " refs/tags/%s", connection->tag);
 		} else {
-			if (connection->tag != NULL) {
-				snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/tags/%s^{}\n", connection->tag);
-
-				if (strstr(connection->response, full_branch) == NULL)
-					snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/tags/%s\n", connection->tag);
-			} else {
-				snprintf(full_branch, BUFFER_UNIT_SMALL, " refs/heads/%s\n", connection->branch);
-			}
+			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/%s", connection->branch);
 		}
 
-		if ((position = strstr(connection->response, full_branch)) != NULL) {
+		/* Look for the "want" in peeled references first, then look before the ref. */
+
+		snprintf(peeled, sizeof(peeled), "%s peeled:", ref);
+
+		if ((position = strstr(connection->response, peeled)) != NULL)
+			memcpy(want, position + strlen(peeled), 40);
+		else if ((position = strstr(connection->response, ref)) != NULL)
+			memcpy(want, position - 40, 40);
+		else if (tries == 0)
+			errc(EXIT_FAILURE, EINVAL, "get_commit_details:%s doesn't exist in %s", ref, connection->repository);
+	}
+
+	if (want[0] != '\0') {
+		if (connection->want == NULL)
 			if ((connection->want = (char *)malloc(41)) == NULL)
 				err(EXIT_FAILURE, "get_commit_details: malloc");
 
-			memcpy(connection->want, position - 40, 40);
-			connection->want[40] = '\0';
+		memcpy(connection->want, want, 40);
+		connection->want[40] = '\0';
 
-			if (connection->verbosity)
-				fprintf(stderr, "# Want: %s\n", connection->want);
-		} else {
-			if (tries == 0) {
-				full_branch[strlen(full_branch) - 1] = '\0';
-
-				errc(EXIT_FAILURE, EINVAL, "get_commit_details:%s doesn't exist in %s", full_branch, connection->repository);
-			}
-		}
+		if (connection->verbosity)
+			fprintf(stderr, "# Want: %s\n", connection->want);
 	}
 
-	if (strlen(full_branch) > 1) {
-		if ((end = strstr(full_branch, "^{}")) != NULL) {
-			*end++ = '\n';
-			*end   = '\0';
-		}
+	/* Because there is no way to lookup commit history, if a want commit is
+	   specified, change the branch to (detached). */
 
-		fprintf(stderr, "# Branch:%s", full_branch);
+	if (detached == true) {
+		if (connection->branch != NULL)
+			free(connection->branch);
+
+		connection->branch = strdup("(detached)");
 	}
+
+	if (connection->verbosity)
+		fprintf(stderr, "# Branch: %s\n", connection->branch);
 
 	/* Create the pack file name. */
 
