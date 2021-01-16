@@ -185,12 +185,8 @@ object_node_compare(const struct object_node *a, const struct object_node *b)
 static void
 file_node_free(struct file_node *node)
 {
-	if (node->hash != NULL)
-		free(node->hash);
-
-	if (node->path != NULL)
-		free(node->path);
-
+	free(node->hash);
+	free(node->path);
 	free(node);
 }
 
@@ -198,15 +194,9 @@ file_node_free(struct file_node *node)
 static void
 object_node_free(struct object_node *node)
 {
-	if (node->hash != NULL)
-		free(node->hash);
-
-	if (node->ref_delta_hash != NULL)
-		free(node->ref_delta_hash);
-
-	if (node->buffer != NULL)
-		free(node->buffer);
-
+	free(node->hash);
+	free(node->ref_delta_hash);
+	free(node->buffer);
 	free(node);
 }
 
@@ -1233,8 +1223,7 @@ get_commit_details(connector *connection)
 	   specified, change the branch to (detached). */
 
 	if (detached == true) {
-		if (connection->branch != NULL)
-			free(connection->branch);
+		free(connection->branch);
 
 		connection->branch = strdup("(detached)");
 	}
@@ -1514,8 +1503,7 @@ unpack_objects(connector *connection)
 
 		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta, ref_delta_hash);
 
-		if (ref_delta_hash != NULL)
-			free(ref_delta_hash);
+		free(ref_delta_hash);
 	}
 }
 
@@ -2107,8 +2095,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if (connection->repository == NULL)
 		errc(EXIT_FAILURE, EINVAL, "No repository found in [%s]", connection->section);
 
-	if (sections != NULL)
-		free(sections);
+	free(sections);
 
 	return argument_index;
 }
@@ -2399,47 +2386,20 @@ main(int argc, char **argv)
 		object_node_free(connection.object[o]);
 	}
 
-	if (connection.response)
-		free(connection.response);
-
-	if (connection.object)
-		free(connection.object);
-
-	if (connection.host)
-		free(connection.host);
-
-	if (connection.agent)
-		free(connection.agent);
-
-	if (connection.section)
-		free(connection.section);
-
-	if (connection.repository)
-		free(connection.repository);
-
-	if (connection.branch)
-		free(connection.branch);
-
-	if (connection.tag)
-		free(connection.tag);
-
-	if (connection.have)
-		free(connection.have);
-
-	if (connection.want)
-		free(connection.want);
-
-	if (connection.pack_file)
-		free(connection.pack_file);
-
-	if (connection.path_target)
-		free(connection.path_target);
-
-	if (connection.path_work)
-		free(connection.path_work);
-
-	if (connection.remote_files)
-		free(connection.remote_files);
+	free(connection.response);
+	free(connection.object);
+	free(connection.host);
+	free(connection.agent);
+	free(connection.section);
+	free(connection.repository);
+	free(connection.branch);
+	free(connection.tag);
+	free(connection.have);
+	free(connection.want);
+	free(connection.pack_file);
+	free(connection.path_target);
+	free(connection.path_work);
+	free(connection.remote_files);
 
 	if (connection.ignore) {
 		for (x = 0; x < connection.ignores; x++)
