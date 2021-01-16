@@ -1984,8 +1984,11 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 	parser = ucl_parser_new(0);
 
-	if (ucl_parser_add_file(parser, configuration_file) == false)
-		err(EXIT_FAILURE, "load_configuration: %s", ucl_parser_get_error(parser));
+	if (ucl_parser_add_file(parser, configuration_file) == false) {
+		fprintf(stderr, "load_configuration: %s\n", ucl_parser_get_error(parser));
+
+		exit(EXIT_FAILURE);
+	}
 
 	object = ucl_parser_get_object(parser);
 
