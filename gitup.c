@@ -1939,8 +1939,11 @@ save_objects(connector *connection)
 
 	snprintf(gitup_revision_path, BUFFER_UNIT_SMALL, "%s/.gituprevision", connection->path_target);
 
-	snprintf(gitup_revision, BUFFER_UNIT_SMALL, "%s:%s", connection->branch, connection->want);
-	gitup_revision[strlen(connection->branch) + 10] = '\0';
+	snprintf(gitup_revision,
+		BUFFER_UNIT_SMALL,
+		"%s:%.9s",
+		(connection->tag != NULL ? connection->tag : connection->branch),
+		connection->want);
 
 	save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
 
@@ -2272,6 +2275,9 @@ main(int argc, char **argv)
 
 		if (connection.use_pack_file == true)
 			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
+
+		if (connection.tag)
+			fprintf(stderr, "# Tag: %s\n", connection.tag);
 
 		if (connection.have)
 			fprintf(stderr, "# Have: %s\n", connection.have);
