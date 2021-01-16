@@ -2032,7 +2032,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 			if (strstr(key, "host") != NULL)
 				connection->host = strdup(value);
 
-			if ((strstr(key, "ignore") != NULL) && (ucl_object_type(pair) == UCL_ARRAY))
+			if (((strstr(key, "ignore") != NULL) || (strstr(key, "ignores") != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
 				while ((ignore = ucl_iterate_object(pair, &it_ignores, true))) {
 					if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
 						err(EXIT_FAILURE, "set_configuration_parameters: malloc");
