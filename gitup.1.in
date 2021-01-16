@@ -1,4 +1,4 @@
-.\" Copyright (c) 2012-2020, John Mehr <jmehr@umn.edu>
+.\" Copyright (c) 2012-2021, John Mehr <jmehr@umn.edu>
 .\" All rights reserved.
 .\"
 .\" Redistribution and use in source and binary forms, with or without
@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd December 5, 2020
+.Dd January 16, 2021
 .Dt GITUP
 .Os
 .Sh NAME
@@ -34,6 +34,7 @@
 .Nm
 .Cm section
 .Op Fl ckrV
+.Op Fl C Ar configuration file
 .Op Fl h Ar commit checksum
 .Op Fl t Ar tag
 .Op Fl u Ar pack file
@@ -59,6 +60,8 @@ file).
 The following command line options can be used to override the default and/or
 section values:
 .Bl -tag -width Fl
+.It Fl C
+The location of the configuration file to use.
 .It Fl c
 Force
 .Nm
