@@ -2126,6 +2126,7 @@ usage(const char *configuration_file)
 	fprintf(stderr, "Usage: gitup <section> [-ckrV] [-h checksum] [-t tag] [-u pack file] [-v verbosity] [-w checksum]\n");
 	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
 	fprintf(stderr, "  Options:\n");
+	fprintf(stderr, "    -C  Override the default configuration file.\n");
 	fprintf(stderr, "    -c  Force gitup to clone the repository.\n");
 	fprintf(stderr, "    -h  Override the 'have' checksum.\n");
 	fprintf(stderr, "    -k  Save a copy of the pack data to the current working directory.\n");
@@ -2154,8 +2155,8 @@ main(int argc, char **argv)
 	struct object_node *object = NULL, *next_object = NULL;
 	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
-	const char         *configuration_file = CONFIG_FILE_PATH;
-	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
+	char               *configuration_file = CONFIG_FILE_PATH, *command = NULL;
+	char               *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
 	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
 	bool                ignore = false, current_repository = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
@@ -2191,18 +2192,33 @@ main(int argc, char **argv)
 		.verbosity         = 1,
 		};
 
-	/* Process the command line parameters. */
-
 	if (argc < 2)
 		usage(configuration_file);
+
+	/* Check first to see if the configuration file path is being overridden. */
+
+	for (x = 0; x < argc; x++)
+		if ((strlen(argv[x]) > 1) && (strnstr(argv[x], "-C", 2) == argv[x])) {
+			if (strlen(argv[x]) > 2)
+				configuration_file = strdup(argv[x] + 2);
+			else if ((argc > x) && (argv[x + 1][0] != '-'))
+				configuration_file = strdup(argv[x + 1]);
+		}
+
+	/* Load the configuration file to learn what section is being requested. */
 
 	skip_optind = load_configuration(&connection, configuration_file, argv, argc);
 
 	if (skip_optind == 1)
 		optind++;
 
-	while ((option = getopt(argc, argv, "ch:krt:u:v:w:")) != -1) {
+	/* Process the command line parameters. */
+
+	while ((option = getopt(argc, argv, "C:ch:krt:u:v:w:")) != -1) {
 		switch (option) {
+			case 'C':
+				fprintf(stderr, "# Configuration file: %s\n", configuration_file);
+				break;
 			case 'c':
 				connection.clone = true;
 				break;
@@ -2247,11 +2263,11 @@ main(int argc, char **argv)
 						connection.want = strdup(want);
 				}
 				break;
-			case 'w':
-				connection.want = strdup(optarg);
-				break;
 			case 'v':
 				connection.verbosity = strtol(optarg, (char **)NULL, 10);
+				break;
+			case 'w':
+				connection.want = strdup(optarg);
 				break;
 		}
 
