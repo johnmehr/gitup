@@ -66,9 +66,10 @@ The repository to use.
 The repository branch to use.
 .It Cm target
 The local directory to store your copy of the repository.
-.It Cm ignore
-A directory in the local tree that should be ignored when deleting files.  This
-option can have multiple entries per section.
+.It Cm ignores
+An array of directories in the local tree that should be ignored only when
+deleting files.  Any changes to upstream files in these directories will be
+pulled down and merged.
 .It Cm verbosity
 How much of the transfer details to display.  0 = no output, 1 = show only
 names of the updated files, 2 = also show commands sent to the server and
@@ -103,11 +104,11 @@ With the following configuration options defined in
 .br
         "target"     : "/usr/ports",
 .br
-        "ignore"     : [
+        "ignores"    : [
 .br
-            "/usr/ports/distfiles",
+            "distfiles",
 .br
-            "/usr/ports/packages",
+            "packages",
 .br
         ],
 .br
@@ -124,7 +125,7 @@ downloaded to /usr/ports.
 If /usr/ports does not exist, the repository is cloned.
 If it does exist and /var/db/gitup/ports exists, the latest commit to the
 repository is pulled down and the contents of /usr/ports/distfiles and
-/usr/ports/packages are ignored when removing stale directories.
+/usr/ports/packages are ignored when removing stale files and directories.
 .Sh FILES
 .Bl -tag -width "%%CONFIG_FILE_PATH%%"
 .It %%CONFIG_FILE_PATH%%

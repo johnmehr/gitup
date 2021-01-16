@@ -1090,7 +1090,7 @@ build_repair_command(connector *connection)
 		return (NULL);
 
 	if (want_length > 3276800)
-		errc(EXIT_FAILURE, E2BIG, "build_repair_command: There are too many files to repair.  Please re-clone the repository.");
+		errc(EXIT_FAILURE, E2BIG, "build_repair_command: There are too many files to repair -- please re-clone the repository");
 
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_length)) == NULL)
 		err(EXIT_FAILURE, "build_repair_command: malloc");
@@ -2006,7 +2006,6 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 	if (ucl_parser_add_file(parser, configuration_file) == false) {
 		fprintf(stderr, "load_configuration: %s\n", ucl_parser_get_error(parser));
-
 		exit(EXIT_FAILURE);
 	}
 
@@ -2441,6 +2440,13 @@ main(int argc, char **argv)
 
 	if (connection.remote_files)
 		free(connection.remote_files);
+
+	if (connection.ignore) {
+		for (x = 0; x < connection.ignores; x++)
+			free(connection.ignore[x]);
+
+		free(connection.ignore);
+	}
 
 	if (connection.ssl) {
 		SSL_shutdown(connection.ssl);
