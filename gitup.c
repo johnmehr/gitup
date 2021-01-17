@@ -1140,7 +1140,7 @@ get_commit_details(connector *connection)
 	/* Make sure the server supports the version 2 protocol. */
 
 	if (strnstr(connection->response, "version 2", strlen(connection->response)) == NULL)
-		err(EXIT_FAILURE, "%s does not support the version 2 wire protocol", connection->host);
+		errc(EXIT_FAILURE, EPROTONOSUPPORT, "%s does not support the version 2 wire protocol", connection->host);
 
 	/* Extract the agent. */
 
@@ -1995,6 +1995,11 @@ load_configuration(connector *connection, const char *configuration_file, char *
 		err(EXIT_FAILURE, "load_configuration: malloc");
 
 	parser = ucl_parser_new(0);
+
+	/* If a directory is used as the configuration file, libucl doesn't set its
+	   error message to something useful, so set errno first as a workaround. */
+
+	errno = EIO;
 
 	if (ucl_parser_add_file(parser, configuration_file) == false) {
 		fprintf(stderr, "load_configuration: %s\n", ucl_parser_get_error(parser));
