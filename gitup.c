@@ -1224,7 +1224,6 @@ get_commit_details(connector *connection)
 
 	if (detached == true) {
 		free(connection->branch);
-
 		connection->branch = strdup("(detached)");
 	}
 
@@ -2142,8 +2141,8 @@ main(int argc, char **argv)
 	struct object_node *object = NULL, *next_object = NULL;
 	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
-	char               *configuration_file = CONFIG_FILE_PATH, *command = NULL;
-	char               *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
+	const char         *configuration_file = CONFIG_FILE_PATH;
+	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
 	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
 	bool                ignore = false, current_repository = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
@@ -2402,6 +2401,10 @@ main(int argc, char **argv)
 		object_node_free(connection.object[o]);
 	}
 
+	for (x = 0; x < connection.ignores; x++)
+		free(connection.ignore[x]);
+
+	free(connection.ignore);
 	free(connection.response);
 	free(connection.object);
 	free(connection.host);
@@ -2416,13 +2419,6 @@ main(int argc, char **argv)
 	free(connection.path_target);
 	free(connection.path_work);
 	free(connection.remote_files);
-
-	if (connection.ignore) {
-		for (x = 0; x < connection.ignores; x++)
-			free(connection.ignore[x]);
-
-		free(connection.ignore);
-	}
 
 	if (connection.ssl) {
 		SSL_shutdown(connection.ssl);
