@@ -1189,6 +1189,11 @@ get_commit_details(connector *connection)
 			quarter = ((now.tm_mon / 3) + (tries == 0 ? 3 : 0)) % 4 + 1;
 
 			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/branches/%04dQ%d", year, quarter);
+
+			/* Retain the name of the quarterly branch being used. */
+
+			free(connection->branch);
+			connection->branch = strdup(ref + 12);
 		} else if (connection->tag != NULL) {
 			snprintf(ref, BUFFER_UNIT_SMALL, " refs/tags/%s", connection->tag);
 		} else {
