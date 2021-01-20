@@ -1990,7 +1990,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	stat(configuration_file, &check_file);
 
 	if (S_ISDIR(check_file.st_mode))
-		errc(EXIT_FAILURE, EISDIR, "Cannot load %s", configuration_file);
+		errc(EXIT_FAILURE, EISDIR, "load_configuration: cannot load %s", configuration_file);
 
 	if (ucl_parser_add_file(parser, configuration_file) == false) {
 		fprintf(stderr, "load_configuration: %s\n", ucl_parser_get_error(parser));
@@ -2097,7 +2097,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 	free(sections);
 
-	return argument_index;
+	return (argument_index);
 }
 
 
@@ -2364,15 +2364,17 @@ main(int argc, char **argv)
 
 	/* Save .gituprevision. */
 
-	snprintf(gitup_revision_path, BUFFER_UNIT_SMALL, "%s/.gituprevision", connection.path_target);
+	if ((connection.want != NULL) || (connection.tag != NULL)) {
+		snprintf(gitup_revision_path, BUFFER_UNIT_SMALL, "%s/.gituprevision", connection.path_target);
 
-	snprintf(gitup_revision,
-		BUFFER_UNIT_SMALL,
-		"%s:%.9s",
-		(connection.tag != NULL ? connection.tag : connection.branch),
-		connection.want);
+		snprintf(gitup_revision,
+			BUFFER_UNIT_SMALL,
+			"%s:%.9s",
+			(connection.tag != NULL ? connection.tag : connection.branch),
+			connection.want);
 
-	save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
+		save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
+	}
 
 	/* Wrap it all up. */
 
