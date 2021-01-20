@@ -1910,7 +1910,6 @@ save_objects(connector *connection)
 	struct object_node *found_object = NULL, find_object;
 	struct file_node   *found_file = NULL;
 	char                tree[41], remote_files_new[BUFFER_UNIT_SMALL];
-	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
 	int                 fd;
 
 	/* Find the tree object referenced in the commit. */
@@ -1946,18 +1945,6 @@ save_objects(connector *connection)
 
 	if ((rename(remote_files_new, connection->remote_files)) != 0)
 		err(EXIT_FAILURE, "save_objects: cannot rename %s", connection->remote_files);
-
-	/* Save .gituprevision. */
-
-	snprintf(gitup_revision_path, BUFFER_UNIT_SMALL, "%s/.gituprevision", connection->path_target);
-
-	snprintf(gitup_revision,
-		BUFFER_UNIT_SMALL,
-		"%s:%.9s",
-		(connection->tag != NULL ? connection->tag : connection->branch),
-		connection->want);
-
-	save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
 
 	/* Save all of the new and modified files. */
 
@@ -2153,6 +2140,7 @@ main(int argc, char **argv)
 	struct stat         check_file;
 	const char         *configuration_file = CONFIG_FILE_PATH;
 	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
+	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
 	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
 	bool                ignore = false, current_repository = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
@@ -2369,6 +2357,18 @@ main(int argc, char **argv)
 			save_objects(&connection);
 		}
 	}
+
+	/* Save .gituprevision. */
+
+	snprintf(gitup_revision_path, BUFFER_UNIT_SMALL, "%s/.gituprevision", connection.path_target);
+
+	snprintf(gitup_revision,
+		BUFFER_UNIT_SMALL,
+		"%s:%.9s",
+		(connection.tag != NULL ? connection.tag : connection.branch),
+		connection.want);
+
+	save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
 
 	/* Wrap it all up. */
 
