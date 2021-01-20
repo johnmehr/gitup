@@ -1977,6 +1977,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
 	unsigned int        sections_size = 1024, sections_length = 0;
 	uint8_t             argument_index = 0, x = 0;
+	struct stat         check_file;
 
 	if ((sections = (char *)malloc(sections_size)) == NULL)
 		err(EXIT_FAILURE, "load_configuration: malloc");
@@ -1984,9 +1985,12 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	parser = ucl_parser_new(0);
 
 	/* If a directory is used as the configuration file, libucl doesn't set its
-	   error message to something useful, so set errno first as a workaround. */
+	   error message to something useful, so check for it first. */
 
-	errno = EIO;
+	stat(configuration_file, &check_file);
+
+	if (S_ISDIR(check_file.st_mode))
+		errc(EXIT_FAILURE, EISDIR, "Cannot load %s", configuration_file);
 
 	if (ucl_parser_add_file(parser, configuration_file) == false) {
 		fprintf(stderr, "load_configuration: %s\n", ucl_parser_get_error(parser));
