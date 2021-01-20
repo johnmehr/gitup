@@ -1982,15 +1982,20 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if ((sections = (char *)malloc(sections_size)) == NULL)
 		err(EXIT_FAILURE, "load_configuration: malloc");
 
-	parser = ucl_parser_new(0);
-
-	/* If a directory is used as the configuration file, libucl doesn't set its
-	   error message to something useful, so check for it first. */
+	/* If the configuration file is not actually a file, libucl doesn't set its
+	   error message to something helpful, so check it first. */
 
 	stat(configuration_file, &check_file);
 
 	if (S_ISDIR(check_file.st_mode))
-		errc(EXIT_FAILURE, EISDIR, "load_configuration: cannot load %s", configuration_file);
+		errc(EXIT_FAILURE, EISDIR, "Cannot load %s", configuration_file);
+
+	if ((S_ISCHR(check_file.st_mode)) || (S_ISFIFO(check_file.st_mode)) || (S_ISWHT(check_file.st_mode)))
+		errc(EXIT_FAILURE, EFTYPE, "Cannot load %s", configuration_file);
+
+	/* Load and process the configuration file. */
+
+	parser = ucl_parser_new(0);
 
 	if (ucl_parser_add_file(parser, configuration_file) == false) {
 		fprintf(stderr, "load_configuration: %s\n", ucl_parser_get_error(parser));
