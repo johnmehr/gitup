@@ -1987,10 +1987,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 	stat(configuration_file, &check_file);
 
-	if (S_ISDIR(check_file.st_mode))
-		errc(EXIT_FAILURE, EISDIR, "load_configuration: cannot load %s", configuration_file);
-
-	if ((S_ISCHR(check_file.st_mode)) || (S_ISFIFO(check_file.st_mode)) || (S_ISWHT(check_file.st_mode)))
+	if (!S_ISREG(check_file.st_mode))
 		errc(EXIT_FAILURE, EFTYPE, "load_configuration: cannot load %s", configuration_file);
 
 	/* Load and process the configuration file. */
@@ -2210,7 +2207,8 @@ main(int argc, char **argv)
 	while ((option = getopt(argc, argv, "C:ch:krt:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
-				fprintf(stderr, "# Configuration file: %s\n", configuration_file);
+				if (connection.verbosity) {
+					fprintf(stderr, "# Configuration file: %s\n", configuration_file);
 				break;
 			case 'c':
 				connection.clone = true;
