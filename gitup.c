@@ -1973,7 +1973,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_t       *object = NULL;
 	const ucl_object_t *section = NULL, *pair = NULL, *ignore = NULL;
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
-	const char         *key = NULL, *value = NULL, *config_section = NULL;
+	const char         *key = NULL, *config_section = NULL;
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
 	unsigned int        sections_size = 1024, sections_length = 0;
 	uint8_t             argument_index = 0, x = 0;
@@ -2032,14 +2032,13 @@ load_configuration(connector *connection, const char *configuration_file, char *
 		/* Iterate through the section's configuration parameters. */
 
 		while ((pair = ucl_iterate_object(section, &it_section, true))) {
-			key   = ucl_object_key(pair);
-			value = ucl_object_tostring(pair);
+			key = ucl_object_key(pair);
 
 			if (strstr(key, "branch") != NULL)
-				connection->branch = strdup(value);
+				connection->branch = strdup(ucl_object_tostring(pair));
 
 			if (strstr(key, "host") != NULL)
-				connection->host = strdup(value);
+				connection->host = strdup(ucl_object_tostring(pair));
 
 			if (((strstr(key, "ignore") != NULL) || (strstr(key, "ignores") != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
 				while ((ignore = ucl_iterate_object(pair, &it_ignores, true))) {
@@ -2054,20 +2053,28 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->ignore[connection->ignores++] = strdup(temp_path);
 				}
 
-			if (strstr(key, "port") != NULL)
-				connection->port = strtol(value, (char **)NULL, 10);
+			if (strstr(key, "port") != NULL) {
+				if (ucl_object_type(pair) == UCL_INT)
+					connection->port = ucl_object_toint(pair);
+				else
+					connection->port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
+			}
 
 			if (strstr(key, "repository") != NULL)
-				connection->repository = strdup(value);
+				connection->repository = strdup(ucl_object_tostring(pair));
 
 			if (strstr(key, "target") != NULL)
-				connection->path_target = strdup(value);
+				connection->path_target = strdup(ucl_object_tostring(pair));
 
-			if (strstr(key, "verbosity") != NULL)
-				connection->verbosity = strtol(value, (char **)NULL, 10);
+			if (strstr(key, "verbosity") != NULL) {
+				if (ucl_object_type(pair) == UCL_INT)
+					connection->verbosity = ucl_object_toint(pair);
+				else
+					connection->verbosity = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
+			}
 
 			if (strstr(key, "work_directory") != NULL)
-				connection->path_work = strdup(value);
+				connection->path_work = strdup(ucl_object_tostring(pair));
 		}
 	}
 
@@ -2207,7 +2214,7 @@ main(int argc, char **argv)
 	while ((option = getopt(argc, argv, "C:ch:krt:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
-				if (connection.verbosity) {
+				if (connection.verbosity)
 					fprintf(stderr, "# Configuration file: %s\n", configuration_file);
 				break;
 			case 'c':
