@@ -1069,7 +1069,7 @@ build_repair_command(connector *connection)
 
 		if ((found == NULL) || (strncmp(found->hash, find->hash, 40) != 0)) {
 			if (connection->verbosity)
-				fprintf(stderr, "! %s %s\n", find->path, (found == NULL ? "is missing." : "has been modified."));
+				fprintf(stderr, " ! %s %s\n", find->path, (found == NULL ? "is missing." : "has been modified."));
 
 			snprintf(line, sizeof(line), "0032want %s\n", find->hash);
 			append_string(&want, &want_size, &want_length, line, strlen(line));
@@ -2152,10 +2152,10 @@ main(int argc, char **argv)
 	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
 	const char         *configuration_file = CONFIG_FILE_PATH;
-	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
+	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL, section[BUFFER_UNIT_SMALL];
 	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
 	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
-	bool                ignore = false, current_repository = false;
+	bool                ignore = false, current_repository = false, encoded = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
 
 	connector connection = {
@@ -2273,17 +2273,53 @@ main(int argc, char **argv)
 			optind++;
 	}
 
-	/* Continue setting up the environment. */
-
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "main: cannot create %s", connection.path_work);
 
-	length = strlen(connection.path_work) + strlen(connection.section) + 8;
+	/* Build the remote files path. */
 
-	if ((connection.remote_files = (char *)malloc(length)) == NULL)
+	length = strlen(connection.path_work) + strlen(connection.section) + 1;
+
+	if ((connection.remote_files = (char *)malloc(length + 1)) == NULL)
 		err(EXIT_FAILURE, "main: malloc");
 
-	snprintf(connection.remote_files, length, "%s/%s", connection.path_work, connection.section);
+	snprintf(connection.remote_files, length + 1, "%s/%s", connection.path_work, connection.section);
+	temp = strdup(connection.remote_files);
+
+	/* If non-alphanumerics exist in the section, encode them. */
+
+	length = strlen(connection.section);
+
+	for (x = 0; x < length; x++)
+		if ((!isalpha(connection.section[x])) && (!isdigit(connection.section[x]))) {
+			if ((connection.section = (char *)realloc(connection.section, length + 2)) == NULL)
+				err(EXIT_FAILURE, "main: realloc");
+
+			memcpy(section, connection.section + x + 1, length - x);
+			snprintf(connection.section + x, length - x + 3, "%%%X%s", connection.section[x], section);
+
+			length += 2;
+			x += 2;
+			encoded = true;
+		}
+
+	if (encoded == true) {
+		/* Store the updated remote files path. */
+
+		length += strlen(connection.path_work) + 1;
+
+		if ((connection.remote_files = (char *)realloc(connection.remote_files, length + 1)) == NULL)
+			err(EXIT_FAILURE, "main: realloc");
+
+		snprintf(connection.remote_files, length + 1, "%s/%s", connection.path_work, connection.section);
+
+		/* If a non-encoded remote files path exists, try and rename it. */
+
+		if ((stat(temp, &check_file) == 0) && ((rename(temp, connection.remote_files)) != 0))
+			err(EXIT_FAILURE, "main: cannot rename %s", connection.remote_files);
+	}
+
+	free(temp);
 
 	/* If the remote files list or repository are missing, then a clone must be performed. */
 
