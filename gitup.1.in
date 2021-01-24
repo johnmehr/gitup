@@ -123,6 +123,18 @@ Discrepancies in the local repository will be flagged as errors and
 .Nm
 will attempt to any restore any missing or modified files from the server,
 returning the local repository to a clean state.
+.Pp
+Extra care should be given when specifying a commit to pull as
+.Nm
+only performs shallow clones and does not have access to a repository's full
+commit history.  If a commit is passed in via the
+.Pa -w
+command line argument and that commit exists on a different branch, the Git
+server will neither object nor inform
+.Nm
+of the branch change and will send a pack file that will convert the local
+repository.  If the change of branches is intentional, the relevant section in
+%%CONFIG_FILE_PATH%% will need to be manually updated.
 .Sh EXAMPLES
 Using the configuration options for commonly used repositories/branches stored
 in %%CONFIG_FILE_PATH%%, to clone/pull a copy of the most recent revision
