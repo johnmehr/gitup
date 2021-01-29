@@ -1232,7 +1232,7 @@ get_commit_details(connector *connection)
 		connection->branch = strdup("(detached)");
 	}
 
-	if (connection->verbosity)
+	if ((connection->verbosity) && (connection->tag == NULL))
 		fprintf(stderr, "# Branch: %s\n", connection->branch);
 
 	/* Create the pack file name. */
@@ -2273,10 +2273,17 @@ main(int argc, char **argv)
 			optind++;
 	}
 
+	/* If a tag and a want are specified, discard the want. */
+
+	if ((connection.tag != NULL) && (connection.want != NULL)) {
+		free(connection.want);
+		connection.want = NULL;
+	}
+
+	/* Create the work path and build the remote files path. */
+
 	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "main: cannot create %s", connection.path_work);
-
-	/* Build the remote files path. */
 
 	length = strlen(connection.path_work) + strlen(connection.section) + 1;
 
