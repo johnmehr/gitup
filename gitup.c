@@ -2273,12 +2273,10 @@ main(int argc, char **argv)
 			optind++;
 	}
 
-	/* If a tag and a want are specified, discard the want. */
+	/* If a tag and a want are specified, warn and exit. */
 
-	if ((connection.tag != NULL) && (connection.want != NULL)) {
-		free(connection.want);
-		connection.want = NULL;
-	}
+	if ((connection.tag != NULL) && (connection.want != NULL))
+		errc(EXIT_FAILURE, EINVAL, "A tag and a want cannot be requested at the same time");
 
 	/* Create the work path and build the remote files path. */
 
