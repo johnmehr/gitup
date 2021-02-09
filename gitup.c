@@ -2420,7 +2420,7 @@ main(int argc, char **argv)
 
 		snprintf(gitup_revision,
 			BUFFER_UNIT_SMALL,
-			"%s:%.9s",
+			"%s:%.9s\n",
 			(connection.tag != NULL ? connection.tag : connection.branch),
 			connection.want);
 
