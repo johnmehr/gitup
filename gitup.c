@@ -2060,10 +2060,10 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
 
-			if (strstr(key, "repository") != NULL)
+			if ((strstr(key, "repository_path") != NULL) || (strstr(key, "repository") != NULL))
 				connection->repository = strdup(ucl_object_tostring(pair));
 
-			if (strstr(key, "target") != NULL)
+			if ((strstr(key, "target_directory") != NULL) || (strstr(key, "target") != NULL))
 				connection->path_target = strdup(ucl_object_tostring(pair));
 
 			if (strstr(key, "verbosity") != NULL) {
