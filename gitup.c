@@ -50,7 +50,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.90"
+#define	GITUP_VERSION     "0.91"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -2073,8 +2073,14 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->proxy_port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
 
-			if ((strnstr(key, "repository_path", 15) != NULL) || (strnstr(key, "repository", 10) != NULL))
-				connection->repository_path = strdup(ucl_object_tostring(pair));
+			if ((strnstr(key, "repository_path", 15) != NULL) || (strnstr(key, "repository", 10) != NULL)) {
+				snprintf(temp_path, sizeof(temp_path), "%s", ucl_object_tostring(pair));
+
+				if (temp_path[0] != '/')
+					snprintf(temp_path, sizeof(temp_path), "/%s", ucl_object_tostring(pair));
+
+				connection->repository_path = strdup(temp_path);
+			}
 
 			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL))
 				connection->path_target = strdup(ucl_object_tostring(pair));
