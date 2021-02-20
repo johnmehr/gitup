@@ -87,9 +87,11 @@ typedef struct {
 	int                  socket_descriptor;
 	char                *host;
 	uint16_t             port;
+	char                *proxy_host;
+	uint16_t             proxy_port;
 	char                *agent;
 	char                *section;
-	char                *repository;
+	char                *repository_path;
 	char                *branch;
 	char                *tag;
 	char                *have;
@@ -715,19 +717,20 @@ ssl_connect(connector *connection)
 	struct timeval  timeout;
 	int             error, option;
 	char            type[10];
+	char           *host = (connection->proxy_host != NULL ? connection->proxy_host : connection->host);
 
 	if (connection->socket_descriptor)
 		if (close(connection->socket_descriptor) != 0)
 			if (errno != EBADF)
 				err(EXIT_FAILURE, "ssl_connect: close_connection");
 
-	snprintf(type, sizeof(type), "%d", connection->port);
+	snprintf(type, sizeof(type), "%d", (connection->proxy_host ? connection->proxy_port : connection->port));
 
 	bzero(&hints, sizeof(struct addrinfo));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 
-	if ((error = getaddrinfo(connection->host, type, &hints, &start)))
+	if ((error = getaddrinfo(host, type, &hints, &start)))
 		errx(EXIT_FAILURE, "%s", gai_strerror(error));
 
 	connection->socket_descriptor = -1;
@@ -956,7 +959,7 @@ send_command(connector *connection, char *want)
 		"Content-length: %zu\r\n"
 		"\r\n"
 		"%s",
-		connection->repository,
+		connection->repository_path,
 		connection->host,
 		connection->port,
 		GITUP_VERSION,
@@ -1127,7 +1130,7 @@ get_commit_details(connector *connection)
 		"User-Agent: gitup/%s\r\n"
 		"Git-Protocol: version=2\r\n"
 		"\r\n",
-		connection->repository,
+		connection->repository_path,
 		connection->host,
 		connection->port,
 		GITUP_VERSION);
@@ -1209,7 +1212,7 @@ get_commit_details(connector *connection)
 		else if ((position = strstr(connection->response, ref)) != NULL)
 			memcpy(want, position - 40, 40);
 		else if (tries == 0)
-			errc(EXIT_FAILURE, EINVAL, "get_commit_details:%s doesn't exist in %s", ref, connection->repository);
+			errc(EXIT_FAILURE, EINVAL, "get_commit_details:%s doesn't exist in %s", ref, connection->repository_path);
 	}
 
 	if (want[0] != '\0') {
@@ -2034,13 +2037,16 @@ load_configuration(connector *connection, const char *configuration_file, char *
 		while ((pair = ucl_iterate_object(section, &it_section, true))) {
 			key = ucl_object_key(pair);
 
-			if (strstr(key, "branch") != NULL)
+			if (strnstr(key, "branch", 6) != NULL)
 				connection->branch = strdup(ucl_object_tostring(pair));
 
-			if (strstr(key, "host") != NULL)
+			if (strnstr(key, "host", 4) != NULL)
 				connection->host = strdup(ucl_object_tostring(pair));
 
-			if (((strstr(key, "ignore") != NULL) || (strstr(key, "ignores") != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
+			if (strnstr(key, "proxy_host", 10) != NULL)
+				connection->proxy_host = strdup(ucl_object_tostring(pair));
+
+			if (((strnstr(key, "ignore", 6) != NULL) || (strnstr(key, "ignores", 7) != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
 				while ((ignore = ucl_iterate_object(pair, &it_ignores, true))) {
 					if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
 						err(EXIT_FAILURE, "set_configuration_parameters: malloc");
@@ -2053,27 +2059,34 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->ignore[connection->ignores++] = strdup(temp_path);
 				}
 
-			if (strstr(key, "port") != NULL) {
+			if (strnstr(key, "port", 4) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
 					connection->port = ucl_object_toint(pair);
 				else
 					connection->port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
 
-			if ((strstr(key, "repository_path") != NULL) || (strstr(key, "repository") != NULL))
-				connection->repository = strdup(ucl_object_tostring(pair));
+			if (strnstr(key, "proxy_port", 10) != NULL) {
+				if (ucl_object_type(pair) == UCL_INT)
+					connection->proxy_port = ucl_object_toint(pair);
+				else
+					connection->proxy_port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
+			}
 
-			if ((strstr(key, "target_directory") != NULL) || (strstr(key, "target") != NULL))
+			if ((strnstr(key, "repository_path", 15) != NULL) || (strnstr(key, "repository", 10) != NULL))
+				connection->repository_path = strdup(ucl_object_tostring(pair));
+
+			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL))
 				connection->path_target = strdup(ucl_object_tostring(pair));
 
-			if (strstr(key, "verbosity") != NULL) {
+			if (strnstr(key, "verbosity", 9) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
 					connection->verbosity = ucl_object_toint(pair);
 				else
 					connection->verbosity = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
 
-			if (strstr(key, "work_directory") != NULL)
+			if (strnstr(key, "work_directory", 14) != NULL)
 				connection->path_work = strdup(ucl_object_tostring(pair));
 		}
 	}
@@ -2101,7 +2114,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if (connection->port == 0)
 		errc(EXIT_FAILURE, EDESTADDRREQ, "No port found in [%s]", connection->section);
 
-	if (connection->repository == NULL)
+	if (connection->repository_path == NULL)
 		errc(EXIT_FAILURE, EINVAL, "No repository found in [%s]", connection->section);
 
 	free(sections);
@@ -2164,9 +2177,11 @@ main(int argc, char **argv)
 		.socket_descriptor = 0,
 		.host              = NULL,
 		.port              = 0,
+		.proxy_host        = NULL,
+		.proxy_port        = 0,
 		.agent             = NULL,
 		.section           = NULL,
-		.repository        = NULL,
+		.repository_path   = NULL,
 		.branch            = NULL,
 		.tag               = NULL,
 		.have              = NULL,
@@ -2273,6 +2288,25 @@ main(int argc, char **argv)
 			optind++;
 	}
 
+	/* Build the proxy repository path. */
+
+	if (connection.proxy_host != NULL) {
+		length = strlen(connection.host) + strlen(connection.repository_path) + 16;
+
+		if ((temp = (char *)malloc(length + 1)) == NULL)
+			err(EXIT_FAILURE, "main: malloc");
+
+		snprintf(temp, length,
+			"https://%s:%d%s",
+			connection.host,
+			connection.port,
+			connection.repository_path);
+
+		free(connection.repository_path);
+
+		connection.repository_path = temp;
+		}
+
 	/* If a tag and a want are specified, warn and exit. */
 
 	if ((connection.tag != NULL) && (connection.want != NULL))
@@ -2347,8 +2381,14 @@ main(int argc, char **argv)
 	if (connection.verbosity) {
 		fprintf(stderr, "# Host: %s\n", connection.host);
 		fprintf(stderr, "# Port: %d\n", connection.port);
-		fprintf(stderr, "# Repository: %s\n", connection.repository);
-		fprintf(stderr, "# Target: %s\n", connection.path_target);
+
+		if (connection.proxy_host) {
+			fprintf(stderr, "# Proxy Host: %s\n", connection.proxy_host);
+			fprintf(stderr, "# Proxy Port: %d\n", connection.proxy_port);
+		}
+
+		fprintf(stderr, "# Repository Path: %s\n", connection.repository_path);
+		fprintf(stderr, "# Target Directory: %s\n", connection.path_target);
 
 		if (connection.use_pack_file == true)
 			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
@@ -2475,9 +2515,10 @@ main(int argc, char **argv)
 	free(connection.response);
 	free(connection.object);
 	free(connection.host);
+	free(connection.proxy_host);
 	free(connection.agent);
 	free(connection.section);
-	free(connection.repository);
+	free(connection.repository_path);
 	free(connection.branch);
 	free(connection.tag);
 	free(connection.have);
