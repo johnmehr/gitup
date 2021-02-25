@@ -139,6 +139,7 @@ static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *);
 static void     load_remote_file_list(connector *);
+static void     make_path(char *, mode_t);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
 static void     process_command(connector *, char *);
@@ -267,6 +268,49 @@ illegible_hash(char *hash_buffer)
 		hash[x] = 16 * ((unsigned char)hash_buffer[x * 2] - (hash_buffer[x * 2] > 58 ? 87 : 48)) + (unsigned char)hash_buffer[x * 2 + 1] - (hash_buffer[x * 2 + 1] > 58 ? 87 : 48);
 
 	return (hash);
+}
+
+
+/*
+ * make_path
+ *
+ * Procedure that creates a directory and all intermediate directories if they
+ * do not exist.
+ */
+
+static void
+make_path(char *path, mode_t mode)
+{
+	char        *temp = path;
+	struct stat  exists;
+
+	if (mkdir(path, mode) == -1) {
+		if ((errno != ENOENT) && (errno != EEXIST))
+			err(EXIT_FAILURE, "make_path: cannot create %s", path);
+
+		/* Create any missing intermediate directories. */
+
+		while ((temp = strchr(temp, '/')) != NULL) {
+			if (temp != path) {
+				*temp = '\0';
+
+				if (stat(path, &exists) == -1)
+					if ((mkdir(path, mode) == -1) && (errno != EEXIST))
+						err(EXIT_FAILURE,
+							"make_path: cannot create %s",
+							path);
+
+				*temp = '/';
+			}
+
+			temp++;
+		}
+
+	/* Create the target directory. */
+
+	if ((mkdir(path, mode) == -1) && (errno != EEXIST))
+		err(EXIT_FAILURE, "make_path: cannot create %s", path);
+	}
 }
 
 
@@ -1778,8 +1822,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	char               full_path[BUFFER_UNIT_SMALL], line[BUFFER_UNIT_SMALL], *position = NULL, *buffer = NULL;
 	unsigned int       buffer_size = 0, buffer_length = 0;
 
-	if ((mkdir(base_path, 0755) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "process_tree: cannot create %s", base_path);
+	make_path(base_path, 0755);
 
 	object.hash = hash;
 
@@ -2419,8 +2462,7 @@ main(int argc, char **argv)
 
 	/* Create the work path and build the remote files path. */
 
-	if ((mkdir(connection.path_work, 0755) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "main: cannot create %s", connection.path_work);
+	make_path(connection.path_work, 0755);
 
 	length = strlen(connection.path_work) + strlen(connection.section) + 1;
 
