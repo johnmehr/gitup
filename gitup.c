@@ -2434,7 +2434,7 @@ main(int argc, char **argv)
 
 	length = strlen(connection.section);
 
-	for (x = 0; x < length; x++)
+	for (x = 0; x < length - 1; x++)
 		if ((!isalpha(connection.section[x])) && (!isdigit(connection.section[x]))) {
 			if ((connection.section = (char *)realloc(connection.section, length + 2)) == NULL)
 				err(EXIT_FAILURE, "main: realloc");
