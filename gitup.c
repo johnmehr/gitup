@@ -802,7 +802,7 @@ ssl_connect(connector *connection)
 		err(EXIT_FAILURE, "ssl_connect: SSL_library_init");
 
 	SSL_load_error_strings();
-	connection->ctx = SSL_CTX_new(TLSv1_2_client_method());
+	connection->ctx = SSL_CTX_new(SSLv23_client_method());
 	SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
 	SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
 
