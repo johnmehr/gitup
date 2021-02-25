@@ -37,6 +37,7 @@
 #include <openssl/err.h>
 #include <private/ucl/ucl.h>
 
+#include <base64.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <err.h>
@@ -89,6 +90,9 @@ typedef struct {
 	uint16_t             port;
 	char                *proxy_host;
 	uint16_t             proxy_port;
+	char                *proxy_username;
+	char                *proxy_password;
+	char                *proxy_credentials;
 	char                *agent;
 	char                *section;
 	char                *repository_path;
@@ -754,7 +758,7 @@ ssl_connect(connector *connection)
 		err(EXIT_FAILURE, "ssl_connect: SSL_library_init");
 
 	SSL_load_error_strings();
-	connection->ctx = SSL_CTX_new(SSLv23_client_method());
+	connection->ctx = SSL_CTX_new(TLSv1_2_client_method());
 	SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
 	SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
 
@@ -881,6 +885,11 @@ process_command(connector *connection, char *command)
 			}
 		}
 
+		/* CONNECT responses do not contain a body to process. */
+
+		if (strstr(command, "CONNECT ") == command)
+			break;
+
 		while (total_bytes_read + chunk_size > bytes_expected) {
 			/* Make sure the whole chunk marker has been read. */
 
@@ -919,7 +928,7 @@ process_command(connector *connection, char *command)
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
 
-	if (strstr(connection->response, "HTTP/1.1 200 ") != connection->response)
+	if ((strstr(connection->response, "HTTP/1.0 200 ") != connection->response) && (strstr(connection->response, "HTTP/1.1 200 ") != connection->response))
 		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
 
 	/* Remove the header. */
@@ -939,8 +948,13 @@ process_command(connector *connection, char *command)
 static void
 send_command(connector *connection, char *want)
 {
-	char   *command = NULL;
+	char   *command = NULL, credentials[BUFFER_UNIT_SMALL];
 	size_t  want_size = 0;
+
+	if (connection->proxy_credentials != NULL)
+		snprintf(credentials, sizeof(credentials), "Proxy-Authorization: Basic %s\r\n", connection->proxy_credentials);
+	else
+		credentials[0] = '\0';
 
 	want_size = strlen(want);
 
@@ -955,6 +969,7 @@ send_command(connector *connection, char *want)
 		"Accept-encoding: deflate, gzip\r\n"
 		"Content-type: application/x-git-upload-pack-request\r\n"
 		"Accept: application/x-git-upload-pack-result\r\n"
+		"%s"
 		"Git-Protocol: version=2\r\n"
 		"Content-length: %zu\r\n"
 		"\r\n"
@@ -963,6 +978,7 @@ send_command(connector *connection, char *want)
 		connection->host,
 		connection->port,
 		GITUP_VERSION,
+		credentials,
 		want_size,
 		want);
 
@@ -1113,13 +1129,40 @@ build_repair_command(connector *connection)
 static void
 get_commit_details(connector *connection)
 {
-	char       command[BUFFER_UNIT_SMALL], ref[BUFFER_UNIT_SMALL], peeled[BUFFER_UNIT_SMALL], want[41];
+	char       command[BUFFER_UNIT_SMALL], ref[BUFFER_UNIT_SMALL], want[41];
+	char       credentials[BUFFER_UNIT_SMALL], peeled[BUFFER_UNIT_SMALL];
 	char      *position = NULL, *end = NULL;
 	time_t     current;
 	struct tm  now;
 	int        tries = 2, year = 0, quarter = 0, pack_file_name_size = 0;
 	uint8_t    agent_length = 0;
 	bool       detached = (connection->want != NULL ? true : false);
+
+	if (connection->proxy_credentials != NULL)
+		snprintf(credentials,
+			sizeof(credentials),
+			"Proxy-Authorization: Basic %s\r\n",
+			connection->proxy_credentials);
+	else
+		credentials[0] = '\0';
+
+	/* Send a CONNECT command if using a proxy. */
+
+	if (connection->proxy_host != NULL) {
+		snprintf(command,
+			BUFFER_UNIT_SMALL,
+			"CONNECT %s:%d HTTP/1.1\r\n"
+			"Host: %s:%d\r\n"
+			"%s"
+			"\r\n",
+			connection->host,
+			connection->port,
+			connection->host,
+			connection->port,
+			credentials);
+
+		process_command(connection, command);
+	}
 
 	/* Send the initial info/refs command. */
 
@@ -1129,11 +1172,13 @@ get_commit_details(connector *connection)
 		"Host: %s:%d\r\n"
 		"User-Agent: gitup/%s\r\n"
 		"Git-Protocol: version=2\r\n"
+		"%s"
 		"\r\n",
 		connection->repository_path,
 		connection->host,
 		connection->port,
-		GITUP_VERSION);
+		GITUP_VERSION,
+		credentials);
 
 	process_command(connection, command);
 
@@ -1978,6 +2023,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
 	const char         *key = NULL, *config_section = NULL;
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
+	char               *https_proxy = NULL, *server = NULL, *temp = NULL;
 	unsigned int        sections_size = 1024, sections_length = 0;
 	uint8_t             argument_index = 0, x = 0;
 	struct stat         check_file;
@@ -2043,9 +2089,6 @@ load_configuration(connector *connection, const char *configuration_file, char *
 			if (strnstr(key, "host", 4) != NULL)
 				connection->host = strdup(ucl_object_tostring(pair));
 
-			if (strnstr(key, "proxy_host", 10) != NULL)
-				connection->proxy_host = strdup(ucl_object_tostring(pair));
-
 			if (((strnstr(key, "ignore", 6) != NULL) || (strnstr(key, "ignores", 7) != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
 				while ((ignore = ucl_iterate_object(pair, &it_ignores, true))) {
 					if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
@@ -2066,12 +2109,21 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
 
+			if (strnstr(key, "proxy_host", 10) != NULL)
+				connection->proxy_host = strdup(ucl_object_tostring(pair));
+
 			if (strnstr(key, "proxy_port", 10) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
 					connection->proxy_port = ucl_object_toint(pair);
 				else
 					connection->proxy_port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
+
+			if (strnstr(key, "proxy_password", 14) != NULL)
+				connection->proxy_password = strdup(ucl_object_tostring(pair));
+
+			if (strnstr(key, "proxy_username", 14) != NULL)
+				connection->proxy_username = strdup(ucl_object_tostring(pair));
 
 			if ((strnstr(key, "repository_path", 15) != NULL) || (strnstr(key, "repository", 10) != NULL)) {
 				snprintf(temp_path, sizeof(temp_path), "%s", ucl_object_tostring(pair));
@@ -2123,6 +2175,49 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if (connection->repository_path == NULL)
 		errc(EXIT_FAILURE, EINVAL, "No repository found in [%s]", connection->section);
 
+	/* Extract the username, password, host and port from the https_proxy
+	 * environment variable. */
+
+	https_proxy = getenv("https_proxy");
+
+	if ((https_proxy != NULL) && (strstr(https_proxy, "https://") == https_proxy)) {
+		server = https_proxy + 8;
+
+		/* Extract the username and password values. */
+
+		if ((temp = strchr(https_proxy, '@')) != NULL) {
+			*temp  = '\0';
+			server = temp + 1;
+
+			if ((temp = strchr(https_proxy + 8, ':')) != NULL) {
+				*temp = '\0';
+
+				free(connection->proxy_username);
+				free(connection->proxy_password);
+
+				connection->proxy_username = strdup(https_proxy + 8);
+				connection->proxy_password = strdup(temp + 1);
+			}
+		}
+
+		/* If a trailing slash is present, remove it. */
+
+		if ((temp = strchr(server, '/')) != NULL)
+			*temp = '\0';
+
+		/* Extract the host and port values. */
+
+		if ((temp = strchr(server, ':')) != NULL) {
+			*temp = '\0';
+
+			free(connection->proxy_host);
+
+			connection->proxy_host = strdup(server);
+			connection->proxy_port = strtol(temp + 1, (char **)NULL, 10);
+		}
+	}
+
+	free(https_proxy);
 	free(sections);
 
 	return (argument_index);
@@ -2171,7 +2266,8 @@ main(int argc, char **argv)
 	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
 	const char         *configuration_file = CONFIG_FILE_PATH;
-	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL, section[BUFFER_UNIT_SMALL];
+	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
+	char                credentials[BUFFER_UNIT_SMALL], section[BUFFER_UNIT_SMALL];
 	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
 	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
 	bool                ignore = false, current_repository = false, encoded = false;
@@ -2185,6 +2281,9 @@ main(int argc, char **argv)
 		.port              = 0,
 		.proxy_host        = NULL,
 		.proxy_port        = 0,
+		.proxy_username    = NULL,
+		.proxy_password    = NULL,
+		.proxy_credentials = NULL,
 		.agent             = NULL,
 		.section           = NULL,
 		.repository_path   = NULL,
@@ -2393,6 +2492,13 @@ main(int argc, char **argv)
 			fprintf(stderr, "# Proxy Port: %d\n", connection.proxy_port);
 		}
 
+		if (connection.proxy_username) {
+			fprintf(stderr, "# Proxy Username: %s\n", connection.proxy_username);
+
+			snprintf(credentials, sizeof(credentials), "%s:%s", connection.proxy_username, connection.proxy_password);
+			base64_encode(credentials, strlen(credentials), &connection.proxy_credentials);
+		}
+
 		fprintf(stderr, "# Repository Path: %s\n", connection.repository_path);
 		fprintf(stderr, "# Target Directory: %s\n", connection.path_target);
 
@@ -2522,6 +2628,9 @@ main(int argc, char **argv)
 	free(connection.object);
 	free(connection.host);
 	free(connection.proxy_host);
+	free(connection.proxy_username);
+	free(connection.proxy_password);
+	free(connection.proxy_credentials);
 	free(connection.agent);
 	free(connection.section);
 	free(connection.repository_path);

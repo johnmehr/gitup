@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd February 18, 2021
+.Dd February 25, 2021
 .Dt gitup.conf
 .Os
 .Sh NAME
@@ -64,6 +64,10 @@ The port on the server to connect to.
 The hostname/IP address of the proxy server (if required).
 .It Cm proxy_port
 The port on the proxy server to connect to (if required).
+.It Cm proxy_username
+The username of the account used to access the proxy server (if required).
+.It Cm proxy_password
+The password of the account used to access the proxy server (if required).
 .It Cm repository_path
 The repository path to use.
 .It Cm branch
