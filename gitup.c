@@ -774,7 +774,7 @@ ssl_connect(connector *connection)
 	snprintf(type, sizeof(type), "%d", (connection->proxy_host ? connection->proxy_port : connection->port));
 
 	bzero(&hints, sizeof(struct addrinfo));
-	hints.ai_family = AF_INET;
+	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 
 	if ((error = getaddrinfo(host, type, &hints, &start)))
