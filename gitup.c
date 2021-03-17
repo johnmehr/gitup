@@ -121,6 +121,7 @@ static void     append_string(char **, unsigned int *, unsigned int *, const cha
 static void     apply_deltas(connector *);
 static char *   calculate_file_hash(char *, int);
 static char *   calculate_object_hash(char *, uint32_t, int);
+static void     extract_proxy_data(connector *, const char *);
 static void     extract_tree_item(struct file_node *, char **);
 static void     fetch_pack(connector *, char *);
 static int      file_node_compare_hash(const struct file_node *, const struct file_node *);
@@ -148,7 +149,7 @@ static void     save_file(char *, int, char *, int, int verbosity, bool);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
 static void     send_command(connector *, char *);
-static void     ssl_connect(connector *);
+static void     server_connect(connector *);
 static void     store_object(connector *, int, char *, int, int, int, char *);
 static uint32_t unpack_delta_integer(char *, uint32_t *, int);
 static void     unpack_objects(connector *);
@@ -752,13 +753,13 @@ load_object(connector *connection, char *hash, char *path)
 
 
 /*
- * ssl_connect
+ * server_connect
  *
  * Procedure that (re)establishes a connection with the server.
  */
 
 static void
-ssl_connect(connector *connection)
+server_connect(connector *connection)
 {
 	struct addrinfo hints, *start, *temp;
 	struct timeval  timeout;
@@ -769,7 +770,7 @@ ssl_connect(connector *connection)
 	if (connection->socket_descriptor)
 		if (close(connection->socket_descriptor) != 0)
 			if (errno != EBADF)
-				err(EXIT_FAILURE, "ssl_connect: close_connection");
+				err(EXIT_FAILURE, "server_connect: close_connection");
 
 	snprintf(type, sizeof(type), "%d", (connection->proxy_host ? connection->proxy_port : connection->port));
 
@@ -787,53 +788,55 @@ ssl_connect(connector *connection)
 
 		if (connection->socket_descriptor < 0) {
 			if ((connection->socket_descriptor = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol)) < 0)
-				err(EXIT_FAILURE, "ssl_connect: socket failure");
+				err(EXIT_FAILURE, "server_connect: socket failure");
 
 			if (connect(connection->socket_descriptor, temp->ai_addr, temp->ai_addrlen) < 0)
-				err(EXIT_FAILURE, "ssl_connect: connect failure (%d)", errno);
+				err(EXIT_FAILURE, "server_connect: connect failure (%d)", errno);
 		}
 
 		start = temp->ai_next;
 		freeaddrinfo(temp);
 	}
 
-	if (SSL_library_init() == 0)
-		err(EXIT_FAILURE, "ssl_connect: SSL_library_init");
+	if (connection->proxy_host == NULL) {
+		if (SSL_library_init() == 0)
+			err(EXIT_FAILURE, "server_connect: SSL_library_init");
 
-	SSL_load_error_strings();
-	connection->ctx = SSL_CTX_new(SSLv23_client_method());
-	SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
-	SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
+		SSL_load_error_strings();
+		connection->ctx = SSL_CTX_new(SSLv23_client_method());
+		SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
+		SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
 
-	if ((connection->ssl = SSL_new(connection->ctx)) == NULL)
-		err(EXIT_FAILURE, "ssl_connect: SSL_new");
+		if ((connection->ssl = SSL_new(connection->ctx)) == NULL)
+			err(EXIT_FAILURE, "server_connect: SSL_new");
 
-	SSL_set_fd(connection->ssl, connection->socket_descriptor);
+		SSL_set_fd(connection->ssl, connection->socket_descriptor);
 
-	while ((error = SSL_connect(connection->ssl)) == -1)
-		fprintf(stderr, "ssl_connect: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
+		while ((error = SSL_connect(connection->ssl)) == -1)
+			fprintf(stderr, "server_connect: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
+	}
 
 	option = 1;
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_KEEPALIVE error");
+		err(EXIT_FAILURE, "server_connect: setsockopt SO_KEEPALIVE error");
 
 	option = BUFFER_UNIT_LARGE;
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_SNDBUF error");
+		err(EXIT_FAILURE, "server_connect: setsockopt SO_SNDBUF error");
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_RCVBUF error");
+		err(EXIT_FAILURE, "server_connect: setsockopt SO_RCVBUF error");
 
 	bzero(&timeout, sizeof(struct timeval));
 	timeout.tv_sec = 300;
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_RCVTIMEO error");
+		err(EXIT_FAILURE, "server_connect: setsockopt SO_RCVTIMEO error");
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_SNDTIMEO error");
+		err(EXIT_FAILURE, "server_connect: setsockopt SO_SNDTIMEO error");
 }
 
 
@@ -859,13 +862,19 @@ process_command(connector *connection, char *command)
 
 	/* Transmit the command to the server. */
 
-	ssl_connect(connection);
+	server_connect(connection);
 
 	while (total_bytes_sent < bytes_to_write) {
-		bytes_sent = SSL_write(
-			connection->ssl,
-			command + total_bytes_sent,
-			bytes_to_write - total_bytes_sent);
+		if (connection->ssl)
+			bytes_sent = SSL_write(
+				connection->ssl,
+				command + total_bytes_sent,
+				bytes_to_write - total_bytes_sent);
+		else
+			bytes_sent = write(
+				connection->socket_descriptor,
+				command + total_bytes_sent,
+				bytes_to_write - total_bytes_sent);
 
 		if (bytes_sent <= 0) {
 			if ((bytes_sent < 0) && ((errno == EINTR) || (errno == 0)))
@@ -886,13 +895,26 @@ process_command(connector *connection, char *command)
 	/* Process the response. */
 
 	while (chunk_size) {
-		bytes_read = SSL_read(connection->ssl, read_buffer, BUFFER_UNIT_SMALL);
+		if (connection->ssl)
+			bytes_read = SSL_read(
+				connection->ssl,
+				read_buffer,
+				BUFFER_UNIT_SMALL);
+		else
+			bytes_read = read(
+				connection->socket_descriptor,
+				read_buffer,
+				BUFFER_UNIT_SMALL);
 
 		if (bytes_read == 0)
 			break;
 
-		if (bytes_read < 0)
-			err(EXIT_FAILURE, "process_command: SSL_read error: %d", SSL_get_error(connection->ssl, error));
+		if (bytes_read < 0) {
+			if (connection->ssl)
+				err(EXIT_FAILURE, "process_command: SSL_read error: %d", SSL_get_error(connection->ssl, error));
+			else
+				err(EXIT_FAILURE, "process_command: read error");
+		}
 
 		/* Expand the buffer if needed, preserving the position and data_start if the buffer moves. */
 
@@ -2016,6 +2038,65 @@ save_objects(connector *connection)
 
 
 /*
+ * extract_proxy_data
+ *
+ * Procedure that extracts username/password/host/port data from environment
+ * variables.
+ */
+
+static void
+extract_proxy_data(connector *connection, const char *data)
+{
+	char *temp = NULL, *server = NULL;
+	int   offset = 0;
+
+	if ((data) && (strstr(data, "https://") == data))
+		offset = 8;
+
+	if ((data) && (strstr(data, "http://") == data))
+		offset = 7;
+
+	if (offset == 0)
+		return;
+
+	server = strdup(data + offset);
+
+	/* Extract the username and password values. */
+
+	if ((temp = strchr(data, '@')) != NULL) {
+		*temp  = '\0';
+		server = temp + 1;
+
+		if ((temp = strchr(data + offset, ':')) != NULL) {
+			*temp = '\0';
+
+			free(connection->proxy_username);
+			free(connection->proxy_password);
+
+			connection->proxy_username = strdup(data + offset);
+			connection->proxy_password = strdup(temp + 1);
+		}
+	}
+
+	/* If a trailing slash is present, remove it. */
+
+	if ((temp = strchr(server, '/')) != NULL)
+		*temp = '\0';
+
+	/* Extract the host and port values. */
+
+	if ((temp = strchr(server, ':')) != NULL) {
+		*temp = '\0';
+
+		free(connection->proxy_host);
+
+		connection->proxy_host = server;
+		connection->proxy_port = strtol(temp + 1, (char **)NULL, 10);
+	}
+}
+
+
+/*
  * load_configuration
  *
  * Procedure that loads the section options from gitup.conf
@@ -2030,7 +2111,6 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
 	const char         *key = NULL, *config_section = NULL;
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
-	char               *https_proxy = NULL, *server = NULL, *temp = NULL;
 	unsigned int        sections_size = 1024, sections_length = 0;
 	uint8_t             argument_index = 0, x = 0;
 	struct stat         check_file;
@@ -2182,49 +2262,11 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if (connection->repository_path == NULL)
 		errc(EXIT_FAILURE, EINVAL, "No repository found in [%s]", connection->section);
 
-	/* Extract the username, password, host and port from the https_proxy
-	 * environment variable. */
+	/* Extract username/password/host/port from the environment variables. */
 
-	https_proxy = getenv("https_proxy");
+	extract_proxy_data(connection, getenv("HTTP_PROXY"));
+	extract_proxy_data(connection, getenv("HTTPS_PROXY"));
 
-	if ((https_proxy != NULL) && (strstr(https_proxy, "https://") == https_proxy)) {
-		server = https_proxy + 8;
-
-		/* Extract the username and password values. */
-
-		if ((temp = strchr(https_proxy, '@')) != NULL) {
-			*temp  = '\0';
-			server = temp + 1;
-
-			if ((temp = strchr(https_proxy + 8, ':')) != NULL) {
-				*temp = '\0';
-
-				free(connection->proxy_username);
-				free(connection->proxy_password);
-
-				connection->proxy_username = strdup(https_proxy + 8);
-				connection->proxy_password = strdup(temp + 1);
-			}
-		}
-
-		/* If a trailing slash is present, remove it. */
-
-		if ((temp = strchr(server, '/')) != NULL)
-			*temp = '\0';
-
-		/* Extract the host and port values. */
-
-		if ((temp = strchr(server, ':')) != NULL) {
-			*temp = '\0';
-
-			free(connection->proxy_host);
-
-			connection->proxy_host = strdup(server);
-			connection->proxy_port = strtol(temp + 1, (char **)NULL, 10);
-		}
-	}
-
-	free(https_proxy);
 	free(sections);
 
 	return (argument_index);
