@@ -798,23 +798,21 @@ server_connect(connector *connection)
 		freeaddrinfo(temp);
 	}
 
-	if (connection->proxy_host == NULL) {
-		if (SSL_library_init() == 0)
-			err(EXIT_FAILURE, "server_connect: SSL_library_init");
+	if (SSL_library_init() == 0)
+		err(EXIT_FAILURE, "server_connect: SSL_library_init");
 
-		SSL_load_error_strings();
-		connection->ctx = SSL_CTX_new(SSLv23_client_method());
-		SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
-		SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
+	SSL_load_error_strings();
+	connection->ctx = SSL_CTX_new(SSLv23_client_method());
+	SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
+	SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
 
-		if ((connection->ssl = SSL_new(connection->ctx)) == NULL)
-			err(EXIT_FAILURE, "server_connect: SSL_new");
+	if ((connection->ssl = SSL_new(connection->ctx)) == NULL)
+		err(EXIT_FAILURE, "server_connect: SSL_new");
 
-		SSL_set_fd(connection->ssl, connection->socket_descriptor);
+	SSL_set_fd(connection->ssl, connection->socket_descriptor);
 
-		while ((error = SSL_connect(connection->ssl)) == -1)
-			fprintf(stderr, "server_connect: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
-	}
+	while ((error = SSL_connect(connection->ssl)) == -1)
+		fprintf(stderr, "server_connect: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
 
 	option = 1;
 
@@ -865,16 +863,10 @@ process_command(connector *connection, char *command)
 	server_connect(connection);
 
 	while (total_bytes_sent < bytes_to_write) {
-		if (connection->ssl)
-			bytes_sent = SSL_write(
-				connection->ssl,
-				command + total_bytes_sent,
-				bytes_to_write - total_bytes_sent);
-		else
-			bytes_sent = write(
-				connection->socket_descriptor,
-				command + total_bytes_sent,
-				bytes_to_write - total_bytes_sent);
+		bytes_sent = SSL_write(
+			connection->ssl,
+			command + total_bytes_sent,
+			bytes_to_write - total_bytes_sent);
 
 		if (bytes_sent <= 0) {
 			if ((bytes_sent < 0) && ((errno == EINTR) || (errno == 0)))
@@ -895,26 +887,18 @@ process_command(connector *connection, char *command)
 	/* Process the response. */
 
 	while (chunk_size) {
-		if (connection->ssl)
-			bytes_read = SSL_read(
-				connection->ssl,
-				read_buffer,
-				BUFFER_UNIT_SMALL);
-		else
-			bytes_read = read(
-				connection->socket_descriptor,
-				read_buffer,
-				BUFFER_UNIT_SMALL);
+		bytes_read = SSL_read(
+			connection->ssl,
+			read_buffer,
+			BUFFER_UNIT_SMALL);
 
 		if (bytes_read == 0)
 			break;
 
-		if (bytes_read < 0) {
-			if (connection->ssl)
-				err(EXIT_FAILURE, "process_command: SSL_read error: %d", SSL_get_error(connection->ssl, error));
-			else
-				err(EXIT_FAILURE, "process_command: read error");
-		}
+		if (bytes_read < 0)
+			err(EXIT_FAILURE,
+				"process_command: SSL_read error: %d",
+				SSL_get_error(connection->ssl, error));
 
 		/* Expand the buffer if needed, preserving the position and data_start if the buffer moves. */
 
