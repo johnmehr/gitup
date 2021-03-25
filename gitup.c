@@ -798,9 +798,7 @@ server_connect(connector *connection)
 		freeaddrinfo(temp);
 	}
 
-	if (SSL_library_init() == 0)
-		err(EXIT_FAILURE, "server_connect: SSL_library_init");
-
+	SSL_library_init();
 	SSL_load_error_strings();
 	connection->ctx = SSL_CTX_new(SSLv23_client_method());
 	SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
