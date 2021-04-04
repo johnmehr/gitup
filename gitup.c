@@ -900,7 +900,7 @@ process_command(connector *connection, char *command)
 
 		/* Expand the buffer if needed, preserving the position and data_start if the buffer moves. */
 
-		if (total_bytes_read + bytes_read > connection->response_blocks * BUFFER_UNIT_LARGE) {
+		if (total_bytes_read + bytes_read + 1 > connection->response_blocks * BUFFER_UNIT_LARGE) {
 			marker_offset     = marker_start - connection->response;
 			data_start_offset = data_start   - connection->response;
 
@@ -913,7 +913,7 @@ process_command(connector *connection, char *command)
 
 		/* Add the bytes received to the buffer. */
 
-		memcpy(connection->response + total_bytes_read, read_buffer, bytes_read + 1);
+		memcpy(connection->response + total_bytes_read, read_buffer, bytes_read);
 		total_bytes_read += bytes_read;
 		connection->response[total_bytes_read] = '\0';
 
