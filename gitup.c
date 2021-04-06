@@ -121,6 +121,8 @@ static void     append_string(char **, unsigned int *, unsigned int *, const cha
 static void     apply_deltas(connector *);
 static char *   calculate_file_hash(char *, int);
 static char *   calculate_object_hash(char *, uint32_t, int);
+static void     connect_server(connector *);
+static void     create_tunnel(connector *);
 static void     extract_proxy_data(connector *, const char *);
 static void     extract_tree_item(struct file_node *, char **);
 static void     fetch_pack(connector *, char *);
@@ -149,7 +151,7 @@ static void     save_file(char *, int, char *, int, int verbosity, bool);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
 static void     send_command(connector *, char *);
-static void     server_connect(connector *);
+static void     setup_ssl(connector *);
 static void     store_object(connector *, int, char *, int, int, int, char *);
 static uint32_t unpack_delta_integer(char *, uint32_t *, int);
 static void     unpack_objects(connector *);
@@ -753,24 +755,50 @@ load_object(connector *connection, char *hash, char *path)
 
 
 /*
- * server_connect
+ * create_tunnel
+ *
+ * Procedure that sends a CONNECT command to create a proxy tunnel.
+ */
+
+static void
+create_tunnel(connector *connection)
+{
+	char command[BUFFER_UNIT_SMALL];
+
+	snprintf(command,
+		BUFFER_UNIT_SMALL,
+		"CONNECT %s:%d HTTP/1.1\r\n"
+		"Host: %s:%d\r\n"
+		"%s"
+		"\r\n",
+		connection->host,
+		connection->port,
+		connection->host,
+		connection->port,
+		connection->proxy_credentials);
+
+		process_command(connection, command);
+}
+
+
+/*
+ * connect_server
  *
  * Procedure that (re)establishes a connection with the server.
  */
 
 static void
-server_connect(connector *connection)
+connect_server(connector *connection)
 {
 	struct addrinfo hints, *start, *temp;
-	struct timeval  timeout;
-	int             error, option;
+	int             error;
 	char            type[10];
-	char           *host = (connection->proxy_host != NULL ? connection->proxy_host : connection->host);
+	char           *host = (connection->proxy_host ? connection->proxy_host : connection->host);
 
 	if (connection->socket_descriptor)
 		if (close(connection->socket_descriptor) != 0)
 			if (errno != EBADF)
-				err(EXIT_FAILURE, "server_connect: close_connection");
+				err(EXIT_FAILURE, "connect_server: close_connection");
 
 	snprintf(type, sizeof(type), "%d", (connection->proxy_host ? connection->proxy_port : connection->port));
 
@@ -788,15 +816,29 @@ server_connect(connector *connection)
 
 		if (connection->socket_descriptor < 0) {
 			if ((connection->socket_descriptor = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol)) < 0)
-				err(EXIT_FAILURE, "server_connect: socket failure");
+				err(EXIT_FAILURE, "connect_server: socket failure");
 
 			if (connect(connection->socket_descriptor, temp->ai_addr, temp->ai_addrlen) < 0)
-				err(EXIT_FAILURE, "server_connect: connect failure (%d)", errno);
+				err(EXIT_FAILURE, "connect_server: connect failure (%d)", errno);
 		}
 
 		start = temp->ai_next;
 		freeaddrinfo(temp);
 	}
+}
+
+
+/*
+ * setup_ssl
+ *
+ * Procedure that sends a command to the server and processes the response.
+ */
+
+static void
+setup_ssl(connector *connection)
+{
+	struct timeval timeout;
+	int            error = 0, option = 1;
 
 	SSL_library_init();
 	SSL_load_error_strings();
@@ -805,34 +847,32 @@ server_connect(connector *connection)
 	SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
 
 	if ((connection->ssl = SSL_new(connection->ctx)) == NULL)
-		err(EXIT_FAILURE, "server_connect: SSL_new");
+		err(EXIT_FAILURE, "setup_ssl: SSL_new");
 
 	SSL_set_fd(connection->ssl, connection->socket_descriptor);
 
 	while ((error = SSL_connect(connection->ssl)) == -1)
-		fprintf(stderr, "server_connect: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
-
-	option = 1;
+		fprintf(stderr, "setup_ssl: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
-		err(EXIT_FAILURE, "server_connect: setsockopt SO_KEEPALIVE error");
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_KEEPALIVE error");
 
 	option = BUFFER_UNIT_LARGE;
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE, "server_connect: setsockopt SO_SNDBUF error");
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDBUF error");
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE, "server_connect: setsockopt SO_RCVBUF error");
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_RCVBUF error");
 
 	bzero(&timeout, sizeof(struct timeval));
 	timeout.tv_sec = 300;
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE, "server_connect: setsockopt SO_RCVTIMEO error");
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_RCVTIMEO error");
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE, "server_connect: setsockopt SO_SNDTIMEO error");
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDTIMEO error");
 }
 
 
@@ -847,18 +887,23 @@ process_command(connector *connection, char *command)
 {
 	char  read_buffer[BUFFER_UNIT_SMALL];
 	char *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
-	int   chunk_size = -1, bytes_expected = 0, marker_offset = 0, data_start_offset = 0;
+	int   chunk_size = -1, bytes_expected = 0;
+	int   marker_offset = 0, data_start_offset = 0;
 	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
 	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
-	int   bytes_to_write = strlen(command), error = 0, twirl = 0;
+	int   bytes_to_write = 0, response_code = 0, error = 0, twirl = 0;
+	bool  ok = false;
 	char  twirly[4] = { '|', '/', '-', '\\' };
+
+	bytes_to_write = strlen(command);
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "%s\n\n", command);
 
 	/* Transmit the command to the server. */
 
-	server_connect(connection);
+	connect_server(connection);
+	setup_ssl(connection);
 
 	while (total_bytes_sent < bytes_to_write) {
 		bytes_sent = SSL_write(
@@ -975,7 +1020,19 @@ process_command(connector *connection, char *command)
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
 
-	if ((strstr(connection->response, "HTTP/1.0 200 ") != connection->response) && (strstr(connection->response, "HTTP/1.1 200 ") != connection->response))
+	/* Check the response code. */
+
+	if (strstr(connection->response, "HTTP/1.") == connection->response) {
+		response_code = strtol(strchr(connection->response, ' ') + 1, (char **)NULL, 10);
+
+		if (response_code == 200)
+			ok = true;
+
+		if ((connection->proxy_host) && (response_code >= 200) && (response_code < 300))
+			ok = true;
+	}
+
+	if (!ok)
 		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
 
 	/* Remove the header. */
@@ -995,13 +1052,8 @@ process_command(connector *connection, char *command)
 static void
 send_command(connector *connection, char *want)
 {
-	char   *command = NULL, credentials[BUFFER_UNIT_SMALL];
+	char   *command = NULL;
 	size_t  want_size = 0;
-
-	if (connection->proxy_credentials != NULL)
-		snprintf(credentials, sizeof(credentials), "Proxy-Authorization: Basic %s\r\n", connection->proxy_credentials);
-	else
-		credentials[0] = '\0';
 
 	want_size = strlen(want);
 
@@ -1025,7 +1077,7 @@ send_command(connector *connection, char *want)
 		connection->host,
 		connection->port,
 		GITUP_VERSION,
-		credentials,
+		connection->proxy_credentials,
 		want_size,
 		want);
 
@@ -1157,38 +1209,12 @@ static void
 get_commit_details(connector *connection)
 {
 	char       command[BUFFER_UNIT_SMALL], ref[BUFFER_UNIT_SMALL], want[41];
-	char       credentials[BUFFER_UNIT_SMALL], peeled[BUFFER_UNIT_SMALL];
+	char       peeled[BUFFER_UNIT_SMALL];
 	char      *position = NULL;
 	time_t     current;
 	struct tm  now;
 	int        tries = 2, year = 0, quarter = 0, pack_file_name_size = 0;
 	bool       detached = (connection->want != NULL ? true : false);
-
-	if (connection->proxy_credentials != NULL)
-		snprintf(credentials,
-			sizeof(credentials),
-			"Proxy-Authorization: Basic %s\r\n",
-			connection->proxy_credentials);
-	else
-		credentials[0] = '\0';
-
-	/* Send a CONNECT command if using a proxy. */
-
-	if (connection->proxy_host != NULL) {
-		snprintf(command,
-			BUFFER_UNIT_SMALL,
-			"CONNECT %s:%d HTTP/1.1\r\n"
-			"Host: %s:%d\r\n"
-			"%s"
-			"\r\n",
-			connection->host,
-			connection->port,
-			connection->host,
-			connection->port,
-			credentials);
-
-		process_command(connection, command);
-	}
 
 	/* Send the initial info/refs command. */
 
@@ -1204,7 +1230,7 @@ get_commit_details(connector *connection)
 		connection->host,
 		connection->port,
 		GITUP_VERSION,
-		credentials);
+		connection->proxy_credentials);
 
 	process_command(connection, command);
 
@@ -2442,6 +2468,37 @@ main(int argc, char **argv)
 		connection.repository_path = temp;
 		}
 
+	/* Build the proxy credentials string. */
+
+	if (connection.proxy_username) {
+		snprintf(credentials, sizeof(credentials),
+			"%s:%s",
+			connection.proxy_username,
+			connection.proxy_password);
+
+		base64_encode(credentials,
+			strlen(credentials),
+			&temp);
+
+		length = 30 + strlen(temp);
+
+		connection.proxy_credentials = (char *)malloc(length + 1);
+
+		if (connection.proxy_credentials == NULL)
+			err(EXIT_FAILURE, "main: malloc");
+
+		snprintf(connection.proxy_credentials, length,
+			"Proxy-Authorization: Basic %s\r\n",
+			temp);
+	} else {
+		connection.proxy_credentials = (char *)malloc(1);
+
+		if (connection.proxy_credentials == NULL)
+			err(EXIT_FAILURE, "main: malloc");
+
+		connection.proxy_credentials[0] = '\0';
+	}
+
 	/* If a tag and a want are specified, warn and exit. */
 
 	if ((connection.tag != NULL) && (connection.want != NULL))
@@ -2521,12 +2578,8 @@ main(int argc, char **argv)
 			fprintf(stderr, "# Proxy Port: %d\n", connection.proxy_port);
 		}
 
-		if (connection.proxy_username) {
+		if (connection.proxy_username)
 			fprintf(stderr, "# Proxy Username: %s\n", connection.proxy_username);
-
-			snprintf(credentials, sizeof(credentials), "%s:%s", connection.proxy_username, connection.proxy_password);
-			base64_encode(credentials, strlen(credentials), &connection.proxy_credentials);
-		}
 
 		fprintf(stderr, "# Repository Path: %s\n", connection.repository_path);
 		fprintf(stderr, "# Target Directory: %s\n", connection.path_target);
@@ -2542,6 +2595,13 @@ main(int argc, char **argv)
 
 		if (connection.want)
 			fprintf(stderr, "# Want: %s\n", connection.want);
+	}
+
+	/* If using a proxy, create the tunnel. */
+
+	if (connection.proxy_host) {
+		connect_server(&connection);
+		create_tunnel(&connection);
 	}
 
 	/* Execute the fetch, unpack, apply deltas and save. */
