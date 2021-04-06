@@ -811,9 +811,9 @@ connect_server(connector *connection)
 
 	connection->socket_descriptor = -1;
 
-	while (start) {
-		temp = start;
+	temp = start;
 
+	while (temp) {
 		if (connection->socket_descriptor < 0) {
 			if ((connection->socket_descriptor = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol)) < 0)
 				err(EXIT_FAILURE, "connect_server: socket failure");
@@ -822,9 +822,10 @@ connect_server(connector *connection)
 				err(EXIT_FAILURE, "connect_server: connect failure (%d)", errno);
 		}
 
-		start = temp->ai_next;
-		freeaddrinfo(temp);
+		temp = temp->ai_next;
 	}
+
+	freeaddrinfo(start);
 }
 
 
