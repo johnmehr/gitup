@@ -1274,12 +1274,7 @@ get_commit_details(connector *connection)
 			year    = 1900 + now.tm_year + ((tries == 0) && (now.tm_mon < 3) ? -1 : 0);
 			quarter = ((now.tm_mon / 3) + (tries == 0 ? 3 : 0)) % 4 + 1;
 
-			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/branches/%04dQ%d", year, quarter);
-
-			/* Retain the name of the quarterly branch being used. */
-
-			free(connection->branch);
-			connection->branch = strdup(ref + 12);
+			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/%04dQ%d", year, quarter);
 		} else if (connection->tag != NULL) {
 			snprintf(ref, BUFFER_UNIT_SMALL, " refs/tags/%s", connection->tag);
 		} else {
@@ -1296,6 +1291,13 @@ get_commit_details(connector *connection)
 			memcpy(want, position - 40, 40);
 		else if (tries == 0)
 			errc(EXIT_FAILURE, EINVAL, "get_commit_details:%s doesn't exist in %s", ref, connection->repository_path);
+	}
+
+	/* Retain the name of the quarterly branch being used. */
+
+	if (strncmp(connection->branch, "quarterly", 9) == 0) {
+		free(connection->branch);
+		connection->branch = strdup(ref + 12);
 	}
 
 	if (want[0] != '\0') {
