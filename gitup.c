@@ -795,11 +795,6 @@ connect_server(connector *connection)
 	char            type[10];
 	char           *host = (connection->proxy_host ? connection->proxy_host : connection->host);
 
-	if (connection->socket_descriptor)
-		if (close(connection->socket_descriptor) != 0)
-			if (errno != EBADF)
-				err(EXIT_FAILURE, "connect_server: close_connection");
-
 	snprintf(type, sizeof(type), "%d", (connection->proxy_host ? connection->proxy_port : connection->port));
 
 	bzero(&hints, sizeof(struct addrinfo));
@@ -903,14 +898,17 @@ process_command(connector *connection, char *command)
 
 	/* Transmit the command to the server. */
 
-	connect_server(connection);
-	setup_ssl(connection);
-
 	while (total_bytes_sent < bytes_to_write) {
-		bytes_sent = SSL_write(
-			connection->ssl,
-			command + total_bytes_sent,
-			bytes_to_write - total_bytes_sent);
+		if (connection->ssl)
+			bytes_sent = SSL_write(
+				connection->ssl,
+				command + total_bytes_sent,
+				bytes_to_write - total_bytes_sent);
+		else
+			bytes_sent = write(
+				connection->socket_descriptor,
+				command + total_bytes_sent,
+				bytes_to_write - total_bytes_sent);
 
 		if (bytes_sent <= 0) {
 			if ((bytes_sent < 0) && ((errno == EINTR) || (errno == 0)))
@@ -931,10 +929,16 @@ process_command(connector *connection, char *command)
 	/* Process the response. */
 
 	while (chunk_size) {
-		bytes_read = SSL_read(
-			connection->ssl,
-			read_buffer,
-			BUFFER_UNIT_SMALL);
+		if (connection->ssl)
+			bytes_read = SSL_read(
+				connection->ssl,
+				read_buffer,
+				BUFFER_UNIT_SMALL);
+		else
+			bytes_read = read(
+				connection->socket_descriptor,
+				read_buffer,
+				BUFFER_UNIT_SMALL);
 
 		if (bytes_read == 0)
 			break;
@@ -978,7 +982,7 @@ process_command(connector *connection, char *command)
 			}
 		}
 
-		/* CONNECT responses do not contain a body to process. */
+		/* CONNECT responses do not contain a chunked body to process. */
 
 		if (strstr(command, "CONNECT ") == command)
 			break;
@@ -1069,7 +1073,6 @@ send_command(connector *connection, char *want)
 		"Accept-encoding: deflate, gzip\r\n"
 		"Content-type: application/x-git-upload-pack-request\r\n"
 		"Accept: application/x-git-upload-pack-result\r\n"
-		"%s"
 		"Git-Protocol: version=2\r\n"
 		"Content-length: %zu\r\n"
 		"\r\n"
@@ -1078,7 +1081,6 @@ send_command(connector *connection, char *want)
 		connection->host,
 		connection->port,
 		GITUP_VERSION,
-		connection->proxy_credentials,
 		want_size,
 		want);
 
@@ -1225,13 +1227,11 @@ get_commit_details(connector *connection)
 		"Host: %s:%d\r\n"
 		"User-Agent: gitup/%s\r\n"
 		"Git-Protocol: version=2\r\n"
-		"%s"
 		"\r\n",
 		connection->repository_path,
 		connection->host,
 		connection->port,
-		GITUP_VERSION,
-		connection->proxy_credentials);
+		GITUP_VERSION);
 
 	process_command(connection, command);
 
@@ -2453,7 +2453,7 @@ main(int argc, char **argv)
 	}
 
 	/* Build the proxy repository path. */
-
+/*
 	if (connection.proxy_host != NULL) {
 		length = strlen(connection.host) + strlen(connection.repository_path) + 16;
 
@@ -2470,7 +2470,7 @@ main(int argc, char **argv)
 
 		connection.repository_path = temp;
 		}
-
+*/
 	/* Build the proxy credentials string. */
 
 	if (connection.proxy_username) {
@@ -2600,12 +2600,14 @@ main(int argc, char **argv)
 			fprintf(stderr, "# Want: %s\n", connection.want);
 	}
 
-	/* If using a proxy, create the tunnel. */
+	/* Setup the connection to the server. */
 
-	if (connection.proxy_host) {
-		connect_server(&connection);
+	connect_server(&connection);
+
+	if (connection.proxy_host)
 		create_tunnel(&connection);
-	}
+
+	setup_ssl(&connection);
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
