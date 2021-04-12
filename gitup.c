@@ -31,13 +31,13 @@
 #include <sys/tree.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
 #include <openssl/ssl3.h>
 #include <openssl/err.h>
 #include <private/ucl/ucl.h>
 
-#include <base64.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <err.h>
@@ -2336,11 +2336,15 @@ main(int argc, char **argv)
 	struct object_node *object = NULL, *next_object = NULL;
 	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
+	EVP_ENCODE_CTX      evp_ctx;
 	const char         *configuration_file = CONFIG_FILE_PATH;
 	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
-	char                credentials[BUFFER_UNIT_SMALL], section[BUFFER_UNIT_SMALL];
+	char                base64_credentials[BUFFER_UNIT_SMALL];
+	char                credentials[BUFFER_UNIT_SMALL];
+	char                section[BUFFER_UNIT_SMALL];
 	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
 	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
+	int                 base64_credentials_length = 0;
 	bool                ignore = false, current_repository = false, encoded = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
 
@@ -2490,11 +2494,24 @@ main(int argc, char **argv)
 			connection.proxy_username,
 			connection.proxy_password);
 
-		base64_encode(credentials,
-			strlen(credentials),
-			&temp);
+		EVP_EncodeInit(&evp_ctx);
 
-		length = 30 + strlen(temp);
+		EVP_EncodeUpdate(&evp_ctx,
+			base64_credentials,
+			&base64_credentials_length,
+			credentials,
+			strlen(credentials));
+
+		EVP_EncodeFinal(&evp_ctx,
+			base64_credentials,
+			&base64_credentials_length);
+
+		/* Remove the trailing return. */
+
+		if ((temp = strchr(base64_credentials, '\n')) != NULL)
+			*temp = '\0';
+
+		length = 30 + strlen(base64_credentials);
 
 		connection.proxy_credentials = (char *)malloc(length + 1);
 
@@ -2503,7 +2520,7 @@ main(int argc, char **argv)
 
 		snprintf(connection.proxy_credentials, length,
 			"Proxy-Authorization: Basic %s\r\n",
-			temp);
+			base64_credentials);
 	} else {
 		connection.proxy_credentials = (char *)malloc(1);
 
