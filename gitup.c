@@ -791,7 +791,8 @@ static void
 connect_server(connector *connection)
 {
 	struct addrinfo hints, *start, *temp;
-	int             error;
+	struct timeval  timeout;
+	int             error = 0, option = 1;
 	char            type[10];
 	char           *host = (connection->proxy_host ? connection->proxy_host : connection->host);
 
@@ -821,34 +822,6 @@ connect_server(connector *connection)
 	}
 
 	freeaddrinfo(start);
-}
-
-
-/*
- * setup_ssl
- *
- * Procedure that sends a command to the server and processes the response.
- */
-
-static void
-setup_ssl(connector *connection)
-{
-	struct timeval timeout;
-	int            error = 0, option = 1;
-
-	SSL_library_init();
-	SSL_load_error_strings();
-	connection->ctx = SSL_CTX_new(SSLv23_client_method());
-	SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
-	SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
-
-	if ((connection->ssl = SSL_new(connection->ctx)) == NULL)
-		err(EXIT_FAILURE, "setup_ssl: SSL_new");
-
-	SSL_set_fd(connection->ssl, connection->socket_descriptor);
-
-	while ((error = SSL_connect(connection->ssl)) == -1)
-		fprintf(stderr, "setup_ssl: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
 		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_KEEPALIVE error");
@@ -869,6 +842,33 @@ setup_ssl(connector *connection)
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(struct timeval)))
 		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDTIMEO error");
+}
+
+
+/*
+ * setup_ssl
+ *
+ * Procedure that sends a command to the server and processes the response.
+ */
+
+static void
+setup_ssl(connector *connection)
+{
+	int error = 0;
+
+	SSL_library_init();
+	SSL_load_error_strings();
+	connection->ctx = SSL_CTX_new(SSLv23_client_method());
+	SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
+	SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
+
+	if ((connection->ssl = SSL_new(connection->ctx)) == NULL)
+		err(EXIT_FAILURE, "setup_ssl: SSL_new");
+
+	SSL_set_fd(connection->ssl, connection->socket_descriptor);
+
+	while ((error = SSL_connect(connection->ssl)) == -1)
+		fprintf(stderr, "setup_ssl: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
 }
 
 
