@@ -888,8 +888,8 @@ process_command(connector *connection, char *command)
 	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
 	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
 	int   bytes_to_write = 0, response_code = 0, error = 0, twirl = 0;
-	bool  ok = false;
-	char  twirly[4] = { '|', '/', '-', '\\' };
+	bool  ok = false, chunked_transfer = true;
+	char *temp = NULL, twirly[4] = { '|', '/', '-', '\\' };
 
 	bytes_to_write = strlen(command);
 
@@ -979,15 +979,38 @@ process_command(connector *connection, char *command)
 				bytes_expected = marker_start - connection->response + 4;
 				marker_start += 2;
 				data_start = marker_start;
+
+				/* Check the response code. */
+
+				if (strstr(connection->response, "HTTP/1.") == connection->response) {
+					response_code = strtol(strchr(connection->response, ' ') + 1, (char **)NULL, 10);
+
+					if (response_code == 200)
+						ok = true;
+
+					if ((connection->proxy_host) && (response_code >= 200) && (response_code < 300))
+						ok = true;
+				}
+
+				temp = strstr(connection->response, "Content-Length: ");
+
+				if (temp != NULL) {
+					bytes_expected += strtol(temp + 16, (char **)NULL, 10);
+					chunk_size = -2;
+					chunked_transfer = false;
+				}
 			}
 		}
 
-		/* CONNECT responses do not contain a chunked body to process. */
+		/* Successful CONNECT responses do not contain a body. */
 
-		if (strstr(command, "CONNECT ") == command)
+		if ((strstr(command, "CONNECT ") == command) && (ok))
 			break;
 
-		while (total_bytes_read + chunk_size > bytes_expected) {
+		if ((!chunked_transfer) && (total_bytes_read < bytes_expected))
+			continue;
+
+		while ((chunked_transfer) && (total_bytes_read + chunk_size > bytes_expected)) {
 			/* Make sure the whole chunk marker has been read. */
 
 			check_bytes = total_bytes_read - (marker_start + 2 - connection->response);
@@ -1024,18 +1047,6 @@ process_command(connector *connection, char *command)
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
-
-	/* Check the response code. */
-
-	if (strstr(connection->response, "HTTP/1.") == connection->response) {
-		response_code = strtol(strchr(connection->response, ' ') + 1, (char **)NULL, 10);
-
-		if (response_code == 200)
-			ok = true;
-
-		if ((connection->proxy_host) && (response_code >= 200) && (response_code < 300))
-			ok = true;
-	}
 
 	if (!ok)
 		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
