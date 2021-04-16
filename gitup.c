@@ -32,6 +32,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <openssl/evp.h>
+#include <openssl/opensslv.h>
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
 #include <openssl/ssl3.h>
@@ -2336,7 +2337,6 @@ main(int argc, char **argv)
 	struct object_node *object = NULL, *next_object = NULL;
 	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
-	EVP_ENCODE_CTX      evp_ctx;
 	const char         *configuration_file = CONFIG_FILE_PATH;
 	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
 	char                base64_credentials[BUFFER_UNIT_SMALL];
@@ -2347,6 +2347,12 @@ main(int argc, char **argv)
 	int                 base64_credentials_length = 0;
 	bool                ignore = false, current_repository = false, encoded = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+	EVP_ENCODE_CTX      evp_ctx;
+#else
+	EVP_ENCODE_CTX     *evp_ctx;
+#endif
 
 	connector connection = {
 		.ssl               = NULL,
@@ -2494,6 +2500,7 @@ main(int argc, char **argv)
 			connection.proxy_username,
 			connection.proxy_password);
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 		EVP_EncodeInit(&evp_ctx);
 
 		EVP_EncodeUpdate(&evp_ctx,
@@ -2505,6 +2512,23 @@ main(int argc, char **argv)
 		EVP_EncodeFinal(&evp_ctx,
 			base64_credentials,
 			&base64_credentials_length);
+#else
+		evp_ctx = EVP_ENCODE_CTX_New();
+
+		EVP_EncodeInit(evp_ctx);
+
+		EVP_EncodeUpdate(evp_ctx,
+			base64_credentials,
+			&base64_credentials_length,
+			credentials,
+			strlen(credentials));
+
+		EVP_EncodeFinal(evp_ctx,
+			base64_credentials,
+			&base64_credentials_length);
+
+		EVP_ENCODE_CTX_Free(evp_ctx);
+#endif
 
 		/* Remove the trailing return. */
 
