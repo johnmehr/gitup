@@ -2513,7 +2513,7 @@ main(int argc, char **argv)
 			base64_credentials,
 			&base64_credentials_length);
 #else
-		evp_ctx = EVP_ENCODE_CTX_New();
+		evp_ctx = EVP_ENCODE_CTX_new();
 
 		EVP_EncodeInit(evp_ctx);
 
@@ -2527,7 +2527,7 @@ main(int argc, char **argv)
 			base64_credentials,
 			&base64_credentials_length);
 
-		EVP_ENCODE_CTX_Free(evp_ctx);
+		EVP_ENCODE_CTX_free(evp_ctx);
 #endif
 
 		/* Remove the trailing return. */
