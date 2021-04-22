@@ -666,8 +666,20 @@ load_remote_file_list(connector *connection)
 
 		/* Split the line and save the data into the remote files tree. */
 
-		hash = strchr(line, '\t') + 1;
-		path = strchr(hash, '\t') + 1;
+		hash = strchr(line,     '\t');
+		path = strchr(hash + 1, '\t');
+
+		if ((hash == NULL) || (path == NULL)) {
+			fprintf(stderr,
+				" ! Malformed line '%s' in %s.  Skipping...\n",
+				line,
+				connection->remote_files);
+
+			continue;
+		} else {
+			hash++;
+			path++;
+		}
 
 		*(hash -  1) = '\0';
 		*(hash + 40) = '\0';
@@ -1001,7 +1013,7 @@ process_command(connector *connection, char *command)
 
 		if (connection->verbosity > 1)
 			fprintf(stderr, "\r==> bytes sent: %d", total_bytes_sent);
-		}
+	}
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
@@ -1180,7 +1192,9 @@ process_command(connector *connection, char *command)
 		fprintf(stderr, "\r\e[0K\r");
 
 	if (!ok)
-		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
+		errc(EXIT_FAILURE, EINVAL,
+			"process_command: read failure:\n%s\n",
+			connection->response);
 
 	/* Remove the header. */
 
@@ -2348,6 +2362,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 				else
 					connection->display_depth = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
+
 			if (strnstr(key, "host", 4) != NULL)
 				connection->host = strdup(ucl_object_tostring(pair));
 
@@ -2644,13 +2659,13 @@ main(int argc, char **argv)
 		EVP_EncodeInit(&evp_ctx);
 
 		EVP_EncodeUpdate(&evp_ctx,
-			base64_credentials,
+			(unsigned char *)base64_credentials,
 			&base64_credentials_length,
-			credentials,
+			(unsigned char *)credentials,
 			strlen(credentials));
 
 		EVP_EncodeFinal(&evp_ctx,
-			base64_credentials,
+			(unsigned char *)base64_credentials,
 			&base64_credentials_length);
 #else
 		evp_ctx = EVP_ENCODE_CTX_new();
@@ -2658,13 +2673,13 @@ main(int argc, char **argv)
 		EVP_EncodeInit(evp_ctx);
 
 		EVP_EncodeUpdate(evp_ctx,
-			base64_credentials,
+			(unsigned char *)base64_credentials,
 			&base64_credentials_length,
-			credentials,
+			(unsigned char *)credentials,
 			strlen(credentials));
 
 		EVP_EncodeFinal(evp_ctx,
-			base64_credentials,
+			(unsigned char *)base64_credentials,
 			&base64_credentials_length);
 
 		EVP_ENCODE_CTX_free(evp_ctx);
