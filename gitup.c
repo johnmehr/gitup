@@ -44,6 +44,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <libutil.h>
 #include <netdb.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -966,9 +967,9 @@ process_command(connector *connection, char *command)
 	int   marker_offset = 0, data_start_offset = 0;
 	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
 	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
-	int   bytes_to_write = 0, response_code = 0, error = 0, twirl = 0;
+	int   bytes_to_write = 0, response_code = 0, error = 0, outlen = 0;
 	bool  ok = false, chunked_transfer = true;
-	char *temp = NULL, twirly[4] = { '|', '/', '-', '\\' };
+	char *temp = NULL;
 
 	bytes_to_write = strlen(command);
 
@@ -1049,6 +1050,60 @@ process_command(connector *connection, char *command)
 		if (connection->verbosity > 1)
 			fprintf(stderr, "\r==> bytes read: %d\tbytes_expected: %d\ttotal_bytes_read: %d", bytes_read, bytes_expected, total_bytes_read);
 
+		while (connection->verbosity == 1) {
+			struct timespec now;
+			static struct timespec then;
+			char buf[80];
+			char htotalb[7];
+			char persec[8];
+			static int last_total;
+			static double sum;
+			double secs;
+			int64_t throughput;
+
+			if (clock_gettime(CLOCK_MONOTONIC_FAST, &now) == -1)
+				err(EXIT_FAILURE,
+					"process_command: clock_gettime");
+
+			if (then.tv_sec == 0)
+				then = now, secs = 1, sum = 1;
+			else {
+				secs = now.tv_sec - then.tv_sec +
+					(now.tv_nsec - then.tv_nsec) * 1e-9;
+
+				if (1 > secs)
+					break;
+				else
+					sum += secs;
+			}
+
+			throughput = ((total_bytes_read - last_total) / secs);
+
+			humanize_number(htotalb, sizeof(htotalb),
+				(int64_t)total_bytes_read,
+				"B",
+				HN_AUTOSCALE,
+				HN_DECIMAL | HN_DIVISOR_1000);
+
+			humanize_number(persec, sizeof(persec),
+				throughput,
+				"B",
+				HN_AUTOSCALE,
+				HN_DECIMAL | HN_DIVISOR_1000);
+
+			snprintf(buf, sizeof(buf) - 1,
+				"  %s in %dm%02ds, %s/s now",
+				htotalb,
+				(int)(sum / 60),
+				(int)sum % 60,
+				persec);
+
+			outlen = fprintf(stderr, "%-*s\r", outlen, buf) - 1;
+			last_total = total_bytes_read;
+			then = now;
+			break;
+		}
+
 		/* Find the boundary between the header and the data. */
 
 		if (chunk_size == -1) {
@@ -1118,14 +1173,11 @@ process_command(connector *connection, char *command)
 
 			marker_start += chunk_size;
 			bytes_expected += chunk_size;
-
-			if (connection->verbosity == 1)
-				fprintf(stderr, "%c\r", twirly[twirl++ % 4]);
 		}
 	}
 
-	if (connection->verbosity > 1)
-		fprintf(stderr, "\n");
+	if (connection->verbosity)
+		fprintf(stderr, "\r\e[0K\r");
 
 	if (!ok)
 		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);

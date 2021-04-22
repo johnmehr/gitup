@@ -15,7 +15,7 @@ CONFIG_FILE_PATH=	/usr/local/etc/gitup.conf
 
 CFLAGS+=	-DCONFIG_FILE_PATH=\"${CONFIG_FILE_PATH}\"
 
-LDADD= -lssl -lz -lcrypto -lprivateucl
+LDADD= -lssl -lz -lcrypto -lprivateucl -lutil
 
 WARNS= 6
 
