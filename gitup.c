@@ -2230,7 +2230,7 @@ save_objects(connector *connection)
 static void
 extract_proxy_data(connector *connection, const char *data)
 {
-	char *temp = NULL, *server = NULL;
+	char *copy = NULL, *temp = NULL, *server = NULL;
 	int   offset = 0;
 
 	if ((data) && (strstr(data, "https://") == data))
@@ -2242,21 +2242,21 @@ extract_proxy_data(connector *connection, const char *data)
 	if (offset == 0)
 		return;
 
-	server = strdup(data + offset);
+	copy = strdup(data + offset);
 
 	/* Extract the username and password values. */
 
-	if ((temp = strchr(data, '@')) != NULL) {
+	if ((temp = strchr(copy, '@')) != NULL) {
 		*temp  = '\0';
 		server = temp + 1;
 
-		if ((temp = strchr(data + offset, ':')) != NULL) {
+		if ((temp = strchr(copy, ':')) != NULL) {
 			*temp = '\0';
 
 			free(connection->proxy_username);
 			free(connection->proxy_password);
 
-			connection->proxy_username = strdup(data + offset);
+			connection->proxy_username = strdup(copy);
 			connection->proxy_password = strdup(temp + 1);
 		}
 	}
@@ -2271,11 +2271,21 @@ extract_proxy_data(connector *connection, const char *data)
 	if ((temp = strchr(server, ':')) != NULL) {
 		*temp = '\0';
 
-		free(connection->proxy_host);
-
-		connection->proxy_host = server;
 		connection->proxy_port = strtol(temp + 1, (char **)NULL, 10);
+
+		/* Remove any enclosing brackets. */
+
+		if (*(server) == '[')
+			server++;
+
+		if ((temp = strchr(server, ']')) != NULL)
+			*temp = '\0';
+
+		free(connection->proxy_host);
+		connection->proxy_host = strdup(server);
 	}
+
+	free(copy);
 }
 
 
@@ -2294,6 +2304,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
 	const char         *key = NULL, *config_section = NULL;
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
+	char               *value = NULL, *temp = NULL;
 	unsigned int        sections_size = 1024, sections_length = 0;
 	uint8_t             argument_index = 0, x = 0;
 	struct stat         check_file;
@@ -2363,8 +2374,21 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->display_depth = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
 
-			if (strnstr(key, "host", 4) != NULL)
-				connection->host = strdup(ucl_object_tostring(pair));
+			if (strnstr(key, "host", 4) != NULL) {
+				value = strdup(ucl_object_tostring(pair));
+
+				/* Remove any enclosing brackets. */
+
+				temp = strchr(value, ']');
+
+				if (temp != NULL)
+					*temp = '\0';
+
+				if (value[0] == '[')
+					memcpy(value, value + 1, strlen(value));
+
+				connection->host = value;
+			}
 
 			if (((strnstr(key, "ignore", 6) != NULL) || (strnstr(key, "ignores", 7) != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
 				while ((ignore = ucl_iterate_object(pair, &it_ignores, true))) {
@@ -2386,8 +2410,21 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
 
-			if (strnstr(key, "proxy_host", 10) != NULL)
-				connection->proxy_host = strdup(ucl_object_tostring(pair));
+			if (strnstr(key, "proxy_host", 10) != NULL) {
+				value = strdup(ucl_object_tostring(pair));
+
+				/* Remove any enclosing brackets. */
+
+				temp = strchr(value, ']');
+
+				if (temp != NULL)
+					*temp = '\0';
+
+				if (value[0] == '[')
+					memcpy(value, value + 1, strlen(value));
+
+				connection->proxy_host = value;
+			}
 
 			if (strnstr(key, "proxy_port", 10) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
