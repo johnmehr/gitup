@@ -52,7 +52,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.91"
+#define	GITUP_VERSION     "0.92"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -80,7 +80,6 @@ struct file_node {
 	char   *path;
 	bool    keep;
 	bool    save;
-	bool    new;
 };
 
 typedef struct {
@@ -116,6 +115,8 @@ typedef struct {
 	bool                 keep_pack_file;
 	bool                 use_pack_file;
 	int                  verbosity;
+	uint8_t              display_depth;
+	char                *updating;
 } connector;
 
 static void     append_string(char **, unsigned int *, unsigned int *, const char *, int);
@@ -130,7 +131,6 @@ static void     fetch_pack(connector *, char *);
 static int      file_node_compare_hash(const struct file_node *, const struct file_node *);
 static int      file_node_compare_path(const struct file_node *, const struct file_node *);
 static void     file_node_free(struct file_node *);
-static void     find_local_tree(connector *, char *);
 static void     get_commit_details(connector *);
 static char *   illegible_hash(char *);
 static char *   build_clone_command(connector *);
@@ -145,12 +145,14 @@ static void     load_remote_file_list(connector *);
 static void     make_path(char *, mode_t);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
+static bool     path_exists(const char *);
 static void     process_command(connector *, char *);
 static void     process_tree(connector *, int, char *, char *);
 static void     prune_tree(connector *, char *);
-static void     save_file(char *, int, char *, int, int verbosity, bool);
+static void     save_file(char *, int, char *, int, int, int);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
+static void     scan_local_repository(connector *, char *);
 static void     send_command(connector *, char *);
 static void     setup_ssl(connector *);
 static void     store_object(connector *, int, char *, int, int, int, char *);
@@ -226,6 +228,10 @@ RB_GENERATE(Tree_Local_Hash,  file_node, link_hash, file_node_compare_hash)
 static RB_HEAD(Tree_Objects, object_node) Objects = RB_INITIALIZER(&Objects);
 RB_PROTOTYPE(Tree_Objects, object_node, link, object_node_compare)
 RB_GENERATE(Tree_Objects,  object_node, link, object_node_compare)
+
+static RB_HEAD(Tree_Trim_Path, file_node) Trim_Path = RB_INITIALIZER(&Trim_Path);
+RB_PROTOTYPE(Tree_Trim_Path, file_node, link_path, file_node_compare_path)
+RB_GENERATE(Tree_Trim_Path,  file_node, link_path, file_node_compare_path)
 
 
 /*
@@ -370,6 +376,22 @@ prune_tree(connector *connection, char *base_path)
 
 
 /*
+ * path_exists
+ *
+ * Function wrapper for stat that checks to see if a path exists.
+ */
+
+static bool
+path_exists(const char *path)
+{
+	struct stat check;
+
+	return (stat(path, &check) == 0 ? true : false);
+
+}
+
+
+/*
  * load_file
  *
  * Procedure that loads a local file into the specified buffer.
@@ -412,14 +434,72 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
  */
 
 static void
-save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, bool new)
+save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, int display_depth)
 {
-	struct stat file;
-	char        temp_buffer[buffer_size + 1];
-	int         fd;
+	struct file_node *new_node = NULL, find;
+	struct stat       file;
+	char              temp_buffer[buffer_size + 1];
+	char             *trim = NULL, *trimmed_path = NULL;
+	int               fd, x = -1;
+	bool              trimmed_path_exists = false, file_exists = false;
 
-	if (verbosity > 0)
-		printf(" %c %s\n", (new == true ? '+' : '*'), path);
+	/* Trim the path to the display depth. */
+
+	if (display_depth > 0) {
+		trimmed_path = strdup(path);
+		trim         = trimmed_path;
+
+		while ((x++ < display_depth) && (trim != NULL))
+			trim = strchr(trim + 1, '/');
+
+		if (trim)
+			*trim = '\0';
+
+		trimmed_path_exists = path_exists(trimmed_path);
+	}
+
+	/* Create the directory, if needed. */
+
+	if ((trim = strrchr(path, '/')) != NULL) {
+		*trim = '\0';
+
+		if (!path_exists(path))
+			make_path(path, 0755);
+
+		*trim = '/';
+	}
+
+	/* Print the file or trimmed path. */
+
+	if (verbosity > 0) {
+		file_exists = path_exists(path);
+
+		if (display_depth == 0) {
+			printf(" %c %s\n", (file_exists ? '*' : '+'), path);
+		} else {
+			find.path = trimmed_path;
+
+			if (!RB_FIND(Tree_Trim_Path, &Trim_Path, &find)) {
+				new_node = (struct file_node *)malloc(sizeof(struct file_node));
+
+				if (new_node == NULL)
+					err(EXIT_FAILURE, "save_file: malloc");
+
+				new_node->path = strdup(trimmed_path);
+				new_node->mode = 0;
+				new_node->hash = NULL;
+				new_node->save = 0;
+
+				RB_INSERT(Tree_Trim_Path, &Trim_Path, new_node);
+
+				printf(" %c %s\n",
+					((file_exists | trimmed_path_exists) ? '*' : '+'),
+					trimmed_path);
+			}
+
+			free(trimmed_path);
+		}
+	}
 
 	if (S_ISLNK(mode)) {
 		/* Make sure the buffer is null terminated, then save it as the file to link to. */
@@ -628,14 +708,14 @@ load_remote_file_list(connector *connection)
 
 
 /*
- * find_local_tree
+ * scan_local_repository
  *
  * Procedure that recursively finds and adds local files and directories to
  * separate red-black trees.
  */
 
 static void
-find_local_tree(connector *connection, char *base_path)
+scan_local_repository(connector *connection, char *base_path)
 {
 	DIR              *directory = NULL;
 	struct stat       file;
@@ -652,14 +732,13 @@ find_local_tree(connector *connection, char *base_path)
 	/* Add the base path to the local trees. */
 
 	if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-		err(EXIT_FAILURE, "find_local_tree: malloc");
+		err(EXIT_FAILURE, "scan_local_repository: malloc");
 
 	new_node->mode = (found ? found->mode : 040000);
 	new_node->hash = (found ? strdup(found->hash) : NULL);
 	new_node->path = strdup(base_path);
 	new_node->keep = (strlen(base_path) == strlen(connection->path_target) ? true : false);
 	new_node->save = false;
-	new_node->new  = false;
 
 	RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
 
@@ -687,26 +766,25 @@ find_local_tree(connector *connection, char *base_path)
 			full_path_size = strlen(base_path) + strlen(entry->d_name) + 2;
 
 			if ((full_path = (char *)malloc(full_path_size + 1)) == NULL)
-				err(EXIT_FAILURE, "find_local_tree: full_path malloc");
+				err(EXIT_FAILURE, "scan_local_repository: full_path malloc");
 
 			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
 
 			if (lstat(full_path, &file) == -1)
-				err(EXIT_FAILURE, "find_local_tree: %s", full_path);
+				err(EXIT_FAILURE, "scan_local_repository: %s", full_path);
 
 			if (S_ISDIR(file.st_mode)) {
-				find_local_tree(connection, full_path);
+				scan_local_repository(connection, full_path);
 				free(full_path);
 			} else {
 				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE, "find_local_tree: malloc");
+					err(EXIT_FAILURE, "scan_local_repository: malloc");
 
 				new_node->mode = file.st_mode;
 				new_node->hash = calculate_file_hash(full_path, file.st_mode);
 				new_node->path = full_path;
 				new_node->keep = (strnstr(full_path, ".gituprevision", strlen(full_path)) != NULL ? true : false);
 				new_node->save = false;
-				new_node->new  = false;
 
 				RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
 				RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
@@ -1434,7 +1512,12 @@ fetch_pack(connector *connection, char *command)
 	/* Save the pack data. */
 
 	if (connection->keep_pack_file == true)
-		save_file(connection->pack_file, 0644, connection->response, connection->response_size, 0, 0);
+		save_file(connection->pack_file,
+			0644,
+			connection->response,
+			connection->response_size,
+			0,
+			0);
 
 	/* Process the pack data. */
 
@@ -1831,8 +1914,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	char               full_path[BUFFER_UNIT_SMALL], line[BUFFER_UNIT_SMALL], *position = NULL, *buffer = NULL;
 	unsigned int       buffer_size = 0, buffer_length = 0;
 
-	make_path(base_path, 0755);
-
 	object.hash = hash;
 
 	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
@@ -1845,7 +1926,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	if ((found_file = RB_FIND(Tree_Local_Path, &Local_Path, &file)) != NULL) {
 		found_file->keep = true;
 		found_file->save = false;
-		found_file->new  = false;
 	}
 
 	/* Add the base path to the output. */
@@ -1889,7 +1969,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 			if (found_file != NULL) {
 				found_file->keep = true;
 				found_file->save = false;
-				found_file->new  = false;
 
 				if (strncmp(file.hash, found_file->hash, 40) == 0)
 					continue;
@@ -1918,7 +1997,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 				new_file_node->path = strdup(full_path);
 				new_file_node->keep = true;
 				new_file_node->save = true;
-				new_file_node->new  = (found_file == NULL);
 
 				RB_INSERT(Tree_Remote_Path, &Remote_Path, new_file_node);
 			} else {
@@ -1927,7 +2005,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 				remote_file->hash = strdup(found_object->hash);
 				remote_file->keep = true;
 				remote_file->save = true;
-				remote_file->new  = (found_file == NULL);
 			}
 		}
 	}
@@ -1985,8 +2062,17 @@ save_repairs(connector *connection)
 					update = false;
 			}
 
-			if (update == true)
-				save_file(found_file->path, found_file->mode, found_object->buffer, found_object->buffer_size, connection->verbosity, missing);
+			if (update == true) {
+				save_file(found_file->path,
+					found_file->mode,
+					found_object->buffer,
+					found_object->buffer_size,
+					connection->verbosity,
+					connection->display_depth);
+
+				if (strstr(found_file->path, "UPDATING"))
+					connection->updating = strdup(found_file->path);
+			}
 		}
 	}
 
@@ -2055,7 +2141,15 @@ save_objects(connector *connection)
 			if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
 				errc(EXIT_FAILURE, EINVAL, "save_objects: cannot find %s", found_file->hash);
 
-			save_file(found_file->path, found_file->mode, found_object->buffer, found_object->buffer_size, connection->verbosity, found_file->new);
+			save_file(found_file->path,
+				found_file->mode,
+				found_object->buffer,
+				found_object->buffer_size,
+				connection->verbosity,
+				connection->display_depth);
+
+			if (strstr(found_file->path, "UPDATING"))
+				connection->updating = strdup(found_file->path);
 		}
 }
 
@@ -2196,6 +2290,12 @@ load_configuration(connector *connection, const char *configuration_file, char *
 			if (strnstr(key, "branch", 6) != NULL)
 				connection->branch = strdup(ucl_object_tostring(pair));
 
+			if (strnstr(key, "display_depth", 16) != NULL) {
+				if (ucl_object_type(pair) == UCL_INT)
+					connection->display_depth = ucl_object_toint(pair);
+				else
+					connection->display_depth = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
+			}
 			if (strnstr(key, "host", 4) != NULL)
 				connection->host = strdup(ucl_object_tostring(pair));
 
@@ -2310,6 +2410,8 @@ usage(const char *configuration_file)
 	fprintf(stderr, "  Options:\n");
 	fprintf(stderr, "    -C  Override the default configuration file.\n");
 	fprintf(stderr, "    -c  Force gitup to clone the repository.\n");
+	fprintf(stderr, "    -d  Limit the display of changes to the specified number of\n");
+	fprintf(stderr, "          directory levels deep (0 = display the entire path).\n");
 	fprintf(stderr, "    -h  Override the 'have' checksum.\n");
 	fprintf(stderr, "    -k  Save a copy of the pack data to the current working directory.\n");
 	fprintf(stderr, "    -r  Repair all missing/modified files in the local repository.\n");
@@ -2387,6 +2489,8 @@ main(int argc, char **argv)
 		.keep_pack_file    = false,
 		.use_pack_file     = false,
 		.verbosity         = 1,
+		.display_depth     = 0,
+		.updating          = NULL,
 		};
 
 	if (argc < 2)
@@ -2411,7 +2515,7 @@ main(int argc, char **argv)
 
 	/* Process the command line parameters. */
 
-	while ((option = getopt(argc, argv, "C:ch:krt:u:v:w:")) != -1) {
+	while ((option = getopt(argc, argv, "C:cd:h:krt:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
 				if (connection.verbosity)
@@ -2419,6 +2523,9 @@ main(int argc, char **argv)
 				break;
 			case 'c':
 				connection.clone = true;
+				break;
+			case 'd':
+				connection.display_depth = strtol(optarg, (char **)NULL, 10);
 				break;
 			case 'h':
 				connection.have = strdup(optarg);
@@ -2473,25 +2580,6 @@ main(int argc, char **argv)
 			optind++;
 	}
 
-	/* Build the proxy repository path. */
-/*
-	if (connection.proxy_host != NULL) {
-		length = strlen(connection.host) + strlen(connection.repository_path) + 16;
-
-		if ((temp = (char *)malloc(length + 1)) == NULL)
-			err(EXIT_FAILURE, "main: malloc");
-
-		snprintf(temp, length,
-			"https://%s:%d%s",
-			connection.host,
-			connection.port,
-			connection.repository_path);
-
-		free(connection.repository_path);
-
-		connection.repository_path = temp;
-		}
-*/
 	/* Build the proxy credentials string. */
 
 	if (connection.proxy_username) {
@@ -2608,19 +2696,26 @@ main(int argc, char **argv)
 
 	/* If the remote files list or repository are missing, then a clone must be performed. */
 
-	path_target_exists  = (stat(connection.path_target,  &check_file) == 0 ? true : false);
-	remote_files_exists = (stat(connection.remote_files, &check_file) == 0 ? true : false);
-	pack_file_exists    = (stat(connection.pack_file,    &check_file) == 0 ? true : false);
+	path_target_exists  = path_exists(connection.path_target);
+	remote_files_exists = path_exists(connection.remote_files);
+	pack_file_exists    = path_exists(connection.pack_file);
 
 	if ((path_target_exists == true) && (remote_files_exists == true))
 		load_remote_file_list(&connection);
 	else
 		connection.clone = true;
 
-	if (path_target_exists == true)
-		find_local_tree(&connection, connection.path_target);
-	else
+	if (path_target_exists == true) {
+		if (connection.verbosity)
+			fprintf(stderr, "# Scanning local repository...");
+
+		scan_local_repository(&connection, connection.path_target);
+
+		if (connection.verbosity)
+			fprintf(stderr, "\n");
+	} else {
 		connection.clone = true;
+	}
 
 	/* Display connection parameters. */
 
@@ -2722,7 +2817,12 @@ main(int argc, char **argv)
 			(connection.tag != NULL ? connection.tag : connection.branch),
 			connection.want);
 
-		save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
+		save_file(gitup_revision_path,
+			0644,
+			gitup_revision,
+			strlen(gitup_revision),
+			0,
+			0);
 	}
 
 	/* Wrap it all up. */
@@ -2766,6 +2866,12 @@ main(int argc, char **argv)
 		object_node_free(connection.object[o]);
 	}
 
+	if ((connection.verbosity) && (connection.updating))
+		fprintf(stderr,
+			"# %s has been modified.  "
+			"Please review it for important changes.\n",
+			connection.updating);
+
 	for (x = 0; x < connection.ignores; x++)
 		free(connection.ignore[x]);
 
@@ -2787,6 +2893,7 @@ main(int argc, char **argv)
 	free(connection.path_target);
 	free(connection.path_work);
 	free(connection.remote_files);
+	free(connection.updating);
 
 	if (connection.ssl) {
 		SSL_shutdown(connection.ssl);
@@ -2797,6 +2904,9 @@ main(int argc, char **argv)
 
 	if (connection.repair == true)
 		fprintf(stderr, "# The local repository has been repaired.  Please rerun gitup to pull the latest commit.\n");
+
+	if (connection.verbosity)
+		fprintf(stderr, "# Done.\n");
 
 	sync();
 
