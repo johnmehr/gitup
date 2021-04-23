@@ -2959,12 +2959,25 @@ main(int argc, char **argv)
 		file_node_free(file);
 	}
 
+	RB_FOREACH_SAFE(file, Tree_Trim_Path, &Trim_Path, next_file) {
+		RB_REMOVE(Tree_Trim_Path, &Trim_Path, file);
+		file_node_free(file);
+	}
+
 	RB_FOREACH_SAFE(object, Tree_Objects, &Objects, next_object)
 		RB_REMOVE(Tree_Objects, &Objects, object);
 
 	for (o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
-			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->pack_offset, connection.object[o]->buffer_size, connection.object[o]->hash, connection.object[o]->index_delta, connection.object[o]->ref_delta_hash);
+			fprintf(stdout,
+				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
+				connection.object[o]->index,
+				connection.object[o]->type,
+				connection.object[o]->pack_offset,
+				connection.object[o]->buffer_size,
+				connection.object[o]->hash,
+				connection.object[o]->index_delta,
+				connection.object[o]->ref_delta_hash);
 
 		object_node_free(connection.object[o]);
 	}
@@ -3007,7 +3020,9 @@ main(int argc, char **argv)
 	}
 
 	if (connection.repair == true)
-		fprintf(stderr, "# The local repository has been repaired.  Please rerun gitup to pull the latest commit.\n");
+		fprintf(stderr,
+			"# The local repository has been repaired.  "
+			"Please rerun gitup to pull the latest commit.\n");
 
 	if (connection.verbosity)
 		fprintf(stderr, "# Done.\n");
