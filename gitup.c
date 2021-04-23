@@ -88,6 +88,7 @@ typedef struct {
 	SSL_CTX             *ctx;
 	int                  socket_descriptor;
 	char                *host;
+	char                *host_bracketed;
 	uint16_t             port;
 	char                *proxy_host;
 	uint16_t             proxy_port;
@@ -863,9 +864,9 @@ create_tunnel(connector *connection)
 		"Host: %s:%d\r\n"
 		"%s"
 		"\r\n",
-		connection->host,
+		connection->host_bracketed,
 		connection->port,
-		connection->host,
+		connection->host_bracketed,
 		connection->port,
 		connection->proxy_credentials);
 
@@ -1234,7 +1235,7 @@ send_command(connector *connection, char *want)
 		"\r\n"
 		"%s",
 		connection->repository_path,
-		connection->host,
+		connection->host_bracketed,
 		connection->port,
 		GITUP_VERSION,
 		want_size,
@@ -1385,7 +1386,7 @@ get_commit_details(connector *connection)
 		"Git-Protocol: version=2\r\n"
 		"\r\n",
 		connection->repository_path,
-		connection->host,
+		connection->host_bracketed,
 		connection->port,
 		GITUP_VERSION);
 
@@ -2304,9 +2305,8 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
 	const char         *key = NULL, *config_section = NULL;
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
-	char               *value = NULL, *temp = NULL;
 	unsigned int        sections_size = 1024, sections_length = 0;
-	uint8_t             argument_index = 0, x = 0;
+	uint8_t             argument_index = 0, x = 0, host_length = 0;
 	struct stat         check_file;
 
 	if ((sections = (char *)malloc(sections_size)) == NULL)
@@ -2375,19 +2375,30 @@ load_configuration(connector *connection, const char *configuration_file, char *
 			}
 
 			if (strnstr(key, "host", 4) != NULL) {
-				value = strdup(ucl_object_tostring(pair));
+				connection->host = strdup(ucl_object_tostring(pair));
 
-				/* Remove any enclosing brackets. */
+				/* Add brackets to IPv6 addresses, if needed. */
 
-				temp = strchr(value, ']');
+				host_length = strlen(connection->host) + 3;
 
-				if (temp != NULL)
-					*temp = '\0';
+				connection->host_bracketed = (char *)realloc(
+					connection->host_bracketed,
+					host_length);
 
-				if (value[0] == '[')
-					memcpy(value, value + 1, strlen(value));
+				if (connection->host_bracketed == NULL)
+					err(EXIT_FAILURE,
+						"load_configuration: malloc");
 
-				connection->host = value;
+				if ((strchr(connection->host, ':')) && (strchr(connection->host, '[') == NULL))
+					snprintf(connection->host_bracketed,
+						host_length,
+						"[%s]",
+						connection->host);
+				else
+					snprintf(connection->host_bracketed,
+						host_length,
+						"%s",
+						connection->host);
 			}
 
 			if (((strnstr(key, "ignore", 6) != NULL) || (strnstr(key, "ignores", 7) != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
@@ -2410,21 +2421,8 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
 			}
 
-			if (strnstr(key, "proxy_host", 10) != NULL) {
-				value = strdup(ucl_object_tostring(pair));
-
-				/* Remove any enclosing brackets. */
-
-				temp = strchr(value, ']');
-
-				if (temp != NULL)
-					*temp = '\0';
-
-				if (value[0] == '[')
-					memcpy(value, value + 1, strlen(value));
-
-				connection->proxy_host = value;
-			}
+			if (strnstr(key, "proxy_host", 10) != NULL)
+				connection->proxy_host = strdup(ucl_object_tostring(pair));
 
 			if (strnstr(key, "proxy_port", 10) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
@@ -2565,6 +2563,7 @@ main(int argc, char **argv)
 		.ctx               = NULL,
 		.socket_descriptor = 0,
 		.host              = NULL,
+		.host_bracketed    = NULL,
 		.port              = 0,
 		.proxy_host        = NULL,
 		.proxy_port        = 0,
@@ -2983,6 +2982,7 @@ main(int argc, char **argv)
 	free(connection.response);
 	free(connection.object);
 	free(connection.host);
+	free(connection.host_bracketed);
 	free(connection.proxy_host);
 	free(connection.proxy_username);
 	free(connection.proxy_password);
