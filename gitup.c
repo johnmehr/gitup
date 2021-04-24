@@ -2231,7 +2231,7 @@ save_objects(connector *connection)
 static void
 extract_proxy_data(connector *connection, const char *data)
 {
-	char *copy = NULL, *temp = NULL, *server = NULL;
+	char *copy = NULL, *temp = NULL, *server = NULL, *port = NULL;
 	int   offset = 0;
 
 	if ((data) && (strstr(data, "https://") == data))
@@ -2260,6 +2260,8 @@ extract_proxy_data(connector *connection, const char *data)
 			connection->proxy_username = strdup(copy);
 			connection->proxy_password = strdup(temp + 1);
 		}
+	} else {
+		server = copy;
 	}
 
 	/* If a trailing slash is present, remove it. */
@@ -2269,22 +2271,21 @@ extract_proxy_data(connector *connection, const char *data)
 
 	/* Extract the host and port values. */
 
-	if ((temp = strchr(server, ':')) != NULL) {
-		*temp = '\0';
+	if (*(server) == '[') {
+		server++;
 
-		connection->proxy_port = strtol(temp + 1, (char **)NULL, 10);
+		if ((port = strchr(server, ']')) != NULL)
+			*(port++) = '\0';
+	} else if ((port = strchr(server, ':')) != NULL)
+		*port = '\0';
 
-		/* Remove any enclosing brackets. */
+	if ((server == NULL) || (port == NULL))
+		errc(EXIT_FAILURE, EFAULT,
+			"extract_proxy_data: malformed host/port %s", data);
 
-		if (*(server) == '[')
-			server++;
-
-		if ((temp = strchr(server, ']')) != NULL)
-			*temp = '\0';
-
-		free(connection->proxy_host);
-		connection->proxy_host = strdup(server);
-	}
+	free(connection->proxy_host);
+	connection->proxy_host = strdup(server);
+	connection->proxy_port = strtol(port + 1, (char **)NULL, 10);
 
 	free(copy);
 }
