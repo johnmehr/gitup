@@ -134,10 +134,11 @@ static int      file_node_compare_hash(const struct file_node *, const struct fi
 static int      file_node_compare_path(const struct file_node *, const struct file_node *);
 static void     file_node_free(struct file_node *);
 static void     get_commit_details(connector *);
+static bool     ignore_file(connector *, char *);
 static char *   illegible_hash(char *);
 static char *   build_clone_command(connector *);
 static char *   build_pull_command(connector *);
-static char *   build_repair_command(connector *);
+static char *   build_repair_command(connector *, const char *);
 static char *   legible_hash(char *);
 static int      load_configuration(connector *, const char *, char **, int);
 static void     load_file(const char *, char **, uint32_t *);
@@ -280,6 +281,25 @@ illegible_hash(char *hash_buffer)
 
 	return (hash);
 }
+
+
+/*
+ * ignore_file
+ *
+ * Return true if path is in the set of "ignores" for the connection.
+ */
+
+static bool
+ignore_file(connector *connection, char *path)
+{
+	int x;
+
+	for (x = 0; x < connection->ignores; x++)
+		if (strncmp(path, connection->ignore[x], strlen(connection->ignore[x])) == 0)
+			return (true);
+
+	return (false);
+ }
 
 
 /*
@@ -783,6 +803,11 @@ scan_local_repository(connector *connection, char *base_path)
 				err(EXIT_FAILURE, "scan_local_repository: full_path malloc");
 
 			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
+
+			if (ignore_file(connection, full_path)) {
+				free(full_path);
+				continue;
+			}
 
 			if (lstat(full_path, &file) == -1)
 				err(EXIT_FAILURE, "scan_local_repository: %s", full_path);
@@ -1319,16 +1344,26 @@ build_pull_command(connector *connection)
  */
 
 static char *
-build_repair_command(connector *connection)
+build_repair_command(connector *connection, const char *configuration_file)
 {
 	struct file_node *find = NULL, *found = NULL;
 	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
 	uint32_t          want_size = 0, want_length = 0;
+	bool              bad_ignore = false;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
 
 		if ((found == NULL) || (strncmp(found->hash, find->hash, 40) != 0)) {
+			if (ignore_file(connection, find->path)) {
+				fprintf(stderr,
+					" ! %s exists and cannot be ignored.\n",
+					find->path);
+
+				bad_ignore = true;
+				continue;
+			}
+
 			if (connection->verbosity)
 				fprintf(stderr, " ! %s %s\n", find->path, (found == NULL ? "is missing." : "has been modified."));
 
@@ -1336,6 +1371,13 @@ build_repair_command(connector *connection)
 			append_string(&want, &want_size, &want_length, line, strlen(line));
 		}
 	}
+
+	if (bad_ignore)
+		errc(EXIT_FAILURE, EINVAL,
+			"Directories that exist in the repository cannot be "
+			"ignored.  Please remove this directory from the "
+			"[ignores] entry in %s",
+			configuration_file);
 
 	if (want_length == 0)
 		return (NULL);
@@ -2556,7 +2598,7 @@ main(int argc, char **argv)
 	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
 	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
 	int                 base64_credentials_length = 0;
-	bool                ignore = false, current_repository = false, encoded = false;
+	bool                current_repository = false, encoded = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -2894,7 +2936,7 @@ main(int argc, char **argv)
 		/* When pulling, first ensure the local tree is pristine. */
 
 		if ((connection.repair == true) || (connection.clone == false)) {
-			command = build_repair_command(&connection);
+			command = build_repair_command(&connection, configuration_file);
 
 			if (command != NULL) {
 				connection.repair = true;
@@ -2951,11 +2993,7 @@ main(int argc, char **argv)
 
 	RB_FOREACH_SAFE(file, Tree_Local_Path, &Local_Path, next_file) {
 		if ((file->keep == false) && ((current_repository == false) || (connection.repair == true))) {
-			for (x = 0, ignore = false; x < connection.ignores; x++)
-				if (strnstr(file->path, connection.ignore[x], strlen(file->path)) != NULL)
-					ignore = true;
-
-			if (ignore == false) {
+			if (!ignore_file(&connection, file->path)) {
 				if (connection.verbosity)
 					printf(" - %s\n", file->path);
 
