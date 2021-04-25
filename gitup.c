@@ -1088,7 +1088,7 @@ process_command(connector *connection, char *command)
 		if (connection->verbosity > 1)
 			fprintf(stderr, "\r==> bytes read: %d\tbytes_expected: %d\ttotal_bytes_read: %d", bytes_read, bytes_expected, total_bytes_read);
 
-		while (connection->verbosity == 1) {
+		while ((connection->verbosity == 1) && (isatty(STDERR_FILENO))) {
 			struct timespec now;
 			static struct timespec then;
 			char buf[80];
@@ -1214,7 +1214,7 @@ process_command(connector *connection, char *command)
 		}
 	}
 
-	if (connection->verbosity)
+	if ((connection->verbosity) && (isatty(STDERR_FILENO)))
 		fprintf(stderr, "\r\e[0K\r");
 
 	if (!ok)
