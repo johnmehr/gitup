@@ -2307,7 +2307,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	const char         *key = NULL, *config_section = NULL;
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
 	unsigned int        sections_size = 1024, sections_length = 0;
-	uint8_t             argument_index = 0, x = 0, host_length = 0;
+	uint8_t             argument_index = 0, x = 0, length = 0;
 	struct stat         check_file;
 
 	if ((sections = (char *)malloc(sections_size)) == NULL)
@@ -2380,11 +2380,11 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 				/* Add brackets to IPv6 addresses, if needed. */
 
-				host_length = strlen(connection->host) + 3;
+				length = strlen(connection->host) + 3;
 
 				connection->host_bracketed = (char *)realloc(
 					connection->host_bracketed,
-					host_length);
+					length);
 
 				if (connection->host_bracketed == NULL)
 					err(EXIT_FAILURE,
@@ -2392,12 +2392,12 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 				if ((strchr(connection->host, ':')) && (strchr(connection->host, '[') == NULL))
 					snprintf(connection->host_bracketed,
-						host_length,
+						length,
 						"[%s]",
 						connection->host);
 				else
 					snprintf(connection->host_bracketed,
-						host_length,
+						length,
 						"%s",
 						connection->host);
 			}
@@ -2447,8 +2447,14 @@ load_configuration(connector *connection, const char *configuration_file, char *
 				connection->repository_path = strdup(temp_path);
 			}
 
-			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL))
+			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL)) {
 				connection->path_target = strdup(ucl_object_tostring(pair));
+
+				length = strlen(connection->path_target) - 1;
+
+				if (*(connection->path_target + length) == '/')
+					*(connection->path_target + length) = '\0';
+			}
 
 			if (strnstr(key, "verbosity", 9) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
@@ -2849,6 +2855,15 @@ main(int argc, char **argv)
 
 		if (connection.want)
 			fprintf(stderr, "# Want: %s\n", connection.want);
+	}
+
+	/* Adjust the display depth to include path_target. */
+
+	if (connection.display_depth > 0) {
+		temp = connection.path_target;
+
+		while ((temp = strchr(temp + 1, '/')))
+			connection.display_depth++;
 	}
 
 	/* Setup the connection to the server. */
