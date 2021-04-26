@@ -919,6 +919,7 @@ connect_server(connector *connection)
 	bzero(&hints, sizeof(struct addrinfo));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
 
 	if ((error = getaddrinfo(host, type, &hints, &start)))
 		errx(EXIT_FAILURE, "%s", gai_strerror(error));
