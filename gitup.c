@@ -31,18 +31,20 @@
 #include <sys/tree.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <openssl/evp.h>
+#include <openssl/opensslv.h>
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
 #include <openssl/ssl3.h>
 #include <openssl/err.h>
 #include <private/ucl/ucl.h>
 
-#include <base64.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <libutil.h>
 #include <netdb.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -51,7 +53,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.91"
+#define	GITUP_VERSION     "0.92"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -79,7 +81,6 @@ struct file_node {
 	char   *path;
 	bool    keep;
 	bool    save;
-	bool    new;
 };
 
 typedef struct {
@@ -87,6 +88,7 @@ typedef struct {
 	SSL_CTX             *ctx;
 	int                  socket_descriptor;
 	char                *host;
+	char                *host_bracketed;
 	uint16_t             port;
 	char                *proxy_host;
 	uint16_t             proxy_port;
@@ -115,23 +117,28 @@ typedef struct {
 	bool                 keep_pack_file;
 	bool                 use_pack_file;
 	int                  verbosity;
+	uint8_t              display_depth;
+	char                *updating;
 } connector;
 
 static void     append_string(char **, unsigned int *, unsigned int *, const char *, int);
 static void     apply_deltas(connector *);
 static char *   calculate_file_hash(char *, int);
 static char *   calculate_object_hash(char *, uint32_t, int);
+static void     connect_server(connector *);
+static void     create_tunnel(connector *);
+static void     extract_proxy_data(connector *, const char *);
 static void     extract_tree_item(struct file_node *, char **);
 static void     fetch_pack(connector *, char *);
 static int      file_node_compare_hash(const struct file_node *, const struct file_node *);
 static int      file_node_compare_path(const struct file_node *, const struct file_node *);
 static void     file_node_free(struct file_node *);
-static void     find_local_tree(connector *, char *);
 static void     get_commit_details(connector *);
+static bool     ignore_file(connector *, char *);
 static char *   illegible_hash(char *);
 static char *   build_clone_command(connector *);
 static char *   build_pull_command(connector *);
-static char *   build_repair_command(connector *);
+static char *   build_repair_command(connector *, const char *);
 static char *   legible_hash(char *);
 static int      load_configuration(connector *, const char *, char **, int);
 static void     load_file(const char *, char **, uint32_t *);
@@ -141,14 +148,16 @@ static void     load_remote_file_list(connector *);
 static void     make_path(char *, mode_t);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
+static bool     path_exists(const char *);
 static void     process_command(connector *, char *);
 static void     process_tree(connector *, int, char *, char *);
 static void     prune_tree(connector *, char *);
-static void     save_file(char *, int, char *, int, int verbosity, bool);
+static void     save_file(char *, int, char *, int, int, int);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
+static void     scan_local_repository(connector *, char *);
 static void     send_command(connector *, char *);
-static void     ssl_connect(connector *);
+static void     setup_ssl(connector *);
 static void     store_object(connector *, int, char *, int, int, int, char *);
 static uint32_t unpack_delta_integer(char *, uint32_t *, int);
 static void     unpack_objects(connector *);
@@ -223,6 +232,10 @@ static RB_HEAD(Tree_Objects, object_node) Objects = RB_INITIALIZER(&Objects);
 RB_PROTOTYPE(Tree_Objects, object_node, link, object_node_compare)
 RB_GENERATE(Tree_Objects,  object_node, link, object_node_compare)
 
+static RB_HEAD(Tree_Trim_Path, file_node) Trim_Path = RB_INITIALIZER(&Trim_Path);
+RB_PROTOTYPE(Tree_Trim_Path, file_node, link_path, file_node_compare_path)
+RB_GENERATE(Tree_Trim_Path,  file_node, link_path, file_node_compare_path)
+
 
 /*
  * legible_hash
@@ -268,6 +281,25 @@ illegible_hash(char *hash_buffer)
 
 	return (hash);
 }
+
+
+/*
+ * ignore_file
+ *
+ * Return true if path is in the set of "ignores" for the connection.
+ */
+
+static bool
+ignore_file(connector *connection, char *path)
+{
+	int x;
+
+	for (x = 0; x < connection->ignores; x++)
+		if (strncmp(path, connection->ignore[x], strlen(connection->ignore[x])) == 0)
+			return (true);
+
+	return (false);
+ }
 
 
 /*
@@ -366,6 +398,22 @@ prune_tree(connector *connection, char *base_path)
 
 
 /*
+ * path_exists
+ *
+ * Function wrapper for stat that checks to see if a path exists.
+ */
+
+static bool
+path_exists(const char *path)
+{
+	struct stat check;
+
+	return (stat(path, &check) == 0 ? true : false);
+
+}
+
+
+/*
  * load_file
  *
  * Procedure that loads a local file into the specified buffer.
@@ -408,14 +456,72 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
  */
 
 static void
-save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, bool new)
+save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, int display_depth)
 {
-	struct stat file;
-	char        temp_buffer[buffer_size + 1];
-	int         fd;
+	struct file_node *new_node = NULL, find;
+	struct stat       file;
+	char              temp_buffer[buffer_size + 1];
+	char             *trim = NULL, *trimmed_path = NULL;
+	int               fd, x = -1;
+	bool              trimmed_path_exists = false, file_exists = false;
 
-	if (verbosity > 0)
-		printf(" %c %s\n", (new == true ? '+' : '*'), path);
+	/* Trim the path to the display depth. */
+
+	if (display_depth > 0) {
+		trimmed_path = strdup(path);
+		trim         = trimmed_path;
+
+		while ((x++ < display_depth) && (trim != NULL))
+			trim = strchr(trim + 1, '/');
+
+		if (trim)
+			*trim = '\0';
+
+		trimmed_path_exists = path_exists(trimmed_path);
+	}
+
+	/* Create the directory, if needed. */
+
+	if ((trim = strrchr(path, '/')) != NULL) {
+		*trim = '\0';
+
+		if (!path_exists(path))
+			make_path(path, 0755);
+
+		*trim = '/';
+	}
+
+	/* Print the file or trimmed path. */
+
+	if (verbosity > 0) {
+		file_exists = path_exists(path);
+
+		if (display_depth == 0) {
+			printf(" %c %s\n", (file_exists ? '*' : '+'), path);
+		} else {
+			find.path = trimmed_path;
+
+			if (!RB_FIND(Tree_Trim_Path, &Trim_Path, &find)) {
+				new_node = (struct file_node *)malloc(sizeof(struct file_node));
+
+				if (new_node == NULL)
+					err(EXIT_FAILURE, "save_file: malloc");
+
+				new_node->path = strdup(trimmed_path);
+				new_node->mode = 0;
+				new_node->hash = NULL;
+				new_node->save = 0;
+
+				RB_INSERT(Tree_Trim_Path, &Trim_Path, new_node);
+
+				printf(" %c %s\n",
+					((file_exists | trimmed_path_exists) ? '*' : '+'),
+					trimmed_path);
+			}
+
+			free(trimmed_path);
+		}
+	}
 
 	if (S_ISLNK(mode)) {
 		/* Make sure the buffer is null terminated, then save it as the file to link to. */
@@ -581,8 +687,20 @@ load_remote_file_list(connector *connection)
 
 		/* Split the line and save the data into the remote files tree. */
 
-		hash = strchr(line, '\t') + 1;
-		path = strchr(hash, '\t') + 1;
+		hash = strchr(line,     '\t');
+		path = strchr(hash + 1, '\t');
+
+		if ((hash == NULL) || (path == NULL)) {
+			fprintf(stderr,
+				" ! Malformed line '%s' in %s.  Skipping...\n",
+				line,
+				connection->remote_files);
+
+			continue;
+		} else {
+			hash++;
+			path++;
+		}
 
 		*(hash -  1) = '\0';
 		*(hash + 40) = '\0';
@@ -624,14 +742,14 @@ load_remote_file_list(connector *connection)
 
 
 /*
- * find_local_tree
+ * scan_local_repository
  *
  * Procedure that recursively finds and adds local files and directories to
  * separate red-black trees.
  */
 
 static void
-find_local_tree(connector *connection, char *base_path)
+scan_local_repository(connector *connection, char *base_path)
 {
 	DIR              *directory = NULL;
 	struct stat       file;
@@ -648,14 +766,13 @@ find_local_tree(connector *connection, char *base_path)
 	/* Add the base path to the local trees. */
 
 	if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-		err(EXIT_FAILURE, "find_local_tree: malloc");
+		err(EXIT_FAILURE, "scan_local_repository: malloc");
 
 	new_node->mode = (found ? found->mode : 040000);
 	new_node->hash = (found ? strdup(found->hash) : NULL);
 	new_node->path = strdup(base_path);
 	new_node->keep = (strlen(base_path) == strlen(connection->path_target) ? true : false);
 	new_node->save = false;
-	new_node->new  = false;
 
 	RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
 
@@ -683,26 +800,30 @@ find_local_tree(connector *connection, char *base_path)
 			full_path_size = strlen(base_path) + strlen(entry->d_name) + 2;
 
 			if ((full_path = (char *)malloc(full_path_size + 1)) == NULL)
-				err(EXIT_FAILURE, "find_local_tree: full_path malloc");
+				err(EXIT_FAILURE, "scan_local_repository: full_path malloc");
 
 			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
 
+			if (ignore_file(connection, full_path)) {
+				free(full_path);
+				continue;
+			}
+
 			if (lstat(full_path, &file) == -1)
-				err(EXIT_FAILURE, "find_local_tree: %s", full_path);
+				err(EXIT_FAILURE, "scan_local_repository: %s", full_path);
 
 			if (S_ISDIR(file.st_mode)) {
-				find_local_tree(connection, full_path);
+				scan_local_repository(connection, full_path);
 				free(full_path);
 			} else {
 				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE, "find_local_tree: malloc");
+					err(EXIT_FAILURE, "scan_local_repository: malloc");
 
 				new_node->mode = file.st_mode;
 				new_node->hash = calculate_file_hash(full_path, file.st_mode);
 				new_node->path = full_path;
 				new_node->keep = (strnstr(full_path, ".gituprevision", strlen(full_path)) != NULL ? true : false);
 				new_node->save = false;
-				new_node->new  = false;
 
 				RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
 				RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
@@ -752,24 +873,46 @@ load_object(connector *connection, char *hash, char *path)
 
 
 /*
- * ssl_connect
+ * create_tunnel
+ *
+ * Procedure that sends a CONNECT command to create a proxy tunnel.
+ */
+
+static void
+create_tunnel(connector *connection)
+{
+	char command[BUFFER_UNIT_SMALL];
+
+	snprintf(command,
+		BUFFER_UNIT_SMALL,
+		"CONNECT %s:%d HTTP/1.1\r\n"
+		"Host: %s:%d\r\n"
+		"%s"
+		"\r\n",
+		connection->host_bracketed,
+		connection->port,
+		connection->host_bracketed,
+		connection->port,
+		connection->proxy_credentials);
+
+		process_command(connection, command);
+}
+
+
+/*
+ * connect_server
  *
  * Procedure that (re)establishes a connection with the server.
  */
 
 static void
-ssl_connect(connector *connection)
+connect_server(connector *connection)
 {
 	struct addrinfo hints, *start, *temp;
 	struct timeval  timeout;
-	int             error, option;
+	int             error = 0, option = 1;
 	char            type[10];
-	char           *host = (connection->proxy_host != NULL ? connection->proxy_host : connection->host);
-
-	if (connection->socket_descriptor)
-		if (close(connection->socket_descriptor) != 0)
-			if (errno != EBADF)
-				err(EXIT_FAILURE, "ssl_connect: close_connection");
+	char           *host = (connection->proxy_host ? connection->proxy_host : connection->host);
 
 	snprintf(type, sizeof(type), "%d", (connection->proxy_host ? connection->proxy_port : connection->port));
 
@@ -782,58 +925,68 @@ ssl_connect(connector *connection)
 
 	connection->socket_descriptor = -1;
 
-	while (start) {
-		temp = start;
+	temp = start;
 
+	while (temp) {
 		if (connection->socket_descriptor < 0) {
 			if ((connection->socket_descriptor = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol)) < 0)
-				err(EXIT_FAILURE, "ssl_connect: socket failure");
+				err(EXIT_FAILURE, "connect_server: socket failure");
 
 			if (connect(connection->socket_descriptor, temp->ai_addr, temp->ai_addrlen) < 0)
-				err(EXIT_FAILURE, "ssl_connect: connect failure (%d)", errno);
+				err(EXIT_FAILURE, "connect_server: connect failure (%d)", errno);
 		}
 
-		start = temp->ai_next;
-		freeaddrinfo(temp);
+		temp = temp->ai_next;
 	}
 
-	if (SSL_library_init() == 0)
-		err(EXIT_FAILURE, "ssl_connect: SSL_library_init");
+	freeaddrinfo(start);
 
+	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_KEEPALIVE error");
+
+	option = BUFFER_UNIT_LARGE;
+
+	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDBUF, &option, sizeof(int)))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDBUF error");
+
+	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVBUF, &option, sizeof(int)))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_RCVBUF error");
+
+	bzero(&timeout, sizeof(struct timeval));
+	timeout.tv_sec = 300;
+
+	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_RCVTIMEO error");
+
+	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(struct timeval)))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDTIMEO error");
+}
+
+
+/*
+ * setup_ssl
+ *
+ * Procedure that sends a command to the server and processes the response.
+ */
+
+static void
+setup_ssl(connector *connection)
+{
+	int error = 0;
+
+	SSL_library_init();
 	SSL_load_error_strings();
 	connection->ctx = SSL_CTX_new(SSLv23_client_method());
 	SSL_CTX_set_mode(connection->ctx, SSL_MODE_AUTO_RETRY);
 	SSL_CTX_set_options(connection->ctx, SSL_OP_ALL | SSL_OP_NO_TICKET);
 
 	if ((connection->ssl = SSL_new(connection->ctx)) == NULL)
-		err(EXIT_FAILURE, "ssl_connect: SSL_new");
+		err(EXIT_FAILURE, "setup_ssl: SSL_new");
 
 	SSL_set_fd(connection->ssl, connection->socket_descriptor);
 
 	while ((error = SSL_connect(connection->ssl)) == -1)
-		fprintf(stderr, "ssl_connect: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
-
-	option = 1;
-
-	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_KEEPALIVE error");
-
-	option = BUFFER_UNIT_LARGE;
-
-	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_SNDBUF error");
-
-	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_RCVBUF error");
-
-	bzero(&timeout, sizeof(struct timeval));
-	timeout.tv_sec = 300;
-
-	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_RCVTIMEO error");
-
-	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE, "ssl_connect: setsockopt SO_SNDTIMEO error");
+		fprintf(stderr, "setup_ssl: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
 }
 
 
@@ -848,24 +1001,32 @@ process_command(connector *connection, char *command)
 {
 	char  read_buffer[BUFFER_UNIT_SMALL];
 	char *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
-	int   chunk_size = -1, bytes_expected = 0, marker_offset = 0, data_start_offset = 0;
+	int   chunk_size = -1, bytes_expected = 0;
+	int   marker_offset = 0, data_start_offset = 0;
 	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
 	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
-	int   bytes_to_write = strlen(command), error = 0, twirl = 0;
-	char  twirly[4] = { '|', '/', '-', '\\' };
+	int   bytes_to_write = 0, response_code = 0, error = 0, outlen = 0;
+	bool  ok = false, chunked_transfer = true;
+	char *temp = NULL;
+
+	bytes_to_write = strlen(command);
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "%s\n\n", command);
 
 	/* Transmit the command to the server. */
 
-	ssl_connect(connection);
-
 	while (total_bytes_sent < bytes_to_write) {
-		bytes_sent = SSL_write(
-			connection->ssl,
-			command + total_bytes_sent,
-			bytes_to_write - total_bytes_sent);
+		if (connection->ssl)
+			bytes_sent = SSL_write(
+				connection->ssl,
+				command + total_bytes_sent,
+				bytes_to_write - total_bytes_sent);
+		else
+			bytes_sent = write(
+				connection->socket_descriptor,
+				command + total_bytes_sent,
+				bytes_to_write - total_bytes_sent);
 
 		if (bytes_sent <= 0) {
 			if ((bytes_sent < 0) && ((errno == EINTR) || (errno == 0)))
@@ -878,7 +1039,7 @@ process_command(connector *connection, char *command)
 
 		if (connection->verbosity > 1)
 			fprintf(stderr, "\r==> bytes sent: %d", total_bytes_sent);
-		}
+	}
 
 	if (connection->verbosity > 1)
 		fprintf(stderr, "\n");
@@ -886,17 +1047,28 @@ process_command(connector *connection, char *command)
 	/* Process the response. */
 
 	while (chunk_size) {
-		bytes_read = SSL_read(connection->ssl, read_buffer, BUFFER_UNIT_SMALL);
+		if (connection->ssl)
+			bytes_read = SSL_read(
+				connection->ssl,
+				read_buffer,
+				BUFFER_UNIT_SMALL);
+		else
+			bytes_read = read(
+				connection->socket_descriptor,
+				read_buffer,
+				BUFFER_UNIT_SMALL);
 
 		if (bytes_read == 0)
 			break;
 
 		if (bytes_read < 0)
-			err(EXIT_FAILURE, "process_command: SSL_read error: %d", SSL_get_error(connection->ssl, error));
+			err(EXIT_FAILURE,
+				"process_command: SSL_read error: %d",
+				SSL_get_error(connection->ssl, error));
 
 		/* Expand the buffer if needed, preserving the position and data_start if the buffer moves. */
 
-		if (total_bytes_read + bytes_read > connection->response_blocks * BUFFER_UNIT_LARGE) {
+		if (total_bytes_read + bytes_read + 1 > connection->response_blocks * BUFFER_UNIT_LARGE) {
 			marker_offset     = marker_start - connection->response;
 			data_start_offset = data_start   - connection->response;
 
@@ -909,12 +1081,66 @@ process_command(connector *connection, char *command)
 
 		/* Add the bytes received to the buffer. */
 
-		memcpy(connection->response + total_bytes_read, read_buffer, bytes_read + 1);
+		memcpy(connection->response + total_bytes_read, read_buffer, bytes_read);
 		total_bytes_read += bytes_read;
 		connection->response[total_bytes_read] = '\0';
 
 		if (connection->verbosity > 1)
 			fprintf(stderr, "\r==> bytes read: %d\tbytes_expected: %d\ttotal_bytes_read: %d", bytes_read, bytes_expected, total_bytes_read);
+
+		while ((connection->verbosity == 1) && (isatty(STDERR_FILENO))) {
+			struct timespec now;
+			static struct timespec then;
+			char buf[80];
+			char htotalb[7];
+			char persec[8];
+			static int last_total;
+			static double sum;
+			double secs;
+			int64_t throughput;
+
+			if (clock_gettime(CLOCK_MONOTONIC_FAST, &now) == -1)
+				err(EXIT_FAILURE,
+					"process_command: clock_gettime");
+
+			if (then.tv_sec == 0)
+				then = now, secs = 1, sum = 1;
+			else {
+				secs = now.tv_sec - then.tv_sec +
+					(now.tv_nsec - then.tv_nsec) * 1e-9;
+
+				if (1 > secs)
+					break;
+				else
+					sum += secs;
+			}
+
+			throughput = ((total_bytes_read - last_total) / secs);
+
+			humanize_number(htotalb, sizeof(htotalb),
+				(int64_t)total_bytes_read,
+				"B",
+				HN_AUTOSCALE,
+				HN_DECIMAL | HN_DIVISOR_1000);
+
+			humanize_number(persec, sizeof(persec),
+				throughput,
+				"B",
+				HN_AUTOSCALE,
+				HN_DECIMAL | HN_DIVISOR_1000);
+
+			snprintf(buf, sizeof(buf) - 1,
+				"  %s in %dm%02ds, %s/s now",
+				htotalb,
+				(int)(sum / 60),
+				(int)sum % 60,
+				persec);
+
+			outlen = fprintf(stderr, "%-*s\r", outlen, buf) - 1;
+			last_total = total_bytes_read;
+			then = now;
+			break;
+		}
 
 		/* Find the boundary between the header and the data. */
 
@@ -925,15 +1151,38 @@ process_command(connector *connection, char *command)
 				bytes_expected = marker_start - connection->response + 4;
 				marker_start += 2;
 				data_start = marker_start;
+
+				/* Check the response code. */
+
+				if (strstr(connection->response, "HTTP/1.") == connection->response) {
+					response_code = strtol(strchr(connection->response, ' ') + 1, (char **)NULL, 10);
+
+					if (response_code == 200)
+						ok = true;
+
+					if ((connection->proxy_host) && (response_code >= 200) && (response_code < 300))
+						ok = true;
+				}
+
+				temp = strstr(connection->response, "Content-Length: ");
+
+				if (temp != NULL) {
+					bytes_expected += strtol(temp + 16, (char **)NULL, 10);
+					chunk_size = -2;
+					chunked_transfer = false;
+				}
 			}
 		}
 
-		/* CONNECT responses do not contain a body to process. */
+		/* Successful CONNECT responses do not contain a body. */
 
-		if (strstr(command, "CONNECT ") == command)
+		if ((strstr(command, "CONNECT ") == command) && (ok))
 			break;
 
-		while (total_bytes_read + chunk_size > bytes_expected) {
+		if ((!chunked_transfer) && (total_bytes_read < bytes_expected))
+			continue;
+
+		while ((chunked_transfer) && (total_bytes_read + chunk_size > bytes_expected)) {
 			/* Make sure the whole chunk marker has been read. */
 
 			check_bytes = total_bytes_read - (marker_start + 2 - connection->response);
@@ -962,17 +1211,16 @@ process_command(connector *connection, char *command)
 
 			marker_start += chunk_size;
 			bytes_expected += chunk_size;
-
-			if (connection->verbosity == 1)
-				fprintf(stderr, "%c\r", twirly[twirl++ % 4]);
 		}
 	}
 
-	if (connection->verbosity > 1)
-		fprintf(stderr, "\n");
+	if ((connection->verbosity) && (isatty(STDERR_FILENO)))
+		fprintf(stderr, "\r\e[0K\r");
 
-	if ((strstr(connection->response, "HTTP/1.0 200 ") != connection->response) && (strstr(connection->response, "HTTP/1.1 200 ") != connection->response))
-		errc(EXIT_FAILURE, EINVAL, "process_command: read failure:\n%s\n", connection->response);
+	if (!ok)
+		errc(EXIT_FAILURE, EINVAL,
+			"process_command: read failure:\n%s\n",
+			connection->response);
 
 	/* Remove the header. */
 
@@ -991,13 +1239,8 @@ process_command(connector *connection, char *command)
 static void
 send_command(connector *connection, char *want)
 {
-	char   *command = NULL, credentials[BUFFER_UNIT_SMALL];
+	char   *command = NULL;
 	size_t  want_size = 0;
-
-	if (connection->proxy_credentials != NULL)
-		snprintf(credentials, sizeof(credentials), "Proxy-Authorization: Basic %s\r\n", connection->proxy_credentials);
-	else
-		credentials[0] = '\0';
 
 	want_size = strlen(want);
 
@@ -1012,16 +1255,14 @@ send_command(connector *connection, char *want)
 		"Accept-encoding: deflate, gzip\r\n"
 		"Content-type: application/x-git-upload-pack-request\r\n"
 		"Accept: application/x-git-upload-pack-result\r\n"
-		"%s"
 		"Git-Protocol: version=2\r\n"
 		"Content-length: %zu\r\n"
 		"\r\n"
 		"%s",
 		connection->repository_path,
-		connection->host,
+		connection->host_bracketed,
 		connection->port,
 		GITUP_VERSION,
-		credentials,
 		want_size,
 		want);
 
@@ -1103,16 +1344,26 @@ build_pull_command(connector *connection)
  */
 
 static char *
-build_repair_command(connector *connection)
+build_repair_command(connector *connection, const char *configuration_file)
 {
 	struct file_node *find = NULL, *found = NULL;
 	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
 	uint32_t          want_size = 0, want_length = 0;
+	bool              bad_ignore = false;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
 
 		if ((found == NULL) || (strncmp(found->hash, find->hash, 40) != 0)) {
+			if (ignore_file(connection, find->path)) {
+				fprintf(stderr,
+					" ! %s exists and cannot be ignored.\n",
+					find->path);
+
+				bad_ignore = true;
+				continue;
+			}
+
 			if (connection->verbosity)
 				fprintf(stderr, " ! %s %s\n", find->path, (found == NULL ? "is missing." : "has been modified."));
 
@@ -1120,6 +1371,13 @@ build_repair_command(connector *connection)
 			append_string(&want, &want_size, &want_length, line, strlen(line));
 		}
 	}
+
+	if (bad_ignore)
+		errc(EXIT_FAILURE, EINVAL,
+			"Directories that exist in the repository cannot be "
+			"ignored.  Please remove this directory from the "
+			"[ignores] entry in %s",
+			configuration_file);
 
 	if (want_length == 0)
 		return (NULL);
@@ -1153,38 +1411,12 @@ static void
 get_commit_details(connector *connection)
 {
 	char       command[BUFFER_UNIT_SMALL], ref[BUFFER_UNIT_SMALL], want[41];
-	char       credentials[BUFFER_UNIT_SMALL], peeled[BUFFER_UNIT_SMALL];
+	char       peeled[BUFFER_UNIT_SMALL];
 	char      *position = NULL;
 	time_t     current;
 	struct tm  now;
 	int        tries = 2, year = 0, quarter = 0, pack_file_name_size = 0;
 	bool       detached = (connection->want != NULL ? true : false);
-
-	if (connection->proxy_credentials != NULL)
-		snprintf(credentials,
-			sizeof(credentials),
-			"Proxy-Authorization: Basic %s\r\n",
-			connection->proxy_credentials);
-	else
-		credentials[0] = '\0';
-
-	/* Send a CONNECT command if using a proxy. */
-
-	if (connection->proxy_host != NULL) {
-		snprintf(command,
-			BUFFER_UNIT_SMALL,
-			"CONNECT %s:%d HTTP/1.1\r\n"
-			"Host: %s:%d\r\n"
-			"%s"
-			"\r\n",
-			connection->host,
-			connection->port,
-			connection->host,
-			connection->port,
-			credentials);
-
-		process_command(connection, command);
-	}
 
 	/* Send the initial info/refs command. */
 
@@ -1194,13 +1426,11 @@ get_commit_details(connector *connection)
 		"Host: %s:%d\r\n"
 		"User-Agent: gitup/%s\r\n"
 		"Git-Protocol: version=2\r\n"
-		"%s"
 		"\r\n",
 		connection->repository_path,
-		connection->host,
+		connection->host_bracketed,
 		connection->port,
-		GITUP_VERSION,
-		credentials);
+		GITUP_VERSION);
 
 	process_command(connection, command);
 
@@ -1244,12 +1474,7 @@ get_commit_details(connector *connection)
 			year    = 1900 + now.tm_year + ((tries == 0) && (now.tm_mon < 3) ? -1 : 0);
 			quarter = ((now.tm_mon / 3) + (tries == 0 ? 3 : 0)) % 4 + 1;
 
-			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/branches/%04dQ%d", year, quarter);
-
-			/* Retain the name of the quarterly branch being used. */
-
-			free(connection->branch);
-			connection->branch = strdup(ref + 12);
+			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/%04dQ%d", year, quarter);
 		} else if (connection->tag != NULL) {
 			snprintf(ref, BUFFER_UNIT_SMALL, " refs/tags/%s", connection->tag);
 		} else {
@@ -1266,6 +1491,13 @@ get_commit_details(connector *connection)
 			memcpy(want, position - 40, 40);
 		else if (tries == 0)
 			errc(EXIT_FAILURE, EINVAL, "get_commit_details:%s doesn't exist in %s", ref, connection->repository_path);
+	}
+
+	/* Retain the name of the quarterly branch being used. */
+
+	if (strncmp(connection->branch, "quarterly", 9) == 0) {
+		free(connection->branch);
+		connection->branch = strdup(ref + 12);
 	}
 
 	if (want[0] != '\0') {
@@ -1389,7 +1621,12 @@ fetch_pack(connector *connection, char *command)
 	/* Save the pack data. */
 
 	if (connection->keep_pack_file == true)
-		save_file(connection->pack_file, 0644, connection->response, connection->response_size, 0, 0);
+		save_file(connection->pack_file,
+			0644,
+			connection->response,
+			connection->response_size,
+			0,
+			0);
 
 	/* Process the pack data. */
 
@@ -1786,8 +2023,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	char               full_path[BUFFER_UNIT_SMALL], line[BUFFER_UNIT_SMALL], *position = NULL, *buffer = NULL;
 	unsigned int       buffer_size = 0, buffer_length = 0;
 
-	make_path(base_path, 0755);
-
 	object.hash = hash;
 
 	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
@@ -1800,7 +2035,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	if ((found_file = RB_FIND(Tree_Local_Path, &Local_Path, &file)) != NULL) {
 		found_file->keep = true;
 		found_file->save = false;
-		found_file->new  = false;
 	}
 
 	/* Add the base path to the output. */
@@ -1844,7 +2078,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 			if (found_file != NULL) {
 				found_file->keep = true;
 				found_file->save = false;
-				found_file->new  = false;
 
 				if (strncmp(file.hash, found_file->hash, 40) == 0)
 					continue;
@@ -1873,7 +2106,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 				new_file_node->path = strdup(full_path);
 				new_file_node->keep = true;
 				new_file_node->save = true;
-				new_file_node->new  = (found_file == NULL);
 
 				RB_INSERT(Tree_Remote_Path, &Remote_Path, new_file_node);
 			} else {
@@ -1882,7 +2114,6 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 				remote_file->hash = strdup(found_object->hash);
 				remote_file->keep = true;
 				remote_file->save = true;
-				remote_file->new  = (found_file == NULL);
 			}
 		}
 	}
@@ -1940,8 +2171,17 @@ save_repairs(connector *connection)
 					update = false;
 			}
 
-			if (update == true)
-				save_file(found_file->path, found_file->mode, found_object->buffer, found_object->buffer_size, connection->verbosity, missing);
+			if (update == true) {
+				save_file(found_file->path,
+					found_file->mode,
+					found_object->buffer,
+					found_object->buffer_size,
+					connection->verbosity,
+					connection->display_depth);
+
+				if (strstr(found_file->path, "UPDATING"))
+					connection->updating = strdup(found_file->path);
+			}
 		}
 	}
 
@@ -2010,8 +2250,86 @@ save_objects(connector *connection)
 			if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
 				errc(EXIT_FAILURE, EINVAL, "save_objects: cannot find %s", found_file->hash);
 
-			save_file(found_file->path, found_file->mode, found_object->buffer, found_object->buffer_size, connection->verbosity, found_file->new);
+			save_file(found_file->path,
+				found_file->mode,
+				found_object->buffer,
+				found_object->buffer_size,
+				connection->verbosity,
+				connection->display_depth);
+
+			if (strstr(found_file->path, "UPDATING"))
+				connection->updating = strdup(found_file->path);
 		}
+}
+
+
+/*
+ * extract_proxy_data
+ *
+ * Procedure that extracts username/password/host/port data from environment
+ * variables.
+ */
+
+static void
+extract_proxy_data(connector *connection, const char *data)
+{
+	char *copy = NULL, *temp = NULL, *server = NULL, *port = NULL;
+	int   offset = 0;
+
+	if ((data) && (strstr(data, "https://") == data))
+		offset = 8;
+
+	if ((data) && (strstr(data, "http://") == data))
+		offset = 7;
+
+	if (offset == 0)
+		return;
+
+	copy = strdup(data + offset);
+
+	/* Extract the username and password values. */
+
+	if ((temp = strchr(copy, '@')) != NULL) {
+		*temp  = '\0';
+		server = temp + 1;
+
+		if ((temp = strchr(copy, ':')) != NULL) {
+			*temp = '\0';
+
+			free(connection->proxy_username);
+			free(connection->proxy_password);
+
+			connection->proxy_username = strdup(copy);
+			connection->proxy_password = strdup(temp + 1);
+		}
+	} else {
+		server = copy;
+	}
+
+	/* If a trailing slash is present, remove it. */
+
+	if ((temp = strchr(server, '/')) != NULL)
+		*temp = '\0';
+
+	/* Extract the host and port values. */
+
+	if (*(server) == '[') {
+		server++;
+
+		if ((port = strchr(server, ']')) != NULL)
+			*(port++) = '\0';
+	} else if ((port = strchr(server, ':')) != NULL)
+		*port = '\0';
+
+	if ((server == NULL) || (port == NULL))
+		errc(EXIT_FAILURE, EFAULT,
+			"extract_proxy_data: malformed host/port %s", data);
+
+	free(connection->proxy_host);
+	connection->proxy_host = strdup(server);
+	connection->proxy_port = strtol(port + 1, (char **)NULL, 10);
+
+	free(copy);
 }
 
 
@@ -2030,9 +2348,8 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
 	const char         *key = NULL, *config_section = NULL;
 	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
-	char               *https_proxy = NULL, *server = NULL, *temp = NULL;
 	unsigned int        sections_size = 1024, sections_length = 0;
-	uint8_t             argument_index = 0, x = 0;
+	uint8_t             argument_index = 0, x = 0, length = 0;
 	struct stat         check_file;
 
 	if ((sections = (char *)malloc(sections_size)) == NULL)
@@ -2093,8 +2410,39 @@ load_configuration(connector *connection, const char *configuration_file, char *
 			if (strnstr(key, "branch", 6) != NULL)
 				connection->branch = strdup(ucl_object_tostring(pair));
 
-			if (strnstr(key, "host", 4) != NULL)
+			if (strnstr(key, "display_depth", 16) != NULL) {
+				if (ucl_object_type(pair) == UCL_INT)
+					connection->display_depth = ucl_object_toint(pair);
+				else
+					connection->display_depth = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
+			}
+
+			if (strnstr(key, "host", 4) != NULL) {
 				connection->host = strdup(ucl_object_tostring(pair));
+
+				/* Add brackets to IPv6 addresses, if needed. */
+
+				length = strlen(connection->host) + 3;
+
+				connection->host_bracketed = (char *)realloc(
+					connection->host_bracketed,
+					length);
+
+				if (connection->host_bracketed == NULL)
+					err(EXIT_FAILURE,
+						"load_configuration: malloc");
+
+				if ((strchr(connection->host, ':')) && (strchr(connection->host, '[') == NULL))
+					snprintf(connection->host_bracketed,
+						length,
+						"[%s]",
+						connection->host);
+				else
+					snprintf(connection->host_bracketed,
+						length,
+						"%s",
+						connection->host);
+			}
 
 			if (((strnstr(key, "ignore", 6) != NULL) || (strnstr(key, "ignores", 7) != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
 				while ((ignore = ucl_iterate_object(pair, &it_ignores, true))) {
@@ -2141,8 +2489,14 @@ load_configuration(connector *connection, const char *configuration_file, char *
 				connection->repository_path = strdup(temp_path);
 			}
 
-			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL))
+			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL)) {
 				connection->path_target = strdup(ucl_object_tostring(pair));
+
+				length = strlen(connection->path_target) - 1;
+
+				if (*(connection->path_target + length) == '/')
+					*(connection->path_target + length) = '\0';
+			}
 
 			if (strnstr(key, "verbosity", 9) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
@@ -2182,49 +2536,11 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if (connection->repository_path == NULL)
 		errc(EXIT_FAILURE, EINVAL, "No repository found in [%s]", connection->section);
 
-	/* Extract the username, password, host and port from the https_proxy
-	 * environment variable. */
+	/* Extract username/password/host/port from the environment variables. */
 
-	https_proxy = getenv("https_proxy");
+	extract_proxy_data(connection, getenv("HTTP_PROXY"));
+	extract_proxy_data(connection, getenv("HTTPS_PROXY"));
 
-	if ((https_proxy != NULL) && (strstr(https_proxy, "https://") == https_proxy)) {
-		server = https_proxy + 8;
-
-		/* Extract the username and password values. */
-
-		if ((temp = strchr(https_proxy, '@')) != NULL) {
-			*temp  = '\0';
-			server = temp + 1;
-
-			if ((temp = strchr(https_proxy + 8, ':')) != NULL) {
-				*temp = '\0';
-
-				free(connection->proxy_username);
-				free(connection->proxy_password);
-
-				connection->proxy_username = strdup(https_proxy + 8);
-				connection->proxy_password = strdup(temp + 1);
-			}
-		}
-
-		/* If a trailing slash is present, remove it. */
-
-		if ((temp = strchr(server, '/')) != NULL)
-			*temp = '\0';
-
-		/* Extract the host and port values. */
-
-		if ((temp = strchr(server, ':')) != NULL) {
-			*temp = '\0';
-
-			free(connection->proxy_host);
-
-			connection->proxy_host = strdup(server);
-			connection->proxy_port = strtol(temp + 1, (char **)NULL, 10);
-		}
-	}
-
-	free(https_proxy);
 	free(sections);
 
 	return (argument_index);
@@ -2245,6 +2561,8 @@ usage(const char *configuration_file)
 	fprintf(stderr, "  Options:\n");
 	fprintf(stderr, "    -C  Override the default configuration file.\n");
 	fprintf(stderr, "    -c  Force gitup to clone the repository.\n");
+	fprintf(stderr, "    -d  Limit the display of changes to the specified number of\n");
+	fprintf(stderr, "          directory levels deep (0 = display the entire path).\n");
 	fprintf(stderr, "    -h  Override the 'have' checksum.\n");
 	fprintf(stderr, "    -k  Save a copy of the pack data to the current working directory.\n");
 	fprintf(stderr, "    -r  Repair all missing/modified files in the local repository.\n");
@@ -2274,17 +2592,27 @@ main(int argc, char **argv)
 	struct stat         check_file;
 	const char         *configuration_file = CONFIG_FILE_PATH;
 	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
-	char                credentials[BUFFER_UNIT_SMALL], section[BUFFER_UNIT_SMALL];
+	char                base64_credentials[BUFFER_UNIT_SMALL];
+	char                credentials[BUFFER_UNIT_SMALL];
+	char                section[BUFFER_UNIT_SMALL];
 	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
 	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
-	bool                ignore = false, current_repository = false, encoded = false;
+	int                 base64_credentials_length = 0;
+	bool                current_repository = false, encoded = false;
 	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+	EVP_ENCODE_CTX      evp_ctx;
+#else
+	EVP_ENCODE_CTX     *evp_ctx;
+#endif
 
 	connector connection = {
 		.ssl               = NULL,
 		.ctx               = NULL,
 		.socket_descriptor = 0,
 		.host              = NULL,
+		.host_bracketed    = NULL,
 		.port              = 0,
 		.proxy_host        = NULL,
 		.proxy_port        = 0,
@@ -2313,6 +2641,8 @@ main(int argc, char **argv)
 		.keep_pack_file    = false,
 		.use_pack_file     = false,
 		.verbosity         = 1,
+		.display_depth     = 0,
+		.updating          = NULL,
 		};
 
 	if (argc < 2)
@@ -2337,7 +2667,7 @@ main(int argc, char **argv)
 
 	/* Process the command line parameters. */
 
-	while ((option = getopt(argc, argv, "C:ch:krt:u:v:w:")) != -1) {
+	while ((option = getopt(argc, argv, "C:cd:h:krt:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
 				if (connection.verbosity)
@@ -2345,6 +2675,9 @@ main(int argc, char **argv)
 				break;
 			case 'c':
 				connection.clone = true;
+				break;
+			case 'd':
+				connection.display_depth = strtol(optarg, (char **)NULL, 10);
 				break;
 			case 'h':
 				connection.have = strdup(optarg);
@@ -2399,24 +2732,67 @@ main(int argc, char **argv)
 			optind++;
 	}
 
-	/* Build the proxy repository path. */
+	/* Build the proxy credentials string. */
 
-	if (connection.proxy_host != NULL) {
-		length = strlen(connection.host) + strlen(connection.repository_path) + 16;
+	if (connection.proxy_username) {
+		snprintf(credentials, sizeof(credentials),
+			"%s:%s",
+			connection.proxy_username,
+			connection.proxy_password);
 
-		if ((temp = (char *)malloc(length + 1)) == NULL)
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+		EVP_EncodeInit(&evp_ctx);
+
+		EVP_EncodeUpdate(&evp_ctx,
+			(unsigned char *)base64_credentials,
+			&base64_credentials_length,
+			(unsigned char *)credentials,
+			strlen(credentials));
+
+		EVP_EncodeFinal(&evp_ctx,
+			(unsigned char *)base64_credentials,
+			&base64_credentials_length);
+#else
+		evp_ctx = EVP_ENCODE_CTX_new();
+
+		EVP_EncodeInit(evp_ctx);
+
+		EVP_EncodeUpdate(evp_ctx,
+			(unsigned char *)base64_credentials,
+			&base64_credentials_length,
+			(unsigned char *)credentials,
+			strlen(credentials));
+
+		EVP_EncodeFinal(evp_ctx,
+			(unsigned char *)base64_credentials,
+			&base64_credentials_length);
+
+		EVP_ENCODE_CTX_free(evp_ctx);
+#endif
+
+		/* Remove the trailing return. */
+
+		if ((temp = strchr(base64_credentials, '\n')) != NULL)
+			*temp = '\0';
+
+		length = 30 + strlen(base64_credentials);
+
+		connection.proxy_credentials = (char *)malloc(length + 1);
+
+		if (connection.proxy_credentials == NULL)
 			err(EXIT_FAILURE, "main: malloc");
 
-		snprintf(temp, length,
-			"https://%s:%d%s",
-			connection.host,
-			connection.port,
-			connection.repository_path);
+		snprintf(connection.proxy_credentials, length,
+			"Proxy-Authorization: Basic %s\r\n",
+			base64_credentials);
+	} else {
+		connection.proxy_credentials = (char *)malloc(1);
 
-		free(connection.repository_path);
+		if (connection.proxy_credentials == NULL)
+			err(EXIT_FAILURE, "main: malloc");
 
-		connection.repository_path = temp;
-		}
+		connection.proxy_credentials[0] = '\0';
+	}
 
 	/* If a tag and a want are specified, warn and exit. */
 
@@ -2472,19 +2848,26 @@ main(int argc, char **argv)
 
 	/* If the remote files list or repository are missing, then a clone must be performed. */
 
-	path_target_exists  = (stat(connection.path_target,  &check_file) == 0 ? true : false);
-	remote_files_exists = (stat(connection.remote_files, &check_file) == 0 ? true : false);
-	pack_file_exists    = (stat(connection.pack_file,    &check_file) == 0 ? true : false);
+	path_target_exists  = path_exists(connection.path_target);
+	remote_files_exists = path_exists(connection.remote_files);
+	pack_file_exists    = path_exists(connection.pack_file);
 
 	if ((path_target_exists == true) && (remote_files_exists == true))
 		load_remote_file_list(&connection);
 	else
 		connection.clone = true;
 
-	if (path_target_exists == true)
-		find_local_tree(&connection, connection.path_target);
-	else
+	if (path_target_exists == true) {
+		if (connection.verbosity)
+			fprintf(stderr, "# Scanning local repository...");
+
+		scan_local_repository(&connection, connection.path_target);
+
+		if (connection.verbosity)
+			fprintf(stderr, "\n");
+	} else {
 		connection.clone = true;
+	}
 
 	/* Display connection parameters. */
 
@@ -2497,12 +2880,8 @@ main(int argc, char **argv)
 			fprintf(stderr, "# Proxy Port: %d\n", connection.proxy_port);
 		}
 
-		if (connection.proxy_username) {
+		if (connection.proxy_username)
 			fprintf(stderr, "# Proxy Username: %s\n", connection.proxy_username);
-
-			snprintf(credentials, sizeof(credentials), "%s:%s", connection.proxy_username, connection.proxy_password);
-			base64_encode(credentials, strlen(credentials), &connection.proxy_credentials);
-		}
 
 		fprintf(stderr, "# Repository Path: %s\n", connection.repository_path);
 		fprintf(stderr, "# Target Directory: %s\n", connection.path_target);
@@ -2519,6 +2898,24 @@ main(int argc, char **argv)
 		if (connection.want)
 			fprintf(stderr, "# Want: %s\n", connection.want);
 	}
+
+	/* Adjust the display depth to include path_target. */
+
+	if (connection.display_depth > 0) {
+		temp = connection.path_target;
+
+		while ((temp = strchr(temp + 1, '/')))
+			connection.display_depth++;
+	}
+
+	/* Setup the connection to the server. */
+
+	connect_server(&connection);
+
+	if (connection.proxy_host)
+		create_tunnel(&connection);
+
+	setup_ssl(&connection);
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
@@ -2539,7 +2936,7 @@ main(int argc, char **argv)
 		/* When pulling, first ensure the local tree is pristine. */
 
 		if ((connection.repair == true) || (connection.clone == false)) {
-			command = build_repair_command(&connection);
+			command = build_repair_command(&connection, configuration_file);
 
 			if (command != NULL) {
 				connection.repair = true;
@@ -2581,7 +2978,12 @@ main(int argc, char **argv)
 			(connection.tag != NULL ? connection.tag : connection.branch),
 			connection.want);
 
-		save_file(gitup_revision_path, 0644, gitup_revision, strlen(gitup_revision), 0, 0);
+		save_file(gitup_revision_path,
+			0644,
+			gitup_revision,
+			strlen(gitup_revision),
+			0,
+			0);
 	}
 
 	/* Wrap it all up. */
@@ -2591,11 +2993,7 @@ main(int argc, char **argv)
 
 	RB_FOREACH_SAFE(file, Tree_Local_Path, &Local_Path, next_file) {
 		if ((file->keep == false) && ((current_repository == false) || (connection.repair == true))) {
-			for (x = 0, ignore = false; x < connection.ignores; x++)
-				if (strnstr(file->path, connection.ignore[x], strlen(file->path)) != NULL)
-					ignore = true;
-
-			if (ignore == false) {
+			if (!ignore_file(&connection, file->path)) {
 				if (connection.verbosity)
 					printf(" - %s\n", file->path);
 
@@ -2615,15 +3013,34 @@ main(int argc, char **argv)
 		file_node_free(file);
 	}
 
+	RB_FOREACH_SAFE(file, Tree_Trim_Path, &Trim_Path, next_file) {
+		RB_REMOVE(Tree_Trim_Path, &Trim_Path, file);
+		file_node_free(file);
+	}
+
 	RB_FOREACH_SAFE(object, Tree_Objects, &Objects, next_object)
 		RB_REMOVE(Tree_Objects, &Objects, object);
 
 	for (o = 0; o < connection.objects; o++) {
 		if (connection.verbosity > 1)
-			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", connection.object[o]->index, connection.object[o]->type, connection.object[o]->pack_offset, connection.object[o]->buffer_size, connection.object[o]->hash, connection.object[o]->index_delta, connection.object[o]->ref_delta_hash);
+			fprintf(stdout,
+				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
+				connection.object[o]->index,
+				connection.object[o]->type,
+				connection.object[o]->pack_offset,
+				connection.object[o]->buffer_size,
+				connection.object[o]->hash,
+				connection.object[o]->index_delta,
+				connection.object[o]->ref_delta_hash);
 
 		object_node_free(connection.object[o]);
 	}
+
+	if ((connection.verbosity) && (connection.updating))
+		fprintf(stderr,
+			"# %s has been modified.  "
+			"Please review it for important changes.\n",
+			connection.updating);
 
 	for (x = 0; x < connection.ignores; x++)
 		free(connection.ignore[x]);
@@ -2632,6 +3049,7 @@ main(int argc, char **argv)
 	free(connection.response);
 	free(connection.object);
 	free(connection.host);
+	free(connection.host_bracketed);
 	free(connection.proxy_host);
 	free(connection.proxy_username);
 	free(connection.proxy_password);
@@ -2646,6 +3064,7 @@ main(int argc, char **argv)
 	free(connection.path_target);
 	free(connection.path_work);
 	free(connection.remote_files);
+	free(connection.updating);
 
 	if (connection.ssl) {
 		SSL_shutdown(connection.ssl);
@@ -2655,7 +3074,12 @@ main(int argc, char **argv)
 	}
 
 	if (connection.repair == true)
-		fprintf(stderr, "# The local repository has been repaired.  Please rerun gitup to pull the latest commit.\n");
+		fprintf(stderr,
+			"# The local repository has been repaired.  "
+			"Please rerun gitup to pull the latest commit.\n");
+
+	if (connection.verbosity)
+		fprintf(stderr, "# Done.\n");
 
 	sync();
 
