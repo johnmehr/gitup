@@ -924,23 +924,22 @@ connect_server(connector *connection)
 	if ((error = getaddrinfo(host, type, &hints, &start)))
 		errx(EXIT_FAILURE, "%s", gai_strerror(error));
 
-	connection->socket_descriptor = -1;
+        for (temp = start; temp != NULL; temp = temp->ai_next) {
+		if ((connection->socket_descriptor = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol)) < 0)
+				/* trying each addr returned, cont. with next in list */
+				continue;
 
-	temp = start;
+		if (connect(connection->socket_descriptor, temp->ai_addr, temp->ai_addrlen) != -1)
+				break;
 
-	while (temp) {
-		if (connection->socket_descriptor < 0) {
-			if ((connection->socket_descriptor = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol)) < 0)
-				err(EXIT_FAILURE, "connect_server: socket failure");
-
-			if (connect(connection->socket_descriptor, temp->ai_addr, temp->ai_addrlen) < 0)
-				err(EXIT_FAILURE, "connect_server: connect failure (%d)", errno);
-		}
-
-		temp = temp->ai_next;
+		close(connection->socket_descriptor);
 	}
 
 	freeaddrinfo(start);
+
+	if (temp == NULL) {
+		err(EXIT_FAILURE, "connect_server: connect failure (%d)", errno);
+	}
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
 		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_KEEPALIVE error");
