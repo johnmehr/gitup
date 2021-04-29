@@ -356,8 +356,8 @@ prune_tree(connector *connection, char *base_path)
 {
 	DIR           *directory = NULL;
 	struct dirent *entry = NULL;
-	char           full_path[strlen(base_path) + MAXNAMLEN + 1];
-	int            file_name_size = 0;
+	struct stat    sb;
+	char           full_path[strlen(base_path) + 1 + MAXNAMLEN + 1];
 
 	/* Sanity check the directory to prune. */
 
@@ -371,20 +371,20 @@ prune_tree(connector *connection, char *base_path)
 
 	if ((directory = opendir(base_path)) != NULL) {
 		while ((entry = readdir(directory)) != NULL) {
-			file_name_size = strlen(entry->d_name);
-
-			if ((file_name_size == 1) && (strcmp(entry->d_name, "." ) == 0))
-				continue;
-
-			if ((file_name_size == 2) && (strcmp(entry->d_name, "..") == 0))
-				continue;
-
 			snprintf(full_path, sizeof(full_path), "%s/%s", base_path, entry->d_name);
 
-			if (entry->d_type == DT_DIR) {
+ 			stat(full_path, &sb);
+
+			if ((entry->d_namlen == 1) && (strcmp(entry->d_name, "." ) == 0))
+				continue;
+
+			if ((entry->d_namlen == 2) && (strcmp(entry->d_name, "..") == 0))
+				continue;
+
+			if (S_ISDIR(sb.st_mode) != 0) {
 				prune_tree(connection, full_path);
 			} else {
-				if ((remove(full_path) != 0) && (errno != ENOENT))
+				if (remove(full_path) != 0)
 					err(EXIT_FAILURE, "prune_tree: cannot remove %s", full_path);
 			}
 		}
@@ -919,18 +919,18 @@ connect_server(connector *connection)
 	bzero(&hints, sizeof(struct addrinfo));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
+	hints.ai_protocol = IPPROTO_TCP;
 
 	if ((error = getaddrinfo(host, type, &hints, &start)))
 		errx(EXIT_FAILURE, "%s", gai_strerror(error));
 
-        for (temp = start; temp != NULL; temp = temp->ai_next) {
+	for (temp = start; temp != NULL; temp = temp->ai_next) {
 		if ((connection->socket_descriptor = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol)) < 0)
-				/* trying each addr returned, cont. with next in list */
-				continue;
+			/* trying each addr returned, cont. with next in list */
+			continue;
 
 		if (connect(connection->socket_descriptor, temp->ai_addr, temp->ai_addrlen) != -1)
-				break;
+			break;
 
 		close(connection->socket_descriptor);
 	}
