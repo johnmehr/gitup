@@ -159,6 +159,7 @@ static void     scan_local_repository(connector *, char *);
 static void     send_command(connector *, char *);
 static void     setup_ssl(connector *);
 static void     store_object(connector *, int, char *, int, int, int, char *);
+static char *   trim_path(char *, int, bool *);
 static uint32_t unpack_delta_integer(char *, uint32_t *, int);
 static void     unpack_objects(connector *);
 static uint32_t unpack_variable_length_integer(char *, uint32_t *);
@@ -450,6 +451,55 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
 
 
 /*
+ * trim_path
+ *
+ * Procedure that trims a path to the specified display depth.
+ */
+
+static char *
+trim_path(char *path, int display_depth, bool *just_added)
+{
+	struct file_node *new_node = NULL, find;
+	int               x = -1;
+	char             *trim = NULL, *trimmed_path = NULL;
+
+	trimmed_path = strdup(path);
+
+	if (display_depth == 0)
+		return (trimmed_path);
+
+	trim = trimmed_path;
+
+	while ((x++ < display_depth) && (trim != NULL))
+		trim = strchr(trim + 1, '/');
+
+	if (trim)
+		*trim = '\0';
+
+	find.path = trimmed_path;
+
+	if (!RB_FIND(Tree_Trim_Path, &Trim_Path, &find)) {
+		new_node = (struct file_node *)malloc(sizeof(struct file_node));
+
+		if (new_node == NULL)
+			err(EXIT_FAILURE, "trim_path: malloc");
+
+		new_node->path = strdup(trimmed_path);
+		new_node->mode = 0;
+		new_node->hash = NULL;
+		new_node->save = 0;
+
+		RB_INSERT(Tree_Trim_Path, &Trim_Path, new_node);
+		*just_added = true;
+	} else {
+		*just_added = false;
+	}
+
+	return (trimmed_path);
+}
+
+
+/*
  * save_file
  *
  * Procedure that saves a blob/file.
@@ -458,27 +508,15 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
 static void
 save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, int display_depth)
 {
-	struct file_node *new_node = NULL, find;
-	struct stat       file;
-	char              temp_buffer[buffer_size + 1];
-	char             *trim = NULL, *trimmed_path = NULL;
-	int               fd, x = -1;
-	bool              trimmed_path_exists = false, file_exists = false;
+	struct stat file;
+	char temp_buffer[buffer_size + 1], *trim = NULL, *display_path = NULL;
+	int  fd;
+	bool exists = false, just_added = false;
 
-	/* Trim the path to the display depth. */
+	display_path = trim_path(path, display_depth, &just_added);
 
-	if (display_depth > 0) {
-		trimmed_path = strdup(path);
-		trim         = trimmed_path;
-
-		while ((x++ < display_depth) && (trim != NULL))
-			trim = strchr(trim + 1, '/');
-
-		if (trim)
-			*trim = '\0';
-
-		trimmed_path_exists = path_exists(trimmed_path);
-	}
+	if (display_depth > 0)
+		exists |= path_exists(display_path);
 
 	/* Create the directory, if needed. */
 
@@ -494,51 +532,40 @@ save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, in
 	/* Print the file or trimmed path. */
 
 	if (verbosity > 0) {
-		file_exists = path_exists(path);
+		exists |= path_exists(path);
 
-		if (display_depth == 0) {
-			printf(" %c %s\n", (file_exists ? '*' : '+'), path);
-		} else {
-			find.path = trimmed_path;
-
-			if (!RB_FIND(Tree_Trim_Path, &Trim_Path, &find)) {
-				new_node = (struct file_node *)malloc(sizeof(struct file_node));
-
-				if (new_node == NULL)
-					err(EXIT_FAILURE, "save_file: malloc");
-
-				new_node->path = strdup(trimmed_path);
-				new_node->mode = 0;
-				new_node->hash = NULL;
-				new_node->save = 0;
-
-				RB_INSERT(Tree_Trim_Path, &Trim_Path, new_node);
-
-				printf(" %c %s\n",
-					((file_exists | trimmed_path_exists) ? '*' : '+'),
-					trimmed_path);
-			}
-
-			free(trimmed_path);
-		}
+		if ((display_depth == 0) || (just_added))
+			printf(" %c %s\n", (exists ? '*' : '+'), display_path);
 	}
 
+	free(display_path);
+
 	if (S_ISLNK(mode)) {
-		/* Make sure the buffer is null terminated, then save it as the file to link to. */
+		/*
+		 * Make sure the buffer is null terminated, then save it as the
+		 * file to link to.
+		 */
 
 		memcpy(temp_buffer, buffer, buffer_size);
 		temp_buffer[buffer_size] = '\0';
 
 		if (symlink(temp_buffer, path) == -1)
-			err(EXIT_FAILURE, "save_file: symlink failure %s -> %s", path, temp_buffer);
+			err(EXIT_FAILURE,
+				"save_file: symlink failure %s -> %s",
+				path,
+				temp_buffer);
 	} else {
 		/* If the file exists, make sure the permissions are intact. */
 
 		if (stat(path, &file) == 0)
 			chmod(path, mode);
 
-		if (((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-			err(EXIT_FAILURE, "save_file: write file failure %s", path);
+		fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
+
+		if ((fd == -1) && (errno != EEXIST))
+			err(EXIT_FAILURE,
+				"save_file: write file failure %s",
+				path);
 
 		chmod(path, mode);
 		write(fd, buffer, buffer_size);
@@ -2591,15 +2618,18 @@ main(int argc, char **argv)
 	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
 	const char         *configuration_file = CONFIG_FILE_PATH;
-	char               *command = NULL, *start = NULL, *temp = NULL, *extension = NULL, *want = NULL;
+	char               *command = NULL, *start = NULL, *display_path = NULL;
+	char               *extension = NULL, *want = NULL, *temp = NULL;
 	char                base64_credentials[BUFFER_UNIT_SMALL];
 	char                credentials[BUFFER_UNIT_SMALL];
 	char                section[BUFFER_UNIT_SMALL];
-	char                gitup_revision[BUFFER_UNIT_SMALL], gitup_revision_path[BUFFER_UNIT_SMALL];
-	int                 x = 0, o = 0, option = 0, length = 0, skip_optind = 0;
-	int                 base64_credentials_length = 0;
-	bool                current_repository = false, encoded = false;
-	bool                path_target_exists = false, remote_files_exists = false, pack_file_exists = false;
+	char                gitup_revision[BUFFER_UNIT_SMALL];
+	char                gitup_revision_path[BUFFER_UNIT_SMALL];
+	int                 x = 0, o = 0, option = 0, length = 0;
+	int                 base64_credentials_length = 0, skip_optind = 0;
+	bool                encoded = false, just_added = false;
+	bool                current_repository = false, path_target_exists = false;
+	bool                remote_files_exists = false, pack_file_exists = false;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	EVP_ENCODE_CTX      evp_ctx;
@@ -2993,14 +3023,26 @@ main(int argc, char **argv)
 
 	RB_FOREACH_SAFE(file, Tree_Local_Path, &Local_Path, next_file) {
 		if ((file->keep == false) && ((current_repository == false) || (connection.repair == true))) {
-			if (!ignore_file(&connection, file->path)) {
-				if (connection.verbosity)
-					printf(" - %s\n", file->path);
+			if (ignore_file(&connection, file->path))
+				continue;
 
-				if (S_ISDIR(file->mode))
-					prune_tree(&connection, file->path);
-				else if ((remove(file->path) != 0) && (errno != ENOENT))
-					err(EXIT_FAILURE, "main: cannot remove %s", file->path);
+			if ((connection.verbosity) && (connection.display_depth == 0))
+				printf(" - %s\n", file->path);
+
+			if (S_ISDIR(file->mode)) {
+				display_path = trim_path(file->path,
+					connection.display_depth,
+					&just_added);
+
+				if ((connection.verbosity) && (connection.display_depth > 0) && (just_added) && (strlen(display_path) == strlen(file->path)))
+					printf(" - %s\n", display_path);
+
+				prune_tree(&connection, file->path);
+				free(display_path);
+			} else if ((remove(file->path)) && (errno != ENOENT)) {
+				err(EXIT_FAILURE,
+					"main: cannot remove %s",
+					file->path);
 			}
 		}
 
