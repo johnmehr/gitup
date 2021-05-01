@@ -127,6 +127,7 @@ static char *   calculate_file_hash(char *, int);
 static char *   calculate_object_hash(char *, uint32_t, int);
 static void     connect_server(connector *);
 static void     create_tunnel(connector *);
+static void     extend_updating_list(connector *, char *);
 static void     extract_proxy_data(connector *, const char *);
 static void     extract_tree_item(struct file_node *, char **);
 static void     fetch_pack(connector *, char *);
@@ -670,6 +671,26 @@ append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_len
 	*string_length += addendum_size;
 
 	*(*buffer + *string_length) = '\0';
+}
+
+
+/*
+ * extend_updating_list
+ *
+ * Procedure that adds the path of an UPDATING file to a string.
+ */
+
+static void
+extend_updating_list(connector *connection, char *path)
+{
+	int size, length;
+
+	length = (connection->updating ? strlen(connection->updating) : 0);
+	size   = length + 1;
+
+	append_string(&connection->updating, &size, &length, "#\t", 2);
+	append_string(&connection->updating, &size, &length, path, strlen(path));
+	append_string(&connection->updating, &size, &length, "\n", 1);
 }
 
 
@@ -2165,34 +2186,50 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 static void
 save_repairs(connector *connection)
 {
-	struct object_node  find_object, *found_object = NULL;
-	struct file_node   *local_file = NULL, *remote_file = NULL, *found_file = NULL;
+	struct object_node  find_object, *found_object;
+	struct file_node   *local_file, *remote_file, *found_file;
 	struct stat         check_file;
 	char               *check_hash = NULL, *buffer_hash = NULL;
 	bool                missing = false, update = false;
 
-	/* Loop through the remote file list, looking for objects that arrived in the pack data. */
+	/*
+	 * Loop through the remote file list, looking for objects that arrived
+	 * in the pack data.
+	 */
 
 	RB_FOREACH(found_file, Tree_Remote_Path, &Remote_Path) {
 		find_object.hash = found_file->hash;
 
-		if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
+		found_object = RB_FIND(Tree_Objects, &Objects, &find_object);
+
+		if (found_object == NULL)
 			continue;
 
 		/* Save the object. */
 
 		if (S_ISDIR(found_file->mode)) {
 			if ((mkdir(found_file->path, 0755) == -1) && (errno != EEXIST))
-				err(EXIT_FAILURE, "save_repairs: cannot create %s", found_file->path);
+				err(EXIT_FAILURE,
+					"save_repairs: cannot create %s",
+					found_file->path);
 		} else {
 			missing = stat(found_file->path, &check_file);
 			update  = true;
 
-			/* Because identical files can exist in multiple places, only update the altered files. */
+			/*
+			 * Because identical files can exist in multiple places,
+			 * only update the altered files.
+			 */
 
 			if (missing == false) {
-				check_hash  = calculate_file_hash(found_file->path, found_file->mode);
-				buffer_hash = calculate_object_hash(found_object->buffer, found_object->buffer_size, 3);
+				check_hash = calculate_file_hash(
+					found_file->path,
+					found_file->mode);
+
+				buffer_hash = calculate_object_hash(
+					found_object->buffer,
+					found_object->buffer_size,
+					3);
 
 				if (strncmp(check_hash, buffer_hash, 40) == 0)
 					update = false;
@@ -2207,16 +2244,20 @@ save_repairs(connector *connection)
 					connection->display_depth);
 
 				if (strstr(found_file->path, "UPDATING"))
-					connection->updating = strdup(found_file->path);
+					extend_updating_list(connection,
+						found_file->path);
 			}
 		}
 	}
 
 	/* Make sure no files are deleted. */
 
-	RB_FOREACH(remote_file, Tree_Remote_Path, &Remote_Path)
-		if ((local_file = RB_FIND(Tree_Local_Path, &Local_Path, remote_file)) != NULL)
+	RB_FOREACH(remote_file, Tree_Remote_Path, &Remote_Path) {
+		local_file = RB_FIND(Tree_Local_Path, &Local_Path, remote_file);
+
+		if (local_file != NULL)
 			local_file->keep = true;
+	}
 }
 
 
@@ -2237,22 +2278,32 @@ save_objects(connector *connection)
 	/* Find the tree object referenced in the commit. */
 
 	find_object.hash = connection->want;
+	found_object     = RB_FIND(Tree_Objects, &Objects, &find_object);
 
-	if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
-		errc(EXIT_FAILURE, EINVAL, "save_objects: cannot find %s", connection->want);
+	if (found_object == NULL)
+		errc(EXIT_FAILURE, EINVAL,
+			"save_objects: cannot find %s",
+			connection->want);
 
 	if (memcmp(found_object->buffer, "tree ", 5) != 0)
-		errc(EXIT_FAILURE, EINVAL, "save_objects: first object is not a commit");
+		errc(EXIT_FAILURE, EINVAL,
+			"save_objects: first object is not a commit");
 
 	memcpy(tree, found_object->buffer + 5, 40);
 	tree[40] = '\0';
 
 	/* Recursively start processing the tree. */
 
-	snprintf(remote_files_new, BUFFER_UNIT_SMALL, "%s.new", connection->remote_files);
+	snprintf(remote_files_new, BUFFER_UNIT_SMALL,
+		"%s.new",
+		connection->remote_files);
 
-	if (((fd = open(remote_files_new, O_WRONLY | O_CREAT | O_TRUNC)) == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE, "save_objects: write file failure %s", remote_files_new);
+	fd = open(remote_files_new, O_WRONLY | O_CREAT | O_TRUNC);
+
+	if ((fd == -1) && (errno != EEXIST))
+		err(EXIT_FAILURE,
+			"save_objects: write file failure %s",
+			remote_files_new);
 
 	chmod(remote_files_new, 0644);
 	write(fd, connection->want, strlen(connection->want));
@@ -2263,30 +2314,39 @@ save_objects(connector *connection)
 	/* Save the remote files list. */
 
 	if (((remove(connection->remote_files)) != 0) && (errno != ENOENT))
-		err(EXIT_FAILURE, "save_objects: cannot remove %s", connection->remote_files);
+		err(EXIT_FAILURE,
+			"save_objects: cannot remove %s",
+			connection->remote_files);
 
 	if ((rename(remote_files_new, connection->remote_files)) != 0)
-		err(EXIT_FAILURE, "save_objects: cannot rename %s", connection->remote_files);
+		err(EXIT_FAILURE,
+			"save_objects: cannot rename %s",
+			connection->remote_files);
 
 	/* Save all of the new and modified files. */
 
-	RB_FOREACH(found_file, Tree_Remote_Path, &Remote_Path)
-		if (found_file->save) {
-			find_object.hash = found_file->hash;
+	RB_FOREACH(found_file, Tree_Remote_Path, &Remote_Path) {
+		if (!found_file->save)
+			continue;
 
-			if ((found_object = RB_FIND(Tree_Objects, &Objects, &find_object)) == NULL)
-				errc(EXIT_FAILURE, EINVAL, "save_objects: cannot find %s", found_file->hash);
+		find_object.hash = found_file->hash;
+		found_object = RB_FIND(Tree_Objects, &Objects, &find_object);
 
-			save_file(found_file->path,
-				found_file->mode,
-				found_object->buffer,
-				found_object->buffer_size,
-				connection->verbosity,
-				connection->display_depth);
+		if (found_object == NULL)
+			errc(EXIT_FAILURE, EINVAL,
+				"save_objects: cannot find %s",
+				found_file->hash);
 
-			if (strstr(found_file->path, "UPDATING"))
-				connection->updating = strdup(found_file->path);
-		}
+		save_file(found_file->path,
+			found_file->mode,
+			found_object->buffer,
+			found_object->buffer_size,
+			connection->verbosity,
+			connection->display_depth);
+
+		if (strstr(found_file->path, "UPDATING"))
+			extend_updating_list(connection, found_file->path);
+	}
 }
 
 
@@ -3080,8 +3140,8 @@ main(int argc, char **argv)
 
 	if ((connection.verbosity) && (connection.updating))
 		fprintf(stderr,
-			"# %s has been modified.  "
-			"Please review it for important changes.\n",
+			"#\n# Please review the following file(s) for "
+			"important changes.\n%s#\n",
 			connection.updating);
 
 	for (x = 0; x < connection.ignores; x++)
