@@ -683,7 +683,7 @@ append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_len
 static void
 extend_updating_list(connector *connection, char *path)
 {
-	int size, length;
+	unsigned int size, length;
 
 	length = (connection->updating ? strlen(connection->updating) : 0);
 	size   = length + 1;
@@ -1590,7 +1590,8 @@ get_commit_details(connector *connection)
 /*
  * load_pack
  *
- * Procedure that loads a local copy of the pack data or fetches it from the server.
+ * Procedure that loads a local copy of the pack data or fetches it from the
+ * server.
  */
 
 static void
@@ -1599,19 +1600,33 @@ load_pack(connector *connection)
 	char hash_buffer[20];
 	int  pack_size = 0;
 
-	load_file(connection->pack_file, &connection->response, &(connection->response_size));
+	load_file(connection->pack_file,
+		&connection->response,
+		&connection->response_size);
+
 	pack_size = connection->response_size - 20;
 
 	/* Verify the pack data checksum. */
 
-	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)hash_buffer);
+	SHA1((unsigned char *)connection->response,
+		pack_size,
+		(unsigned char *)hash_buffer);
 
 	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
-		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch -- expected: %s, received: %s", legible_hash(connection->response + pack_size), legible_hash(hash_buffer));
+		errc(EXIT_FAILURE, EAUTH,
+			"load_pack: pack checksum mismatch -- "
+			"expected: %s, received: %s",
+			legible_hash(connection->response + pack_size),
+			legible_hash(hash_buffer));
 
 	/* Process the pack data. */
 
 	unpack_objects(connection);
+
+	free(connection->response);
+	connection->response        = NULL;
+	connection->response_size   = 0;
+	connection->response_blocks = 0;
 }
 
 
