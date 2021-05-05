@@ -375,16 +375,17 @@ prune_tree(connector *connection, char *base_path)
 		while ((entry = readdir(directory)) != NULL) {
 			snprintf(full_path, sizeof(full_path), "%s/%s", base_path, entry->d_name);
 
- 			stat(full_path, &sb);
-
-			if ((entry->d_namlen == 1) && (strcmp(entry->d_name, "." ) == 0))
-				continue;
-
-			if ((entry->d_namlen == 2) && (strcmp(entry->d_name, "..") == 0))
-				continue;
+			if (stat(full_path, &sb) != 0)
+				err(EXIT_FAILURE, "prune_tree: cannot stat() %s", full_path);
 
 			if (S_ISDIR(sb.st_mode) != 0) {
-				prune_tree(connection, full_path);
+				if ((entry->d_namlen == 1) && (strcmp(entry->d_name, "." ) == 0))
+					continue;
+
+				if ((entry->d_namlen == 2) && (strcmp(entry->d_name, "..") == 0))
+					continue;
+
+ 				prune_tree(connection, full_path);
 			} else {
 				if (remove(full_path) != 0)
 					err(EXIT_FAILURE, "prune_tree: cannot remove %s", full_path);
