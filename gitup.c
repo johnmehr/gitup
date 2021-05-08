@@ -1400,8 +1400,8 @@ build_pull_command(connector *connection)
 /*
  * build_repair_command
  *
- * Procedure that compares the local repository tree with the data saved from the
- * last run to see if anything has been modified.
+ * Procedure that compares the local repository tree with the data saved from
+ * the last run to see if anything has been modified.
  */
 
 static char *
@@ -1409,6 +1409,7 @@ build_repair_command(connector *connection)
 {
 	struct file_node *find = NULL, *found = NULL;
 	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
+	const char       *message[2] = { "is missing.", "has been modified." };
 	uint32_t          want_size = 0;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
@@ -1416,9 +1417,15 @@ build_repair_command(connector *connection)
 
 		if ((found == NULL) || ((strncmp(found->hash, find->hash, 40) != 0) && (!ignore_file(connection, find->path)))) {
 			if (connection->verbosity)
-				fprintf(stderr, " ! %s %s\n", find->path, (found == NULL ? "is missing." : "has been modified."));
+				fprintf(stderr,
+					" ! %s %s\n",
+					find->path,
+					message[found ? 1 : 0]);
 
-			snprintf(line, sizeof(line), "0032want %s\n", find->hash);
+			snprintf(line, sizeof(line),
+				"0032want %s\n",
+				find->hash);
+
 			append(&want, &want_size, line, strlen(line));
 		}
 	}
@@ -1427,7 +1434,9 @@ build_repair_command(connector *connection)
 		return (NULL);
 
 	if (want_size > 3276800)
-		errc(EXIT_FAILURE, E2BIG, "build_repair_command: There are too many files to repair -- please re-clone the repository");
+		errc(EXIT_FAILURE, E2BIG,
+			"build_repair_command: There are too many files to "
+			"repair -- please re-clone the repository");
 
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
 		err(EXIT_FAILURE, "build_repair_command: malloc");
