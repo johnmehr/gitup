@@ -121,7 +121,7 @@ typedef struct {
 	char                *updating;
 } connector;
 
-static void     append_string(char **, unsigned int *, unsigned int *, const char *, int);
+static void     append(char **, unsigned int *, const char *, size_t);
 static void     apply_deltas(connector *);
 static char *   calculate_file_hash(char *, int);
 static char *   calculate_object_hash(char *, uint32_t, int);
@@ -509,7 +509,6 @@ trim_path(char *path, int display_depth, bool *just_added)
 static void
 save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, int display_depth)
 {
-	struct stat file;
 	char temp_buffer[buffer_size + 1], *trim = NULL, *display_path = NULL;
 	int  fd;
 	bool exists = false, just_added = false;
@@ -558,7 +557,7 @@ save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, in
 	} else {
 		/* If the file exists, make sure the permissions are intact. */
 
-		if (stat(path, &file) == 0)
+		if (path_exists(path))
 			chmod(path, mode);
 
 		fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
@@ -654,23 +653,16 @@ calculate_file_hash(char *path, int file_mode)
  */
 
 static void
-append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_length, const char *addendum, int addendum_size)
+append(char **buffer, unsigned int *buffer_size, const char *addendum, size_t addendum_size)
 {
-	int adjust = 0;
+	*buffer = (char *)realloc(*buffer, *buffer_size + addendum_size + 1);
 
-	while (*string_length + addendum_size > *buffer_size) {
-		adjust = 1;
-		*buffer_size += BUFFER_UNIT_SMALL;
-	}
-
-	if ((adjust) && ((*buffer = (char *)realloc(*buffer, *buffer_size + 1)) == NULL))
+	if (*buffer == NULL)
 		err(EXIT_FAILURE, "append_string: realloc");
 
-	memcpy(*buffer + *string_length, addendum, addendum_size);
-
-	*string_length += addendum_size;
-
-	*(*buffer + *string_length) = '\0';
+	memcpy(*buffer + *buffer_size, addendum, addendum_size);
+	*buffer_size += addendum_size;
+	*(*buffer + *buffer_size) = '\0';
 }
 
 
@@ -683,14 +675,13 @@ append_string(char **buffer, unsigned int *buffer_size, unsigned int *string_len
 static void
 extend_updating_list(connector *connection, char *path)
 {
-	unsigned int size, length;
+	unsigned int size;
+	char         temp[BUFFER_UNIT_SMALL];
 
-	length = (connection->updating ? strlen(connection->updating) : 0);
-	size   = length + 1;
+	size = (connection->updating ? strlen(connection->updating) : 0);
 
-	append_string(&connection->updating, &size, &length, "#\t", 2);
-	append_string(&connection->updating, &size, &length, path, strlen(path));
-	append_string(&connection->updating, &size, &length, "\n", 1);
+	snprintf(temp, sizeof(temp), "#\t%s\n", path);
+	append(&connection->updating, &size, temp, strlen(temp));
 }
 
 
@@ -704,9 +695,11 @@ static void
 load_remote_file_list(connector *connection)
 {
 	struct file_node *file = NULL;
-	char             *line = NULL, *hash = NULL, *path = NULL, *remote_files = NULL;
-	char              temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL], *buffer = NULL, *temp_hash = NULL;
-	uint32_t          count = 0, remote_file_size = 0, buffer_size = 0, buffer_length = 0;
+	char     *line = NULL, *buffer = NULL, *hash = NULL, *temp_hash = NULL;
+	char     *path = NULL, *remote_files = NULL, item[BUFFER_UNIT_SMALL];
+	char      temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL];
+	uint32_t  count = 0, remote_file_size = 0, buffer_size = 0;
+	uint32_t  item_length = 0;
 
 	load_file(connection->remote_files, &remote_files, &remote_file_size);
 
@@ -718,22 +711,30 @@ load_remote_file_list(connector *connection)
 			continue;
 		}
 
-		/* Empty lines signify the end of a directory entry, so create an
-		   obj_tree for what has been read. */
+		/*
+		 * Empty lines signify the end of a directory entry, so create
+		 * an obj_tree for what has been read.
+		 */
 
 		if (strlen(line) == 0) {
 			if (buffer != NULL) {
 				if (connection->clone == false)
-					store_object(connection, 2, buffer, buffer_length, 0, 0, NULL);
+					store_object(connection,
+						2,
+						buffer,
+						buffer_size,
+						0,
+						0,
+						NULL);
 
 				buffer = NULL;
-				buffer_size = buffer_length = 0;
+				buffer_size = 0;
 			}
 
 			continue;
 		}
 
-		/* Split the line and save the data into the remote files tree. */
+		/* Split the line and save into the remote data tree. */
 
 		hash = strchr(line,     '\t');
 		path = strchr(hash + 1, '\t');
@@ -753,7 +754,9 @@ load_remote_file_list(connector *connection)
 		*(hash -  1) = '\0';
 		*(hash + 40) = '\0';
 
-		if ((file = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
+		file = (struct file_node *)malloc(sizeof(struct file_node));
+
+		if (file == NULL)
 			err(EXIT_FAILURE, "load_remote_file_list: malloc");
 
 		file->mode = strtol(line, (char **)NULL, 8);
@@ -767,15 +770,20 @@ load_remote_file_list(connector *connection)
 		} else {
 			snprintf(temp, sizeof(temp), "%s%s", base_path, path);
 
-			/* Add the line to the buffer that will become the obj_tree for this directory. */
-
 			temp_hash = illegible_hash(hash);
 
-			append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
-			append_string(&buffer, &buffer_size, &buffer_length, " ", 1);
-			append_string(&buffer, &buffer_size, &buffer_length, path, strlen(path));
-			append_string(&buffer, &buffer_size, &buffer_length, "\0", 1);
-			append_string(&buffer, &buffer_size, &buffer_length, temp_hash, 20);
+			/*
+			 * Build the item and add it to the buffer that will
+			 * become the obj_tree for this directory.
+			 */
+
+			snprintf(item, sizeof(item) - 22, "%s %s", line, path);
+			item_length = strlen(item);
+			memcpy(item + item_length + 1, temp_hash, 20);
+			item_length += 21;
+			item[item_length] = '\0';
+
+			append(&buffer, &buffer_size, item, item_length);
 
 			free(temp_hash);
 		}
@@ -1401,7 +1409,7 @@ build_repair_command(connector *connection)
 {
 	struct file_node *find = NULL, *found = NULL;
 	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
-	uint32_t          want_size = 0, want_length = 0;
+	uint32_t          want_size = 0;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
@@ -1411,21 +1419,21 @@ build_repair_command(connector *connection)
 				fprintf(stderr, " ! %s %s\n", find->path, (found == NULL ? "is missing." : "has been modified."));
 
 			snprintf(line, sizeof(line), "0032want %s\n", find->hash);
-			append_string(&want, &want_size, &want_length, line, strlen(line));
+			append(&want, &want_size, line, strlen(line));
 		}
 	}
 
-	if (want_length == 0)
+	if (want_size == 0)
 		return (NULL);
 
-	if (want_length > 3276800)
+	if (want_size > 3276800)
 		errc(EXIT_FAILURE, E2BIG, "build_repair_command: There are too many files to repair -- please re-clone the repository");
 
-	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_length)) == NULL)
+	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
 		err(EXIT_FAILURE, "build_repair_command: malloc");
 
 	snprintf(command,
-		BUFFER_UNIT_SMALL + want_length,
+		BUFFER_UNIT_SMALL + want_size,
 		"0011command=fetch0001"
 		"000dthin-pack"
 		"000fno-progress"
@@ -2072,7 +2080,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	struct object_node object, *found_object = NULL, *tree = NULL;
 	struct file_node   file, *found_file = NULL, *new_file_node = NULL, *remote_file = NULL;
 	char               full_path[BUFFER_UNIT_SMALL], line[BUFFER_UNIT_SMALL], *position = NULL, *buffer = NULL;
-	unsigned int       buffer_size = 0, buffer_length = 0;
+	unsigned int       buffer_size = 0;
 
 	object.hash = hash;
 
@@ -2097,7 +2105,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 		err(EXIT_FAILURE, "process_tree: malloc");
 
 	snprintf(line, sizeof(line), "%o\t%s\t%s/\n", 040000, hash, base_path);
-	append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
+	append(&buffer, &buffer_size, line, strlen(line));
 
 	/* Process the tree items. */
 
@@ -2109,7 +2117,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 		snprintf(full_path, sizeof(full_path), "%s/%s", base_path, file.path);
 
 		snprintf(line, sizeof(line), "%o\t%s\t%s\n", file.mode, file.hash, file.path);
-		append_string(&buffer, &buffer_size, &buffer_length, line, strlen(line));
+		append(&buffer, &buffer_size, line, strlen(line));
 
 		/* Recursively walk the trees and process the files/links. */
 
@@ -2171,7 +2179,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 
 	/* Add the tree data to the remote files list. */
 
-	write(remote_descriptor, buffer, buffer_length);
+	write(remote_descriptor, buffer, buffer_size);
 	write(remote_descriptor, "\n", 1);
 
 	free(buffer);
@@ -2437,8 +2445,8 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	const ucl_object_t *section = NULL, *pair = NULL, *ignore = NULL;
 	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
 	const char         *key = NULL, *config_section = NULL;
-	char               *sections = NULL, temp_path[BUFFER_UNIT_SMALL];
-	unsigned int        sections_size = 1024, sections_length = 0;
+	char               *sections = NULL, temp[BUFFER_UNIT_SMALL];
+	unsigned int        sections_size = 0;
 	uint8_t             argument_index = 0, x = 0, length = 0;
 	struct stat         check_file;
 
@@ -2484,9 +2492,8 @@ load_configuration(connector *connection, const char *configuration_file, char *
 		/* Add the section to the list of known sections in case a valid section is not found. */
 
 		if (strncmp(config_section, "defaults", 8) != 0) {
-			append_string(&sections, &sections_size, &sections_length, "\t * ", 4);
-			append_string(&sections, &sections_size, &sections_length, config_section, strlen(config_section));
-			append_string(&sections, &sections_size, &sections_length, "\n", 1);
+			snprintf(temp, sizeof(temp), "\t * %s\n", config_section);
+			append(&sections, &sections_size, temp, strlen(temp));
 
 			if (argument_index == 0)
 				continue;
@@ -2539,12 +2546,12 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					if ((connection->ignore = (char **)realloc(connection->ignore, (connection->ignores + 1) * sizeof(char *))) == NULL)
 						err(EXIT_FAILURE, "set_configuration_parameters: malloc");
 
-					snprintf(temp_path, sizeof(temp_path), "%s", ucl_object_tostring(ignore));
+					snprintf(temp, sizeof(temp), "%s", ucl_object_tostring(ignore));
 
-					if (temp_path[0] != '/')
-						snprintf(temp_path, sizeof(temp_path), "%s/%s", connection->path_target, ucl_object_tostring(ignore));
+					if (temp[0] != '/')
+						snprintf(temp, sizeof(temp), "%s/%s", connection->path_target, ucl_object_tostring(ignore));
 
-					connection->ignore[connection->ignores++] = strdup(temp_path);
+					connection->ignore[connection->ignores++] = strdup(temp);
 				}
 
 			if (strnstr(key, "port", 4) != NULL) {
@@ -2571,12 +2578,12 @@ load_configuration(connector *connection, const char *configuration_file, char *
 				connection->proxy_username = strdup(ucl_object_tostring(pair));
 
 			if ((strnstr(key, "repository_path", 15) != NULL) || (strnstr(key, "repository", 10) != NULL)) {
-				snprintf(temp_path, sizeof(temp_path), "%s", ucl_object_tostring(pair));
+				snprintf(temp, sizeof(temp), "%s", ucl_object_tostring(pair));
 
-				if (temp_path[0] != '/')
-					snprintf(temp_path, sizeof(temp_path), "/%s", ucl_object_tostring(pair));
+				if (temp[0] != '/')
+					snprintf(temp, sizeof(temp), "/%s", ucl_object_tostring(pair));
 
-				connection->repository_path = strdup(temp_path);
+				connection->repository_path = strdup(temp);
 			}
 
 			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL)) {
