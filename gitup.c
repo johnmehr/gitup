@@ -139,7 +139,7 @@ static bool     ignore_file(connector *, char *);
 static char *   illegible_hash(char *);
 static char *   build_clone_command(connector *);
 static char *   build_pull_command(connector *);
-static char *   build_repair_command(connector *, const char *);
+static char *   build_repair_command(connector *);
 static char *   legible_hash(char *);
 static int      load_configuration(connector *, const char *, char **, int);
 static void     load_file(const char *, char **, uint32_t *);
@@ -314,8 +314,7 @@ ignore_file(connector *connection, char *path)
 static void
 make_path(char *path, mode_t mode)
 {
-	char        *temp = path;
-	struct stat  exists;
+	char *temp = path;
 
 	if (mkdir(path, mode) == -1) {
 		if ((errno != ENOENT) && (errno != EEXIST))
@@ -327,7 +326,7 @@ make_path(char *path, mode_t mode)
 			if (temp != path) {
 				*temp = '\0';
 
-				if (stat(path, &exists) == -1)
+				if (!path_exists(path))
 					if ((mkdir(path, mode) == -1) && (errno != EEXIST))
 						err(EXIT_FAILURE,
 							"make_path: cannot create %s",
@@ -804,7 +803,7 @@ scan_local_repository(connector *connection, char *base_path)
 	struct stat       file;
 	struct dirent    *entry = NULL;
 	struct file_node *new_node = NULL, find, *found = NULL;
-	char             *full_path = NULL;
+	char             *full_path = NULL, file_hash[20];
 	int               file_name_size = 0, full_path_size = 0;
 
 	/* Make sure the base path exists in the remote files list. */
@@ -853,11 +852,6 @@ scan_local_repository(connector *connection, char *base_path)
 
 			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
 
-			if (ignore_file(connection, full_path)) {
-				free(full_path);
-				continue;
-			}
-
 			if (lstat(full_path, &file) == -1)
 				err(EXIT_FAILURE, "scan_local_repository: %s", full_path);
 
@@ -869,10 +863,20 @@ scan_local_repository(connector *connection, char *base_path)
 					err(EXIT_FAILURE, "scan_local_repository: malloc");
 
 				new_node->mode = file.st_mode;
-				new_node->hash = calculate_file_hash(full_path, file.st_mode);
 				new_node->path = full_path;
 				new_node->keep = (strnstr(full_path, ".gituprevision", strlen(full_path)) != NULL ? true : false);
 				new_node->save = false;
+
+				if (ignore_file(connection, full_path)) {
+					new_node->hash = (char *)malloc(20);
+
+					if (new_node->hash == NULL)
+						err(EXIT_FAILURE, "scan_local_repository: malloc");
+
+					SHA1((uint8_t *)full_path, strlen(full_path), (uint8_t *)file_hash);
+					memcpy(new_node->hash, file_hash, 20);
+				} else
+					new_node->hash = calculate_file_hash(full_path, file.st_mode);
 
 				RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
 				RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
@@ -1393,26 +1397,16 @@ build_pull_command(connector *connection)
  */
 
 static char *
-build_repair_command(connector *connection, const char *configuration_file)
+build_repair_command(connector *connection)
 {
 	struct file_node *find = NULL, *found = NULL;
 	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
 	uint32_t          want_size = 0, want_length = 0;
-	bool              bad_ignore = false;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
 
-		if ((found == NULL) || (strncmp(found->hash, find->hash, 40) != 0)) {
-			if (ignore_file(connection, find->path)) {
-				fprintf(stderr,
-					" ! %s exists and cannot be ignored.\n",
-					find->path);
-
-				bad_ignore = true;
-				continue;
-			}
-
+		if ((found == NULL) || ((strncmp(found->hash, find->hash, 40) != 0) && (!ignore_file(connection, find->path)))) {
 			if (connection->verbosity)
 				fprintf(stderr, " ! %s %s\n", find->path, (found == NULL ? "is missing." : "has been modified."));
 
@@ -1420,13 +1414,6 @@ build_repair_command(connector *connection, const char *configuration_file)
 			append_string(&want, &want_size, &want_length, line, strlen(line));
 		}
 	}
-
-	if (bad_ignore)
-		errc(EXIT_FAILURE, EINVAL,
-			"Directories that exist in the repository cannot be "
-			"ignored.  Please remove this directory from the "
-			"[ignores] entry in %s",
-			configuration_file);
 
 	if (want_length == 0)
 		return (NULL);
@@ -3042,7 +3029,7 @@ main(int argc, char **argv)
 		/* When pulling, first ensure the local tree is pristine. */
 
 		if ((connection.repair == true) || (connection.clone == false)) {
-			command = build_repair_command(&connection, configuration_file);
+			command = build_repair_command(&connection);
 
 			if (command != NULL) {
 				connection.repair = true;
