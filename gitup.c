@@ -53,7 +53,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.92"
+#define	GITUP_VERSION     "0.93"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -647,7 +647,7 @@ calculate_file_hash(char *path, int file_mode)
 
 
 /*
- * append_string
+ * append
  *
  * Procedure that appends one string to another.
  */
@@ -658,7 +658,7 @@ append(char **buffer, unsigned int *buffer_size, const char *addendum, size_t ad
 	*buffer = (char *)realloc(*buffer, *buffer_size + addendum_size + 1);
 
 	if (*buffer == NULL)
-		err(EXIT_FAILURE, "append_string: realloc");
+		err(EXIT_FAILURE, "append: realloc");
 
 	memcpy(*buffer + *buffer_size, addendum, addendum_size);
 	*buffer_size += addendum_size;
@@ -1654,7 +1654,9 @@ fetch_pack(connector *connection, char *command)
 	/* Find the start of the pack data and remove the header. */
 
 	if ((pack_start = strstr(connection->response, "PACK")) == NULL)
-		errc(EXIT_FAILURE, EFTYPE, "fetch_pack: malformed pack data:\n%s", connection->response);
+		errc(EXIT_FAILURE, EFTYPE,
+			"fetch_pack: malformed pack data:\n%s",
+			connection->response);
 
 	pack_start -= 5;
 	connection->response_size -= (pack_start - connection->response + 11);
@@ -1684,7 +1686,11 @@ fetch_pack(connector *connection, char *command)
 	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)hash_buffer);
 
 	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
-		errc(EXIT_FAILURE, EAUTH, "fetch_pack: pack checksum mismatch -- expected: %s, received: %s", legible_hash(connection->response + pack_size), legible_hash(hash_buffer));
+		errc(EXIT_FAILURE, EAUTH,
+			"fetch_pack: pack checksum mismatch -- "
+			"expected: %s, received: %s",
+			legible_hash(connection->response + pack_size),
+			legible_hash(hash_buffer));
 
 	/* Save the pack data. */
 
@@ -1707,7 +1713,8 @@ fetch_pack(connector *connection, char *command)
 /*
  * store_object
  *
- * Procedure that creates a new object and stores it in the array and lookup tree.
+ * Procedure that creates a new object and stores it in the array and
+ * lookup tree.
  */
 
 static void
@@ -1721,8 +1728,9 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 	/* Check to make sure the object doesn't already exist. */
 
 	find.hash = hash;
+	object    = RB_FIND(Tree_Objects, &Objects, &find);
 
-	if (((object = RB_FIND(Tree_Objects, &Objects, &find)) != NULL) && (connection->repair == false)) {
+	if ((object != NULL) && (connection->repair == false)) {
 		free(hash);
 	} else {
 		/* Extend the array if needed, create a new node and add it. */
@@ -1731,7 +1739,9 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 			if ((connection->object = (struct object_node **)realloc(connection->object, (connection->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node *))) == NULL)
 				err(EXIT_FAILURE, "store_object: realloc");
 
-		if ((object = (struct object_node *)malloc(sizeof(struct object_node))) == NULL)
+		object = (struct object_node *)malloc(sizeof(struct object_node));
+
+		if (object == NULL)
 			err(EXIT_FAILURE, "store_object: malloc");
 
 		object->index          = connection->objects;
@@ -1744,7 +1754,15 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 		object->buffer_size    = buffer_size;
 
 		if (connection->verbosity > 1)
-			fprintf(stdout, "###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n", object->index, object->type, object->pack_offset, object->buffer_size, object->hash, object->index_delta, object->ref_delta_hash);
+			fprintf(stdout,
+				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
+				object->index,
+				object->type,
+				object->pack_offset,
+				object->buffer_size,
+				object->hash,
+				object->index_delta,
+				object->ref_delta_hash);
 
 		if (type < 6)
 			RB_INSERT(Tree_Objects, &Objects, object);
@@ -1763,10 +1781,12 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 static void
 unpack_objects(connector *connection)
 {
-	int            buffer_size = 0, total_objects = 0, object_type = 0, index_delta = 0;
-	int            stream_code = 0, version = 0, stream_bytes = 0, x = 0;
+	int            buffer_size = 0, total_objects = 0, object_type = 0;
+	int            index_delta = 0, stream_code = 0, version = 0;
+	int            stream_bytes = 0, x = 0;
 	char          *buffer = NULL, *ref_delta_hash = NULL;
-	uint32_t       file_size = 0, file_bits = 0, pack_offset = 0, lookup_offset = 0, position = 4;
+	uint32_t       file_size = 0, file_bits = 0, pack_offset = 0;
+	uint32_t       lookup_offset = 0, position = 4;
 	unsigned char  zlib_out[16384];
 
 	/* Check the pack version number. */
@@ -1775,7 +1795,9 @@ unpack_objects(connector *connection)
 	position += 4;
 
 	if (version != 2)
-		errc(EXIT_FAILURE, EFTYPE, "unpack_objects: pack version %d not supported", version);
+		errc(EXIT_FAILURE, EFTYPE,
+			"unpack_objects: pack version %d not supported",
+			version);
 
 	/* Determine the number of objects in the pack data. */
 
@@ -1783,7 +1805,11 @@ unpack_objects(connector *connection)
 		total_objects = (total_objects << 8) + (unsigned char)connection->response[position];
 
 	if (connection->verbosity > 1)
-		fprintf(stderr, "\npack version: %d, total_objects: %d, pack_size: %d\n\n", version, total_objects, connection->response_size);
+		fprintf(stderr,
+			"\npack version: %d, total_objects: %d, pack_size: %d\n\n",
+			version,
+			total_objects,
+			connection->response_size);
 
 	/* Unpack the objects. */
 
@@ -1818,7 +1844,9 @@ unpack_objects(connector *connection)
 					break;
 
 			if (index_delta == 0)
-				errc(EXIT_FAILURE, EINVAL, "unpack_objects: cannot find ofs-delta base object");
+				errc(EXIT_FAILURE, EINVAL,
+					"unpack_objects: cannot find ofs-delta "
+					"base object");
 		}
 
 		/* Extract the ref-delta checksum. */
@@ -1847,7 +1875,8 @@ unpack_objects(connector *connection)
 		stream_code = inflateInit(&stream);
 
 		if (stream_code == Z_DATA_ERROR)
-			errc(EXIT_FAILURE, EILSEQ, "unpack_objects: zlib data stream failure");
+			errc(EXIT_FAILURE, EILSEQ,
+				"unpack_objects: zlib data stream failure");
 
 		do {
 			stream.avail_out = 16384,
@@ -1866,7 +1895,13 @@ unpack_objects(connector *connection)
 		inflateEnd(&stream);
 		position += stream.total_in;
 
-		store_object(connection, object_type, buffer, buffer_size, pack_offset, index_delta, ref_delta_hash);
+		store_object(connection,
+			object_type,
+			buffer,
+			buffer_size,
+			pack_offset,
+			index_delta,
+			ref_delta_hash);
 
 		free(ref_delta_hash);
 	}
@@ -1889,7 +1924,10 @@ unpack_delta_integer(char *data, uint32_t *position, int bits)
 	do if (bits & mask) read_bytes++;
 	while (mask >>= 1);
 
-	/* Put the bytes in their proper position based on the bit field passed in. */
+	/*
+	 * Put the bytes in their proper position based on the bit field
+	 * passed in.
+	 */
 
 	if (read_bytes > 0) {
 		temp = read_bytes;
@@ -1937,11 +1975,13 @@ static void
 apply_deltas(connector *connection)
 {
 	struct object_node *delta, *base, lookup;
-	int                 instruction = 0, length_bits = 0, x = 0, o = 0, offset_bits = 0;
-	int                 delta_count = -1, deltas[BUFFER_UNIT_SMALL];
-	char               *start, *merge_buffer = NULL, *layer_buffer = NULL;
-	uint32_t            offset = 0, position = 0, length = 0, layer_buffer_size = 0, merge_buffer_size = 0;
-	uint32_t            old_file_size = 0, new_file_size = 0, new_position = 0;
+
+	int       x = 0, instruction = 0, length_bits = 0, offset_bits = 0;
+	int       o = 0, delta_count = -1, deltas[BUFFER_UNIT_SMALL];
+	char     *start, *merge_buffer = NULL, *layer_buffer = NULL;
+	uint32_t  offset = 0, position = 0, length = 0;
+	uint32_t  layer_buffer_size = 0, merge_buffer_size = 0;
+	uint32_t  old_file_size = 0, new_file_size = 0, new_position = 0;
 
 	for (o = connection->objects - 1; o >= 0; o--) {
 		merge_buffer = NULL;
@@ -1970,10 +2010,15 @@ apply_deltas(connector *connection)
 		/* Lookup the base object and setup the merge buffer. */
 
 		if ((base = RB_FIND(Tree_Objects, &Objects, &lookup)) == NULL)
-			errc(EXIT_FAILURE, ENOENT, "apply_deltas: cannot find %05d -> %d/%s", delta->index, delta->index_delta, delta->ref_delta_hash);
+			errc(EXIT_FAILURE, ENOENT,
+				"apply_deltas: cannot find %05d -> %d/%s",
+				delta->index,
+				delta->index_delta,
+				delta->ref_delta_hash);
 
 		if ((merge_buffer = (char *)malloc(base->buffer_size)) == NULL)
-			err(EXIT_FAILURE, "apply_deltas: malloc");
+			err(EXIT_FAILURE,
+				"apply_deltas: malloc");
 
 		memcpy(merge_buffer, base->buffer, base->buffer_size);
 		merge_buffer_size = base->buffer_size;
@@ -2019,7 +2064,11 @@ apply_deltas(connector *connection)
 				}
 
 				if (new_position + length > new_file_size)
-					errc(EXIT_FAILURE, ERANGE, "apply_deltas: position overflow -- %u + %u > %u", new_position, length, new_file_size);
+					errc(EXIT_FAILURE, ERANGE,
+						"apply_deltas: position overflow -- %u + %u > %u",
+						new_position,
+						length,
+						new_file_size);
 
 				memcpy(layer_buffer + new_position, start, length);
 				new_position += length;
@@ -2029,19 +2078,30 @@ apply_deltas(connector *connection)
 
 			if (new_file_size > merge_buffer_size) {
 				merge_buffer_size = new_file_size;
+				merge_buffer = (char *)realloc(merge_buffer, merge_buffer_size);
 
-				if ((merge_buffer = (char *)realloc(merge_buffer, merge_buffer_size)) == NULL)
-					err(EXIT_FAILURE, "apply_deltas: realloc");
+				if (merge_buffer == NULL)
+					err(EXIT_FAILURE,
+						"apply_deltas: realloc");
 			}
 
-			/* Store the layer buffer in the merge buffer for the next loop iteration. */
+			/*
+			 * Store the layer buffer in the merge buffer for the
+			 * next loop iteration.
+			 */
 
 			memcpy(merge_buffer, layer_buffer, new_file_size);
 		}
 
 		/* Store the completed object. */
 
-		store_object(connection, base->type, merge_buffer, new_file_size, 0, 0, NULL);
+		store_object(connection,
+			base->type,
+			merge_buffer,
+			new_file_size,
+			0,
+			0,
+			NULL);
 	}
 }
 
@@ -2049,7 +2109,8 @@ apply_deltas(connector *connection)
 /*
  * extract_tree_item
  *
- * Procedure that extracts mode/path/hash items in a tree and returns them in a new file_node.
+ * Procedure that extracts mode/path/hash items in a tree and returns them in
+ * a new file_node.
  */
 
 static void
@@ -2071,7 +2132,9 @@ extract_tree_item(struct file_node *file, char **position)
 	/* Extract the file SHA checksum. */
 
 	for (x = 0; x < 20; x++)
-		snprintf(&file->hash[x * 2], 3, "%02x", (unsigned char)*(*position)++);
+		snprintf(&file->hash[x * 2], 3,
+			"%02x",
+			(unsigned char)*(*position)++);
 
 	file->hash[40] = '\0';
 }
@@ -2086,21 +2149,27 @@ extract_tree_item(struct file_node *file, char **position)
 static void
 process_tree(connector *connection, int remote_descriptor, char *hash, char *base_path)
 {
-	struct object_node object, *found_object = NULL, *tree = NULL;
-	struct file_node   file, *found_file = NULL, *new_file_node = NULL, *remote_file = NULL;
-	char               full_path[BUFFER_UNIT_SMALL], line[BUFFER_UNIT_SMALL], *position = NULL, *buffer = NULL;
-	unsigned int       buffer_size = 0;
+	struct object_node  object, *found_object = NULL, *tree = NULL;
+	struct file_node    file, *found_file = NULL;
+	struct file_node   *new_file_node = NULL, *remote_file = NULL;
+	char                full_path[BUFFER_UNIT_SMALL], *buffer = NULL;
+	char                line[BUFFER_UNIT_SMALL], *position = NULL;
+	unsigned int        buffer_size = 0;
 
 	object.hash = hash;
 
 	if ((tree = RB_FIND(Tree_Objects, &Objects, &object)) == NULL)
-		errc(EXIT_FAILURE, ENOENT, "process_tree: tree %s -- %s cannot be found", base_path, object.hash);
+		errc(EXIT_FAILURE, ENOENT,
+			"process_tree: tree %s -- %s cannot be found",
+			base_path,
+			object.hash);
 
 	/* Remove the base path from the list of upcoming deletions. */
 
-	file.path = base_path;
+	file.path  = base_path;
+	found_file = RB_FIND(Tree_Local_Path, &Local_Path, &file);
 
-	if ((found_file = RB_FIND(Tree_Local_Path, &Local_Path, &file)) != NULL) {
+	if (found_file != NULL) {
 		found_file->keep = true;
 		found_file->save = false;
 	}
@@ -2113,7 +2182,12 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	if ((file.hash = (char *)malloc(41)) == NULL)
 		err(EXIT_FAILURE, "process_tree: malloc");
 
-	snprintf(line, sizeof(line), "%o\t%s\t%s/\n", 040000, hash, base_path);
+	snprintf(line, sizeof(line),
+		"%o\t%s\t%s/\n",
+		040000,
+		hash,
+		base_path);
+
 	append(&buffer, &buffer_size, line, strlen(line));
 
 	/* Process the tree items. */
@@ -2123,9 +2197,17 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 	while ((uint32_t)(position - tree->buffer) < tree->buffer_size) {
 		extract_tree_item(&file, &position);
 
-		snprintf(full_path, sizeof(full_path), "%s/%s", base_path, file.path);
+		snprintf(full_path, sizeof(full_path),
+			"%s/%s",
+			base_path,
+			file.path);
 
-		snprintf(line, sizeof(line), "%o\t%s\t%s\n", file.mode, file.hash, file.path);
+		snprintf(line, sizeof(line),
+			"%o\t%s\t%s\n",
+			file.mode,
+			file.hash,
+			file.path);
+
 		append(&buffer, &buffer_size, line, strlen(line));
 
 		/* Recursively walk the trees and process the files/links. */
@@ -2133,7 +2215,10 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 		if (S_ISDIR(file.mode)) {
 			process_tree(connection, remote_descriptor, file.hash, full_path);
 		} else {
-			/* Locate the pack file object and local copy of the file. */
+			/*
+			 * Locate the pack file object and local copy of
+			 * the file.
+			 */
 
 			memcpy(object.hash, file.hash, 41);
 			memcpy(file.path, full_path, strlen(full_path) + 1);
@@ -2151,7 +2236,10 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 					continue;
 			}
 
-			/* Missing objects can sometimes be found by searching the local tree. */
+			/*
+			 * Missing objects can sometimes be found by searching
+			 * the local tree.
+			 */
 
 			if (found_object == NULL) {
 				load_object(connection, file.hash, full_path);
@@ -2161,13 +2249,19 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 			/* If the object is still missing, exit. */
 
 			if (found_object == NULL)
-				errc(EXIT_FAILURE, ENOENT, "process_tree: file %s -- %s cannot be found", full_path, file.hash);
+				errc(EXIT_FAILURE, ENOENT,
+					"process_tree: file %s -- %s cannot be found",
+					full_path,
+					file.hash);
 
 			/* Otherwise retain it. */
 
 			if ((remote_file = RB_FIND(Tree_Remote_Path, &Remote_Path, &file)) == NULL) {
-				if ((new_file_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE, "process_tree: malloc");
+				new_file_node = (struct file_node *)malloc(sizeof(struct file_node));
+
+				if (new_file_node == NULL)
+					err(EXIT_FAILURE,
+						"process_tree: malloc");
 
 				new_file_node->mode = file.mode;
 				new_file_node->hash = strdup(found_object->hash);
@@ -2462,20 +2556,24 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if ((sections = (char *)malloc(sections_size)) == NULL)
 		err(EXIT_FAILURE, "load_configuration: malloc");
 
-	/* If the configuration file is not actually a file, libucl doesn't set its
-	   error message to something helpful, so check it first. */
+	/* Vheck to make sure the configuration file is actually a file. */
 
 	stat(configuration_file, &check_file);
 
 	if (!S_ISREG(check_file.st_mode))
-		errc(EXIT_FAILURE, EFTYPE, "load_configuration: cannot load %s", configuration_file);
+		errc(EXIT_FAILURE, EFTYPE,
+			"load_configuration: cannot load %s",
+			configuration_file);
 
 	/* Load and process the configuration file. */
 
 	parser = ucl_parser_new(0);
 
 	if (ucl_parser_add_file(parser, configuration_file) == false) {
-		fprintf(stderr, "load_configuration: %s\n", ucl_parser_get_error(parser));
+		fprintf(stderr,
+			"load_configuration: %s\n",
+			ucl_parser_get_error(parser));
+
 		exit(EXIT_FAILURE);
 	}
 
@@ -2488,7 +2586,10 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 		for (x = 0; x < argc; x++) {
 			if ((strlen(argv[x]) == 2) && (strncmp(argv[x], "-V", 2)) == 0) {
-				fprintf(stdout, "gitup version %s\n", GITUP_VERSION);
+				fprintf(stdout,
+					"gitup version %s\n",
+					GITUP_VERSION);
+
 				exit(EXIT_SUCCESS);
 			}
 
@@ -2498,7 +2599,10 @@ load_configuration(connector *connection, const char *configuration_file, char *
 			}
 		}
 
-		/* Add the section to the list of known sections in case a valid section is not found. */
+		/*
+		 * Add the section to the list of known sections in case a
+		 * valid section is not found.
+		 */
 
 		if (strncmp(config_section, "defaults", 8) != 0) {
 			snprintf(temp, sizeof(temp), "\t * %s\n", config_section);
@@ -2619,28 +2723,46 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	ucl_object_unref(object);
 	ucl_parser_free(parser);
 
-	/* Check to make sure all of the required information was found in the config file. */
+	/*
+	 * Check to make sure all of the required information was found in the
+	 * configuration file.
+	 */
 
 	if (argument_index == 0)
-		errc(EXIT_FAILURE, EINVAL, "\nCannot find a matching section in the command line arguments.  These are the configured sections:\n%s", sections);
+		errc(EXIT_FAILURE, EINVAL,
+			"\nCannot find a matching section in the command line "
+			"arguments.  These are the configured sections:\n%s",
+			sections);
 
 	if (connection->branch == NULL)
-		errc(EXIT_FAILURE, EINVAL, "No branch found in [%s]", connection->section);
+		errc(EXIT_FAILURE, EINVAL,
+			"No branch found in [%s]",
+			connection->section);
 
 	if (connection->host == NULL)
-		errc(EXIT_FAILURE, EDESTADDRREQ, "No host found in [%s]", connection->section);
+		errc(EXIT_FAILURE, EDESTADDRREQ,
+			"No host found in [%s]",
+			connection->section);
 
 	if (connection->path_target == NULL)
-		errc(EXIT_FAILURE, EINVAL, "No target path found in [%s]", connection->section);
+		errc(EXIT_FAILURE, EINVAL,
+			"No target path found in [%s]",
+			connection->section);
 
 	if (connection->path_work == NULL)
-		errc(EXIT_FAILURE, EINVAL, "No work directory found in [%s]", connection->section);
+		errc(EXIT_FAILURE, EINVAL,
+			"No work directory found in [%s]",
+			connection->section);
 
 	if (connection->port == 0)
-		errc(EXIT_FAILURE, EDESTADDRREQ, "No port found in [%s]", connection->section);
+		errc(EXIT_FAILURE, EDESTADDRREQ,
+			"No port found in [%s]",
+			connection->section);
 
 	if (connection->repository_path == NULL)
-		errc(EXIT_FAILURE, EINVAL, "No repository found in [%s]", connection->section);
+		errc(EXIT_FAILURE, EINVAL,
+			"No repository found in [%s]",
+			connection->section);
 
 	/* Extract username/password/host/port from the environment variables. */
 
@@ -2662,23 +2784,25 @@ load_configuration(connector *connection, const char *configuration_file, char *
 static void
 usage(const char *configuration_file)
 {
-	fprintf(stderr, "Usage: gitup <section> [-ckrV] [-h checksum] [-t tag] [-u pack file] [-v verbosity] [-w checksum]\n");
-	fprintf(stderr, "  Please see %s for the list of <section> options.\n\n", configuration_file);
-	fprintf(stderr, "  Options:\n");
-	fprintf(stderr, "    -C  Override the default configuration file.\n");
-	fprintf(stderr, "    -c  Force gitup to clone the repository.\n");
-	fprintf(stderr, "    -d  Limit the display of changes to the specified number of\n");
-	fprintf(stderr, "          directory levels deep (0 = display the entire path).\n");
-	fprintf(stderr, "    -h  Override the 'have' checksum.\n");
-	fprintf(stderr, "    -k  Save a copy of the pack data to the current working directory.\n");
-	fprintf(stderr, "    -r  Repair all missing/modified files in the local repository.\n");
-	fprintf(stderr, "    -t  Fetch the commit referenced by the specified tag.\n");
-	fprintf(stderr, "    -u  Path to load a copy of the pack data, skipping the download.\n");
-	fprintf(stderr, "    -v  How verbose the output should be (0 = no output, 1 = the default\n");
-	fprintf(stderr, "          normal output, 2 = also show debugging information).\n");
-	fprintf(stderr, "    -V  Display gitup's version number and exit.\n");
-	fprintf(stderr, "    -w  Override the 'want' checksum.\n");
-	fprintf(stderr, "\n");
+	fprintf(stderr,
+		"Usage: gitup <section> [-ckrV] [-h checksum] [-t tag] "
+		"[-u pack file] [-v verbosity] [-w checksum]\n"
+		"  Please see %s for the list of <section> options.\n\n"
+		"  Options:\n"
+		"    -C  Override the default configuration file.\n"
+		"    -c  Force gitup to clone the repository.\n"
+		"    -d  Limit the display of changes to the specified number of\n"
+		"          directory levels deep (0 = display the entire path).\n"
+		"    -h  Override the 'have' checksum.\n"
+		"    -k  Save a copy of the pack data to the current working directory.\n"
+		"    -r  Repair all missing/modified files in the local repository.\n"
+		"    -t  Fetch the commit referenced by the specified tag.\n"
+		"    -u  Path to load a copy of the pack data, skipping the download.\n"
+		"    -v  How verbose the output should be (0 = no output, 1 = the default\n"
+		"          normal output, 2 = also show debugging information).\n"
+		"    -V  Display gitup's version number and exit.\n"
+		"    -w  Override the 'want' checksum.\n"
+		"\n", configuration_file);
 
 	exit(EXIT_FAILURE);
 }
@@ -2697,18 +2821,19 @@ main(int argc, char **argv)
 	struct file_node   *file   = NULL, *next_file = NULL;
 	struct stat         check_file;
 	const char         *configuration_file = CONFIG_FILE_PATH;
-	char               *command = NULL, *start = NULL, *display_path = NULL;
-	char               *extension = NULL, *want = NULL, *temp = NULL;
-	char                base64_credentials[BUFFER_UNIT_SMALL];
-	char                credentials[BUFFER_UNIT_SMALL];
-	char                section[BUFFER_UNIT_SMALL];
-	char                gitup_revision[BUFFER_UNIT_SMALL];
-	char                gitup_revision_path[BUFFER_UNIT_SMALL];
-	int                 x = 0, o = 0, option = 0, length = 0;
-	int                 base64_credentials_length = 0, skip_optind = 0;
-	bool                encoded = false, just_added = false;
-	bool                current_repository = false, path_target_exists = false;
-	bool                remote_files_exists = false, pack_file_exists = false;
+
+	char *command = NULL, *start = NULL, *display_path = NULL;
+	char *extension = NULL, *want = NULL, *temp = NULL;
+	char  base64_credentials[BUFFER_UNIT_SMALL];
+	char  credentials[BUFFER_UNIT_SMALL];
+	char  section[BUFFER_UNIT_SMALL];
+	char  gitup_revision[BUFFER_UNIT_SMALL];
+	char  gitup_revision_path[BUFFER_UNIT_SMALL];
+	int   x = 0, o = 0, option = 0, length = 0;
+	int   base64_credentials_length = 0, skip_optind = 0;
+	bool  encoded = false, just_added = false;
+	bool  current_repository = false, path_target_exists = false;
+	bool  remote_files_exists = false, pack_file_exists = false;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	EVP_ENCODE_CTX      evp_ctx;
@@ -2757,7 +2882,7 @@ main(int argc, char **argv)
 	if (argc < 2)
 		usage(configuration_file);
 
-	/* Check first to see if the configuration file path is being overridden. */
+	/* Check to see if the configuration file path is being overridden. */
 
 	for (x = 0; x < argc; x++)
 		if ((strlen(argv[x]) > 1) && (strnstr(argv[x], "-C", 2) == argv[x])) {
@@ -2780,7 +2905,9 @@ main(int argc, char **argv)
 		switch (option) {
 			case 'C':
 				if (connection.verbosity)
-					fprintf(stderr, "# Configuration file: %s\n", configuration_file);
+					fprintf(stderr,
+						"# Configuration file: %s\n",
+						configuration_file);
 				break;
 			case 'c':
 				connection.clone = true;
@@ -2906,7 +3033,8 @@ main(int argc, char **argv)
 	/* If a tag and a want are specified, warn and exit. */
 
 	if ((connection.tag != NULL) && (connection.want != NULL))
-		errc(EXIT_FAILURE, EINVAL, "A tag and a want cannot be requested at the same time");
+		errc(EXIT_FAILURE, EINVAL,
+			"A tag and a want cannot both be requested");
 
 	/* Create the work path and build the remote files path. */
 
@@ -2914,7 +3042,9 @@ main(int argc, char **argv)
 
 	length = strlen(connection.path_work) + strlen(connection.section) + 1;
 
-	if ((connection.remote_files = (char *)malloc(length + 1)) == NULL)
+	connection.remote_files = (char *)malloc(length + 1);
+
+	if (connection.remote_files == NULL)
 		err(EXIT_FAILURE, "main: malloc");
 
 	snprintf(connection.remote_files, length + 1, "%s/%s", connection.path_work, connection.section);
@@ -2945,17 +3075,25 @@ main(int argc, char **argv)
 		if ((connection.remote_files = (char *)realloc(connection.remote_files, length + 1)) == NULL)
 			err(EXIT_FAILURE, "main: realloc");
 
-		snprintf(connection.remote_files, length + 1, "%s/%s", connection.path_work, connection.section);
+		snprintf(connection.remote_files, length + 1,
+			"%s/%s",
+			connection.path_work,
+			connection.section);
 
-		/* If a non-encoded remote files path exists, try and rename it. */
+		/* If a non-encoded remote path exists, try and rename it. */
 
 		if ((stat(temp, &check_file) == 0) && ((rename(temp, connection.remote_files)) != 0))
-			err(EXIT_FAILURE, "main: cannot rename %s", connection.remote_files);
+			err(EXIT_FAILURE,
+				"main: cannot rename %s",
+				connection.remote_files);
 	}
 
 	free(temp);
 
-	/* If the remote files list or repository are missing, then a clone must be performed. */
+	/*
+	 * If the remote files list or repository are missing, then a clone
+	 * must be performed.
+	 */
 
 	path_target_exists  = path_exists(connection.path_target);
 	remote_files_exists = path_exists(connection.remote_files);
@@ -2984,19 +3122,28 @@ main(int argc, char **argv)
 		fprintf(stderr, "# Host: %s\n", connection.host);
 		fprintf(stderr, "# Port: %d\n", connection.port);
 
-		if (connection.proxy_host) {
-			fprintf(stderr, "# Proxy Host: %s\n", connection.proxy_host);
-			fprintf(stderr, "# Proxy Port: %d\n", connection.proxy_port);
-		}
+		if (connection.proxy_host)
+			fprintf(stderr,
+				"# Proxy Host: %s\n"
+				"# Proxy Port: %d\n",
+				connection.proxy_host,
+				connection.proxy_port);
 
 		if (connection.proxy_username)
-			fprintf(stderr, "# Proxy Username: %s\n", connection.proxy_username);
+			fprintf(stderr,
+				"# Proxy Username: %s\n",
+				connection.proxy_username);
 
-		fprintf(stderr, "# Repository Path: %s\n", connection.repository_path);
-		fprintf(stderr, "# Target Directory: %s\n", connection.path_target);
+		fprintf(stderr,
+			"# Repository Path: %s\n"
+			"# Target Directory: %s\n",
+			connection.repository_path,
+			connection.path_target);
 
 		if (connection.use_pack_file == true)
-			fprintf(stderr, "# Using pack file: %s\n", connection.pack_file);
+			fprintf(stderr,
+				"# Using pack file: %s\n",
+				connection.pack_file);
 
 		if (connection.tag)
 			fprintf(stderr, "# Tag: %s\n", connection.tag);
@@ -3030,7 +3177,9 @@ main(int argc, char **argv)
 
 	if ((connection.use_pack_file == true) && (pack_file_exists == true)) {
 		if (connection.verbosity)
-			fprintf(stderr, "# Action: %s\n", (connection.clone ? "clone" : "pull"));
+			fprintf(stderr,
+				"# Action: %s\n",
+				(connection.clone ? "clone" : "pull"));
 
 		load_pack(&connection);
 		apply_deltas(&connection);
@@ -3063,7 +3212,9 @@ main(int argc, char **argv)
 
 		if ((current_repository == false) && (connection.repair == false)) {
 			if (connection.verbosity)
-				fprintf(stderr, "# Action: %s\n", (connection.clone ? "clone" : "pull"));
+				fprintf(stderr,
+					"# Action: %s\n",
+					(connection.clone ? "clone" : "pull"));
 
 			if (connection.clone == false)
 				command = build_pull_command(&connection);
@@ -3079,12 +3230,13 @@ main(int argc, char **argv)
 	/* Save .gituprevision. */
 
 	if ((connection.want != NULL) || (connection.tag != NULL)) {
-		snprintf(gitup_revision_path, BUFFER_UNIT_SMALL, "%s/.gituprevision", connection.path_target);
+		snprintf(gitup_revision_path, BUFFER_UNIT_SMALL,
+			"%s/.gituprevision",
+			connection.path_target);
 
-		snprintf(gitup_revision,
-			BUFFER_UNIT_SMALL,
+		snprintf(gitup_revision, BUFFER_UNIT_SMALL,
 			"%s:%.9s\n",
-			(connection.tag != NULL ? connection.tag : connection.branch),
+			(connection.tag ? connection.tag : connection.branch),
 			connection.want);
 
 		save_file(gitup_revision_path,
