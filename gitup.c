@@ -242,7 +242,8 @@ RB_GENERATE(Tree_Trim_Path,  file_node, link_path, file_node_compare_path)
 /*
  * legible_hash
  *
- * Function that converts a 20 byte binary SHA checksum into a 40 byte human-readable SHA checksum.
+ * Function that converts a 20 byte binary SHA checksum into a 40 byte
+ * human-readable SHA checksum.
  */
 
 static char *
@@ -266,7 +267,8 @@ legible_hash(char *hash_buffer)
 /*
  * illegible_hash
  *
- * Function that converts a 40 byte human-readable SHA checksum into a 20 byte binary SHA checksum.
+ * Function that converts a 40 byte human-readable SHA checksum into a 20 byte
+ * binary SHA checksum.
  */
 
 static char *
@@ -279,7 +281,10 @@ illegible_hash(char *hash_buffer)
 		err(EXIT_FAILURE, "illegible_hash: malloc");
 
 	for (x = 0; x < 20; x++)
-		hash[x] = 16 * ((unsigned char)hash_buffer[x * 2] - (hash_buffer[x * 2] > 58 ? 87 : 48)) + (unsigned char)hash_buffer[x * 2 + 1] - (hash_buffer[x * 2 + 1] > 58 ? 87 : 48);
+		hash[x] = 16 * ((unsigned char)hash_buffer[x * 2] -
+			(hash_buffer[x * 2] > 58 ? 87 : 48)) +
+			(unsigned char)hash_buffer[x * 2 + 1] -
+			(hash_buffer[x * 2 + 1] > 58 ? 87 : 48);
 
 	return (hash);
 }
@@ -363,10 +368,15 @@ prune_tree(connector *connection, char *base_path)
 	/* Sanity check the directory to prune. */
 
 	if (strnstr(base_path, connection->path_target, strlen(connection->path_target)) != base_path)
-		errc(EXIT_FAILURE, EACCES, "prune_tree: %s is not located in the %s tree", base_path, connection->path_target);
+		errc(EXIT_FAILURE, EACCES,
+			"prune_tree: %s is not located in the %s tree",
+			base_path,
+			connection->path_target);
 
 	if (strnstr(base_path, "../", strlen(base_path)) != NULL)
-		errc(EXIT_FAILURE, EACCES, "prune_tree: illegal path traverse in %s", base_path);
+		errc(EXIT_FAILURE, EACCES,
+			"prune_tree: illegal path traverse in %s",
+			base_path);
 
 	/* Remove the directory contents. */
 
