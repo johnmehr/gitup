@@ -72,7 +72,7 @@ struct object_node {
 	char     *buffer;
 	uint32_t  buffer_size;
 	uint32_t  file_offset;
-	char      can_free;
+	bool      can_free;
 };
 
 struct file_node {
@@ -286,7 +286,7 @@ static void load_buffer(connector * connection, struct object_node *obj)
 
 		if (rd != (int)obj->buffer_size)
 			err(EXIT_FAILURE,
-				"load_buffer: read %d %d",
+				"load_buffer: read %d != %d",
 				rd,
 				obj->buffer_size);
 	}
@@ -648,7 +648,8 @@ save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, in
 /*
  * calculate_object_hash
  *
- * Function that adds Git's "type file-size\0" header to a buffer and returns the SHA checksum.
+ * Function that adds Git's "type file-size\0" header to a buffer and returns
+ * the SHA checksum.
  */
 
 static char *
@@ -679,7 +680,7 @@ calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 
 	/* Calculate the SHA checksum. */
 
-	SHA1((unsigned char *)temp_buffer, buffer_size + header_width, (unsigned char *)hash_buffer);
+	SHA1((uint8_t *)temp_buffer, buffer_size + header_width, (uint8_t *)hash_buffer);
 
 	hash = legible_hash(hash_buffer);
 
@@ -883,7 +884,7 @@ scan_local_repository(connector *connection, char *base_path)
 	struct dirent    *entry = NULL;
 	struct file_node *new_node = NULL, find, *found = NULL;
 	char             *full_path = NULL, file_hash[20];
-	int               file_name_size = 0, full_path_size = 0;
+	int               full_path_size = 0;
 
 	/* Make sure the base path exists in the remote files list. */
 
@@ -910,36 +911,46 @@ scan_local_repository(connector *connection, char *base_path)
 
 	if ((stat(base_path, &file) != -1) && ((directory = opendir(base_path)) != NULL)) {
 		while ((entry = readdir(directory)) != NULL) {
-			file_name_size = strlen(entry->d_name);
-
-			if ((file_name_size == 1) && (strcmp(entry->d_name, "." ) == 0))
+			if ((entry->d_namlen == 1) && (strcmp(entry->d_name, "." ) == 0))
 				continue;
 
-			if ((file_name_size == 2) && (strcmp(entry->d_name, "..") == 0))
+			if ((entry->d_namlen == 2) && (strcmp(entry->d_name, "..") == 0))
 				continue;
 
-			if ((file_name_size == 4) && (strcmp(entry->d_name, ".git") == 0)) {
-				fprintf(stderr, " ! A .git directory was found -- gitup does not update this directory which will cause problems for the official Git client.\n");
-				fprintf(stderr, " ! If you wish to use gitup, please remove %s/%s and rerun gitup.\n", base_path, entry->d_name);
+			if ((entry->d_namlen == 4) && (strcmp(entry->d_name, ".git") == 0)) {
+				fprintf(stderr,
+					" ! A .git directory was found -- "
+					"gitup does not update this directory "
+					"which will cause problems for the "
+					"official Git client.\n ! If you wish "
+					"to use gitup, please remove %s/%s and "
+					"rerun gitup.\n",
+					base_path,
+					entry->d_name);
+
 				exit(EXIT_FAILURE);
 				}
 
-			full_path_size = strlen(base_path) + strlen(entry->d_name) + 2;
+			full_path_size = strlen(base_path) + entry->d_namlen + 2;
 
 			if ((full_path = (char *)malloc(full_path_size + 1)) == NULL)
-				err(EXIT_FAILURE, "scan_local_repository: full_path malloc");
+				err(EXIT_FAILURE,
+					"scan_local_repository: malloc");
 
 			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
 
 			if (lstat(full_path, &file) == -1)
-				err(EXIT_FAILURE, "scan_local_repository: %s", full_path);
+				err(EXIT_FAILURE,
+					"scan_local_repository: cannot read %s",
+					full_path);
 
 			if (S_ISDIR(file.st_mode)) {
 				scan_local_repository(connection, full_path);
 				free(full_path);
 			} else {
 				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE, "scan_local_repository: malloc");
+					err(EXIT_FAILURE,
+						"scan_local_repository: malloc");
 
 				new_node->mode = file.st_mode;
 				new_node->path = full_path;
@@ -950,7 +961,8 @@ scan_local_repository(connector *connection, char *base_path)
 					new_node->hash = (char *)malloc(20);
 
 					if (new_node->hash == NULL)
-						err(EXIT_FAILURE, "scan_local_repository: malloc");
+						err(EXIT_FAILURE,
+							"scan_local_repository: malloc");
 
 					SHA1((uint8_t *)full_path, strlen(full_path), (uint8_t *)file_hash);
 					memcpy(new_node->hash, file_hash, 20);
@@ -970,7 +982,8 @@ scan_local_repository(connector *connection, char *base_path)
 /*
  * load_object
  *
- * Procedure that loads a local file and adds it to the array/tree of pack file objects.
+ * Procedure that loads a local file and adds it to the array/tree of pack
+ * file objects.
  */
 
 static void
@@ -985,21 +998,37 @@ load_object(connector *connection, char *hash, char *path)
 	lookup_file.hash   = hash;
 	lookup_file.path   = path;
 
-	/* If the object doesn't exist, look for it first by hash, then by path and if
-	   it is found and the SHA checksum references a file, load it and store it. */
+	/*
+	 * If the object doesn't exist, look for it first by hash, then by path
+	 * and if it is found and the SHA checksum references a file, load it
+	 * and store it.
+	 */
 
-	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup_object)) == NULL) {
-		if ((find = RB_FIND(Tree_Local_Hash, &Local_Hash, &lookup_file)) == NULL)
-			find = RB_FIND(Tree_Local_Path, &Local_Path, &lookup_file);
+	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup_object)) != NULL)
+		return;
 
-		if (find) {
-			if (!S_ISDIR(find->mode)) {
-				load_file(find->path, &buffer, &buffer_size);
-				store_object(connection, 3, buffer, buffer_size, 0, 0, NULL);
-			}
-		} else {
-			errc(EXIT_FAILURE, ENOENT, "load_object: local file for object %s -- %s not found", hash, path);
+	find = RB_FIND(Tree_Local_Hash, &Local_Hash, &lookup_file);
+
+	if (find == NULL)
+		find = RB_FIND(Tree_Local_Path, &Local_Path, &lookup_file);
+
+	if (find) {
+		if (!S_ISDIR(find->mode)) {
+			load_file(find->path, &buffer, &buffer_size);
+
+			store_object(connection,
+				3,
+				buffer,
+				buffer_size,
+				0,
+				0,
+				NULL);
 		}
+	} else {
+		errc(EXIT_FAILURE, ENOENT,
+			"load_object: local file for object %s -- %s not found",
+			hash,
+			path);
 	}
 }
 
@@ -1069,29 +1098,35 @@ connect_server(connector *connection)
 
 	freeaddrinfo(start);
 
-	if (temp == NULL) {
-		err(EXIT_FAILURE, "connect_server: connect failure (%d)", errno);
-	}
+	if (temp == NULL)
+		err(EXIT_FAILURE,
+			"connect_server: connect failure (%d)",
+			errno);
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
-		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_KEEPALIVE error");
+		err(EXIT_FAILURE,
+			"setup_ssl: setsockopt SO_KEEPALIVE error");
 
 	option = BUFFER_UNIT_LARGE;
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDBUF error");
+		err(EXIT_FAILURE,
+			"setup_ssl: setsockopt SO_SNDBUF error");
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_RCVBUF error");
+		err(EXIT_FAILURE,
+			"setup_ssl: setsockopt SO_RCVBUF error");
 
 	bzero(&timeout, sizeof(struct timeval));
 	timeout.tv_sec = 300;
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_RCVTIMEO error");
+		err(EXIT_FAILURE,
+			"setup_ssl: setsockopt SO_RCVTIMEO error");
 
 	if (setsockopt(connection->socket_descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDTIMEO error");
+		err(EXIT_FAILURE,
+			"setup_ssl: setsockopt SO_SNDTIMEO error");
 }
 
 
@@ -1118,7 +1153,9 @@ setup_ssl(connector *connection)
 	SSL_set_fd(connection->ssl, connection->socket_descriptor);
 
 	while ((error = SSL_connect(connection->ssl)) == -1)
-		fprintf(stderr, "setup_ssl: SSL_connect error: %d\n", SSL_get_error(connection->ssl, error));
+		fprintf(stderr,
+			"setup_ssl: SSL_connect error: %d\n",
+			SSL_get_error(connection->ssl, error));
 }
 
 
@@ -1164,13 +1201,15 @@ process_command(connector *connection, char *command)
 			if ((bytes_sent < 0) && ((errno == EINTR) || (errno == 0)))
 				continue;
 			else
-				err(EXIT_FAILURE, "process_command: send command");
+				err(EXIT_FAILURE, "process_command: send");
 		}
 
 		total_bytes_sent += bytes_sent;
 
 		if (connection->verbosity > 1)
-			fprintf(stderr, "\r==> bytes sent: %d", total_bytes_sent);
+			fprintf(stderr,
+				"\r==> bytes sent: %d",
+				total_bytes_sent);
 	}
 
 	if (connection->verbosity > 1)
@@ -1198,14 +1237,17 @@ process_command(connector *connection, char *command)
 				"process_command: SSL_read error: %d",
 				SSL_get_error(connection->ssl, error));
 
-		/* Expand the buffer if needed, preserving the position and data_start if the buffer moves. */
+		/*
+		 * Expand the buffer if needed, preserving the position and
+		 * data_start if the buffer moves.
+		 */
 
 		if (total_bytes_read + bytes_read + 1 > connection->response_blocks * BUFFER_UNIT_LARGE) {
 			marker_offset     = marker_start - connection->response;
 			data_start_offset = data_start   - connection->response;
 
 			if ((connection->response = (char *)realloc(connection->response, ++connection->response_blocks * BUFFER_UNIT_LARGE)) == NULL)
-				err(EXIT_FAILURE, "process_command: connection->response realloc");
+				err(EXIT_FAILURE, "process_command: realloc");
 
 			marker_start = connection->response + marker_offset;
 			data_start   = connection->response + data_start_offset;
@@ -1218,7 +1260,13 @@ process_command(connector *connection, char *command)
 		connection->response[total_bytes_read] = '\0';
 
 		if (connection->verbosity > 1)
-			fprintf(stderr, "\r==> bytes read: %d\tbytes_expected: %d\ttotal_bytes_read: %d", bytes_read, bytes_expected, total_bytes_read);
+			fprintf(stderr, "\r==> "
+				"bytes read: %d\t"
+				"bytes_expected: %d\t"
+				"total_bytes_read: %d",
+				bytes_read,
+				bytes_expected,
+				total_bytes_read);
 
 		while ((connection->verbosity == 1) && (isatty(STDERR_FILENO))) {
 			struct timespec now;
@@ -1407,7 +1455,8 @@ send_command(connector *connection, char *want)
 /*
  * build_clone_command
  *
- * Function that constructs and executes the command to the fetch the full pack data.
+ * Function that constructs and executes the command to the fetch the full
+ * pack data.
  */
 
 static char *
@@ -1564,7 +1613,9 @@ get_commit_details(connector *connection)
 	/* Make sure the server supports the version 2 protocol. */
 
 	if (strnstr(connection->response, "version 2", strlen(connection->response)) == NULL)
-		errc(EXIT_FAILURE, EPROTONOSUPPORT, "%s does not support the version 2 wire protocol", connection->host);
+		errc(EXIT_FAILURE, EPROTONOSUPPORT,
+			"%s does not support the version 2 wire protocol",
+			connection->host);
 
 	/* Fetch the list of refs. */
 
@@ -1591,7 +1642,10 @@ get_commit_details(connector *connection)
 
 	while ((tries-- > 0) && (want[0] == '\0') && (detached == false)) {
 		if (strncmp(connection->branch, "quarterly", 9) == 0) {
-			/* If the current calendar quarter doesn't exist, try the previous one. */
+			/*
+			 * If the current calendar quarter doesn't exist, try
+			 * the previous one.
+			 */
 
 			current = time(NULL);
 			now     = *localtime(&current);
@@ -1605,7 +1659,10 @@ get_commit_details(connector *connection)
 			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/%s", connection->branch);
 		}
 
-		/* Look for the "want" in peeled references first, then look before the ref. */
+		/*
+		 * Look for the "want" in peeled references first, then look
+		 * before the ref.
+		 */
 
 		snprintf(peeled, sizeof(peeled), "%s peeled:", ref);
 
@@ -1614,7 +1671,10 @@ get_commit_details(connector *connection)
 		else if ((position = strstr(connection->response, ref)) != NULL)
 			memcpy(want, position - 40, 40);
 		else if (tries == 0)
-			errc(EXIT_FAILURE, EINVAL, "get_commit_details:%s doesn't exist in %s", ref, connection->repository_path);
+			errc(EXIT_FAILURE, EINVAL,
+				"get_commit_details:%s doesn't exist in %s",
+				ref,
+				connection->repository_path);
 	}
 
 	/* Retain the name of the quarterly branch being used. */
@@ -1636,8 +1696,10 @@ get_commit_details(connector *connection)
 			fprintf(stderr, "# Want: %s\n", connection->want);
 	}
 
-	/* Because there is no way to lookup commit history, if a want commit is
-	   specified, change the branch to (detached). */
+	/*
+	 * Because there is no way to lookup commit history, if a want commit
+	 * is specified, change the branch to (detached).
+	 */
 
 	if (detached == true) {
 		free(connection->branch);
@@ -1684,9 +1746,7 @@ load_pack(connector *connection)
 
 	/* Verify the pack data checksum. */
 
-	SHA1((unsigned char *)connection->response,
-		pack_size,
-		(unsigned char *)hash_buffer);
+	SHA1((uint8_t *)connection->response, pack_size, (uint8_t *)hash_buffer);
 
 	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
 		errc(EXIT_FAILURE, EAUTH,
@@ -1754,7 +1814,7 @@ fetch_pack(connector *connection, char *command)
 
 	/* Verify the pack data checksum. */
 
-	SHA1((unsigned char *)connection->response, pack_size, (unsigned char *)hash_buffer);
+	SHA1((uint8_t *)connection->response, pack_size, (uint8_t *)hash_buffer);
 
 	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
 		errc(EXIT_FAILURE, EAUTH,
@@ -1823,7 +1883,7 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 		object->ref_delta_hash = (ref_delta_hash ? legible_hash(ref_delta_hash) : NULL);
 		object->buffer         = buffer;
 		object->buffer_size    = buffer_size;
-		object->can_free       = 1;
+		object->can_free       = true;
 		object->file_offset    = -1;
 
 		if (connection->verbosity > 1)
@@ -1856,13 +1916,12 @@ unpack_objects(connector *connection)
 {
 	int            buffer_size = 0, total_objects = 0, object_type = 0;
 	int            index_delta = 0, stream_code = 0, version = 0;
-	int            stream_bytes = 0, x = 0;
+	int            stream_bytes = 0, x = 0, nobj_old, tot_len = 0;
 	char          *buffer = NULL, *ref_delta_hash = NULL;
+	char           remote_files_tmp[BUFFER_UNIT_SMALL];
 	uint32_t       file_size = 0, file_bits = 0, pack_offset = 0;
 	uint32_t       lookup_offset = 0, position = 4;
 	unsigned char  zlib_out[16384];
-	int            nobj_old, tot_len = 0;
-	char           remote_files_tmp[BUFFER_UNIT_SMALL];
 
 	/* Setup the temporary object store file. */
 
@@ -1870,7 +1929,8 @@ unpack_objects(connector *connection)
 		"%s.tmp",
 		connection->remote_files);
 
-	connection->back_store = open(remote_files_tmp, O_WRONLY | O_CREAT | O_TRUNC);
+	connection->back_store = open(remote_files_tmp,
+		O_WRONLY | O_CREAT | O_TRUNC);
 
 	if (connection->back_store == -1)
 		err(EXIT_FAILURE,
@@ -1997,8 +2057,8 @@ unpack_objects(connector *connection)
 			ref_delta_hash);
 
 		if (nobj_old != connection->objects) {
-			connection->object[nobj_old]->buffer = NULL;
-			connection->object[nobj_old]->can_free = 0;
+			connection->object[nobj_old]->buffer      = NULL;
+			connection->object[nobj_old]->can_free    = false;
 			connection->object[nobj_old]->file_offset = tot_len;
 		}
 
@@ -2287,7 +2347,9 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 			object.hash);
 
 	/* Remove the base path from the list of upcoming deletions. */
-	load_buffer(connection,tree);
+
+	load_buffer(connection, tree);
+
 	file.path  = base_path;
 	found_file = RB_FIND(Tree_Local_Path, &Local_Path, &file);
 
