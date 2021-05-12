@@ -53,7 +53,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.93"
+#define	GITUP_VERSION     "0.94"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -71,6 +71,8 @@ struct object_node {
 	uint32_t  pack_offset;
 	char     *buffer;
 	uint32_t  buffer_size;
+	uint32_t  file_offset;
+	char      can_free;
 };
 
 struct file_node {
@@ -119,6 +121,7 @@ typedef struct {
 	int                  verbosity;
 	uint8_t              display_depth;
 	char                *updating;
+	int                  back_store;
 } connector;
 
 static void     append(char **, unsigned int *, const char *, size_t);
@@ -141,6 +144,7 @@ static char *   build_clone_command(connector *);
 static char *   build_pull_command(connector *);
 static char *   build_repair_command(connector *);
 static char *   legible_hash(char *);
+static void     load_buffer(connector *, struct object_node *);
 static int      load_configuration(connector *, const char *, char **, int);
 static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
@@ -153,6 +157,7 @@ static bool     path_exists(const char *);
 static void     process_command(connector *, char *);
 static void     process_tree(connector *, int, char *, char *);
 static void     prune_tree(connector *, char *);
+static void     release_buffer(struct object_node *);
 static void     save_file(char *, int, char *, int, int, int);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
@@ -165,6 +170,7 @@ static uint32_t unpack_delta_integer(char *, uint32_t *, int);
 static void     unpack_objects(connector *);
 static uint32_t unpack_variable_length_integer(char *, uint32_t *);
 static void     usage(const char *);
+
 
 /*
  * node_compare
@@ -237,6 +243,54 @@ RB_GENERATE(Tree_Objects,  object_node, link, object_node_compare)
 static RB_HEAD(Tree_Trim_Path, file_node) Trim_Path = RB_INITIALIZER(&Trim_Path);
 RB_PROTOTYPE(Tree_Trim_Path, file_node, link_path, file_node_compare_path)
 RB_GENERATE(Tree_Trim_Path,  file_node, link_path, file_node_compare_path)
+
+
+/*
+ * release_buffer
+ *
+ * Function that frees an object buffer.
+ */
+
+
+static void release_buffer(struct object_node *obj)
+{
+	if (!obj->can_free) {
+		// dont release non file backed objects
+		free(obj->buffer);
+		obj->buffer = NULL;
+	}
+}
+
+
+/*
+ * load_buffer
+ *
+ * Function that loads an object buffer from disk.
+ */
+
+static void load_buffer(connector * connection, struct object_node *obj)
+{
+	int rd;
+
+	if (!obj->buffer) {
+		obj->buffer = malloc(obj->buffer_size);
+
+		if (!obj->buffer)
+			err(EXIT_FAILURE, "load_buffer: malloc");
+
+		lseek(connection->back_store, obj->file_offset, SEEK_SET);
+
+		rd = read(connection->back_store,
+			obj->buffer,
+			obj->buffer_size);
+
+		if (rd != (int)obj->buffer_size)
+			err(EXIT_FAILURE,
+				"load_buffer: read %d %d",
+				rd,
+				obj->buffer_size);
+	}
+}
 
 
 /*
@@ -1762,6 +1816,8 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 		object->ref_delta_hash = (ref_delta_hash ? legible_hash(ref_delta_hash) : NULL);
 		object->buffer         = buffer;
 		object->buffer_size    = buffer_size;
+		object->can_free       = 1;
+		object->file_offset    = -1;
 
 		if (connection->verbosity > 1)
 			fprintf(stdout,
@@ -1798,6 +1854,23 @@ unpack_objects(connector *connection)
 	uint32_t       file_size = 0, file_bits = 0, pack_offset = 0;
 	uint32_t       lookup_offset = 0, position = 4;
 	unsigned char  zlib_out[16384];
+	int            nobj_old, tot_len = 0;
+	char           remote_files_tmp[BUFFER_UNIT_SMALL];
+
+	/* Setup the temporary object store file. */
+
+	snprintf(remote_files_tmp, BUFFER_UNIT_SMALL,
+		"%s.tmp",
+		connection->remote_files);
+
+	connection->back_store = open(remote_files_tmp, O_WRONLY | O_CREAT | O_TRUNC);
+
+	if (connection->back_store == -1)
+		err(EXIT_FAILURE,
+			"unpack_objects: object file write failure %s",
+			remote_files_tmp);
+
+	chmod(remote_files_tmp, 0644);
 
 	/* Check the pack version number. */
 
@@ -1905,6 +1978,9 @@ unpack_objects(connector *connection)
 		inflateEnd(&stream);
 		position += stream.total_in;
 
+		write(connection->back_store, buffer, buffer_size);
+		nobj_old = connection->objects;
+
 		store_object(connection,
 			object_type,
 			buffer,
@@ -1913,8 +1989,30 @@ unpack_objects(connector *connection)
 			index_delta,
 			ref_delta_hash);
 
+		if (nobj_old != connection->objects) {
+			connection->object[nobj_old]->buffer = NULL;
+			connection->object[nobj_old]->can_free = 0;
+			connection->object[nobj_old]->file_offset = tot_len;
+		}
+
+		tot_len += buffer_size;
+
+		free(buffer);
 		free(ref_delta_hash);
 	}
+
+	close(connection->back_store);
+
+	/* Reopen the temporary object store file for reading. */
+
+	connection->back_store = open(remote_files_tmp, O_RDONLY);
+
+	if (connection->back_store == -1)
+		err(EXIT_FAILURE,
+			"unpack_objects: open tmp ro failure %s",
+			remote_files_tmp);
+
+	unlink(remote_files_tmp);   /* unlink now / dealocate when exit */
 }
 
 
@@ -2030,13 +2128,17 @@ apply_deltas(connector *connection)
 			err(EXIT_FAILURE,
 				"apply_deltas: malloc");
 
+		load_buffer(connection, base);
+
 		memcpy(merge_buffer, base->buffer, base->buffer_size);
 		merge_buffer_size = base->buffer_size;
 
 		/* Loop though the deltas to be applied. */
 
 		for (x = delta_count - 1; x >= 0; x--) {
-			delta         = connection->object[deltas[x]];
+			delta = connection->object[deltas[x]];
+			load_buffer(connection, delta);
+
 			position      = 0;
 			new_position  = 0;
 			old_file_size = unpack_variable_length_integer(delta->buffer, &position);
@@ -2101,9 +2203,12 @@ apply_deltas(connector *connection)
 			 */
 
 			memcpy(merge_buffer, layer_buffer, new_file_size);
+			release_buffer(delta);
 		}
 
 		/* Store the completed object. */
+
+		release_buffer(base);
 
 		store_object(connection,
 			base->type,
@@ -2175,7 +2280,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 			object.hash);
 
 	/* Remove the base path from the list of upcoming deletions. */
-
+	load_buffer(connection,tree);
 	file.path  = base_path;
 	found_file = RB_FIND(Tree_Local_Path, &Local_Path, &file);
 
@@ -2292,6 +2397,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 
 	/* Add the tree data to the remote files list. */
 
+	release_buffer(tree);
 	write(remote_descriptor, buffer, buffer_size);
 	write(remote_descriptor, "\n", 1);
 
@@ -2346,6 +2452,8 @@ save_repairs(connector *connection)
 			 */
 
 			if (missing == false) {
+				load_buffer(connection, found_object);
+
 				check_hash = calculate_file_hash(
 					found_file->path,
 					found_file->mode);
@@ -2355,17 +2463,23 @@ save_repairs(connector *connection)
 					found_object->buffer_size,
 					3);
 
+				release_buffer(found_object);
+
 				if (strncmp(check_hash, buffer_hash, 40) == 0)
 					update = false;
 			}
 
 			if (update == true) {
+				load_buffer(connection, found_object);
+
 				save_file(found_file->path,
 					found_file->mode,
 					found_object->buffer,
 					found_object->buffer_size,
 					connection->verbosity,
 					connection->display_depth);
+
+				release_buffer(found_object);
 
 				if (strstr(found_file->path, "UPDATING"))
 					extend_updating_list(connection,
@@ -2409,12 +2523,16 @@ save_objects(connector *connection)
 			"save_objects: cannot find %s",
 			connection->want);
 
+	load_buffer(connection, found_object);
+
 	if (memcmp(found_object->buffer, "tree ", 5) != 0)
 		errc(EXIT_FAILURE, EINVAL,
 			"save_objects: first object is not a commit");
 
 	memcpy(tree, found_object->buffer + 5, 40);
 	tree[40] = '\0';
+
+	release_buffer(found_object);
 
 	/* Recursively start processing the tree. */
 
@@ -2461,12 +2579,16 @@ save_objects(connector *connection)
 				"save_objects: cannot find %s",
 				found_file->hash);
 
+		load_buffer(connection, found_object);
+
 		save_file(found_file->path,
 			found_file->mode,
 			found_object->buffer,
 			found_object->buffer_size,
 			connection->verbosity,
 			connection->display_depth);
+
+		release_buffer(found_object);
 
 		if (strstr(found_file->path, "UPDATING"))
 			extend_updating_list(connection, found_file->path);
