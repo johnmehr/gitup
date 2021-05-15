@@ -24,8 +24,8 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd February 25, 2021
-.Dt gitup.conf
+.Dd May 14, 2021
+.Dt GITUP.CONF(5)
 .Os
 .Sh NAME
 .Nm gitup.conf
