@@ -109,11 +109,11 @@ typedef struct {
 	bool                 clone;
 	bool                 repair;
 	struct object_node **object;
-	int                  objects;
-	char                *pack_file;
+	uint32_t             objects;
+	char                *pack_data_file;
 	char                *path_target;
 	char                *path_work;
-	char                *remote_files;
+	char                *remote_data_file;
 	char               **ignore;
 	int                  ignores;
 	bool                 keep_pack_file;
@@ -126,11 +126,15 @@ typedef struct {
 
 static void     append(char **, unsigned int *, const char *, size_t);
 static void     apply_deltas(connector *);
+static char *   build_clone_command(connector *);
+static char *   build_pull_command(connector *);
+static char *   build_repair_command(connector *);
 static char *   calculate_file_hash(char *, int);
 static char *   calculate_object_hash(char *, uint32_t, int);
 static void     connect_server(connector *);
 static void     create_tunnel(connector *);
 static void     extend_updating_list(connector *, char *);
+static void     extract_command_line_want(connector *, char *);
 static void     extract_proxy_data(connector *, const char *);
 static void     extract_tree_item(struct file_node *, char **);
 static void     fetch_pack(connector *, char *);
@@ -140,16 +144,13 @@ static void     file_node_free(struct file_node *);
 static void     get_commit_details(connector *);
 static bool     ignore_file(connector *, char *);
 static char *   illegible_hash(char *);
-static char *   build_clone_command(connector *);
-static char *   build_pull_command(connector *);
-static char *   build_repair_command(connector *);
 static char *   legible_hash(char *);
 static void     load_buffer(connector *, struct object_node *);
 static int      load_configuration(connector *, const char *, char **, int);
 static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *);
-static void     load_remote_file_list(connector *);
+static void     load_remote_data(connector *);
 static void     make_path(char *, mode_t);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
@@ -255,7 +256,7 @@ RB_GENERATE(Tree_Trim_Path,  file_node, link_path, file_node_compare_path)
 static void release_buffer(struct object_node *obj)
 {
 	if (!obj->can_free) {
-		// dont release non file backed objects
+		/* Do not release non file backed objects. */
 		free(obj->buffer);
 		obj->buffer = NULL;
 	}
@@ -758,24 +759,25 @@ extend_updating_list(connector *connection, char *path)
 
 
 /*
- * load_remote_file_list
+ * load_remote_data
  *
- * Procedure that loads the list of remote files and checksums, if it exists.
+ * Procedure that loads the list of remote data and checksums, if it exists.
  */
 
 static void
-load_remote_file_list(connector *connection)
+load_remote_data(connector *connection)
 {
 	struct file_node *file = NULL;
-	char     *line = NULL, *buffer = NULL, *hash = NULL, *temp_hash = NULL;
-	char     *path = NULL, *remote_files = NULL, item[BUFFER_UNIT_SMALL];
+	char     *buffer = NULL, *hash = NULL, *temp_hash = NULL;
+	char     *line = NULL, *raw = NULL, *path = NULL, *data = NULL;
 	char      temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL];
-	uint32_t  count = 0, remote_file_size = 0, buffer_size = 0;
-	uint32_t  item_length = 0;
+	char      item[BUFFER_UNIT_SMALL];
+	uint32_t  count = 0, data_size = 0, buffer_size = 0, item_length = 0;
 
-	load_file(connection->remote_files, &remote_files, &remote_file_size);
+	load_file(connection->remote_data_file, &data, &data_size);
+	raw = data;
 
-	while ((line = strsep(&remote_files, "\n"))) {
+	while ((line = strsep(&raw, "\n"))) {
 		/* The first line stores the "have". */
 
 		if (count++ == 0) {
@@ -806,7 +808,7 @@ load_remote_file_list(connector *connection)
 			continue;
 		}
 
-		/* Split the line and save into the remote data tree. */
+		/* Split the line. */
 
 		hash = strchr(line,     '\t');
 		path = strchr(hash + 1, '\t');
@@ -815,7 +817,7 @@ load_remote_file_list(connector *connection)
 			fprintf(stderr,
 				" ! Malformed line '%s' in %s.  Skipping...\n",
 				line,
-				connection->remote_files);
+				connection->remote_data_file);
 
 			continue;
 		} else {
@@ -826,10 +828,12 @@ load_remote_file_list(connector *connection)
 		*(hash -  1) = '\0';
 		*(hash + 40) = '\0';
 
+		/* Store the file data. */
+
 		file = (struct file_node *)malloc(sizeof(struct file_node));
 
 		if (file == NULL)
-			err(EXIT_FAILURE, "load_remote_file_list: malloc");
+			err(EXIT_FAILURE, "load_remote_data: malloc");
 
 		file->mode = strtol(line, (char **)NULL, 8);
 		file->hash = strdup(hash);
@@ -865,7 +869,7 @@ load_remote_file_list(connector *connection)
 		RB_INSERT(Tree_Remote_Path, &Remote_Path, file);
 	}
 
-	free(remote_files);
+	free(data);
 }
 
 
@@ -886,7 +890,7 @@ scan_local_repository(connector *connection, char *base_path)
 	char             *full_path = NULL, file_hash[20];
 	int               full_path_size = 0;
 
-	/* Make sure the base path exists in the remote files list. */
+	/* Make sure the base path exists in the remote data list. */
 
 	find.path = base_path;
 	found     = RB_FIND(Tree_Remote_Path, &Remote_Path, &find);
@@ -932,12 +936,17 @@ scan_local_repository(connector *connection, char *base_path)
 				}
 
 			full_path_size = strlen(base_path) + entry->d_namlen + 2;
+			full_path      = (char *)malloc(full_path_size + 1);
 
-			if ((full_path = (char *)malloc(full_path_size + 1)) == NULL)
+			if (full_path == NULL)
 				err(EXIT_FAILURE,
 					"scan_local_repository: malloc");
 
-			snprintf(full_path, full_path_size, "%s/%s", base_path, entry->d_name);
+			snprintf(full_path,
+				full_path_size,
+				"%s/%s",
+				base_path,
+				entry->d_name);
 
 			if (lstat(full_path, &file) == -1)
 				err(EXIT_FAILURE,
@@ -1316,7 +1325,9 @@ process_command(connector *connection, char *command)
 				(int)sum % 60,
 				persec);
 
-			outlen = fprintf(stderr, "%-*s\r", outlen, buf) - 1;
+			if (isatty(STDERR_FILENO))
+				outlen = fprintf(stderr, "%-*s\r", outlen, buf) - 1;
+
 			last_total = total_bytes_read;
 			then = now;
 			break;
@@ -1455,7 +1466,7 @@ send_command(connector *connection, char *want)
 /*
  * build_clone_command
  *
- * Function that constructs and executes the command to the fetch the full
+ * Function that constructs and executes the command to the fetch the shallow
  * pack data.
  */
 
@@ -1485,7 +1496,8 @@ build_clone_command(connector *connection)
 /*
  * build_pull_command
  *
- * Function that constructs and executes the command to the fetch the incremental pack data.
+ * Function that constructs and executes the command to the fetch the
+ * incremental pack data.
  */
 
 static char *
@@ -1588,7 +1600,8 @@ get_commit_details(connector *connection)
 	char      *position = NULL;
 	time_t     current;
 	struct tm  now;
-	int        tries = 2, year = 0, quarter = 0, pack_file_name_size = 0;
+	int        tries = 2, year = 0, quarter = 0;
+	uint16_t   length = 0;
 	bool       detached = (connection->want != NULL ? true : false);
 
 	/* Send the initial info/refs command. */
@@ -1612,7 +1625,7 @@ get_commit_details(connector *connection)
 
 	/* Make sure the server supports the version 2 protocol. */
 
-	if (strnstr(connection->response, "version 2", strlen(connection->response)) == NULL)
+	if (strnstr(connection->response, "version 2", connection->response_size) == NULL)
 		errc(EXIT_FAILURE, EPROTONOSUPPORT,
 			"%s does not support the version 2 wire protocol",
 			connection->host);
@@ -1712,15 +1725,22 @@ get_commit_details(connector *connection)
 	/* Create the pack file name. */
 
 	if (connection->keep_pack_file == true) {
-		pack_file_name_size = strlen(connection->section) + 47;
+		length = strlen(connection->section) + 47;
 
-		if ((connection->pack_file = (char *)malloc(pack_file_name_size + 1)) == NULL)
+		connection->pack_data_file = (char *)malloc(length + 1);
+
+		if (connection->pack_data_file == NULL)
 			err(EXIT_FAILURE, "get_commit_details: malloc");
 
-		snprintf(connection->pack_file, pack_file_name_size, "%s-%s.pack", connection->section, connection->want);
+		snprintf(connection->pack_data_file, length,
+			"%s-%s.pack",
+			connection->section,
+			connection->want);
 
 		if (connection->verbosity)
-			fprintf(stderr, "# Saving pack file: %s\n", connection->pack_file);
+			fprintf(stderr,
+				"# Saving pack file: %s\n",
+				connection->pack_data_file);
 	}
 }
 
@@ -1728,17 +1748,17 @@ get_commit_details(connector *connection)
 /*
  * load_pack
  *
- * Procedure that loads a local copy of the pack data or fetches it from the
- * server.
+ * Procedure that loads a local copy of the pack data or fetches it from
+ * the server.
  */
 
 static void
 load_pack(connector *connection)
 {
-	char hash_buffer[20];
+	char hash[20];
 	int  pack_size = 0;
 
-	load_file(connection->pack_file,
+	load_file(connection->pack_data_file,
 		&connection->response,
 		&connection->response_size);
 
@@ -1746,14 +1766,14 @@ load_pack(connector *connection)
 
 	/* Verify the pack data checksum. */
 
-	SHA1((uint8_t *)connection->response, pack_size, (uint8_t *)hash_buffer);
+	SHA1((uint8_t *)connection->response, pack_size, (uint8_t *)hash);
 
-	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
+	if (memcmp(connection->response + pack_size, hash, 20) != 0)
 		errc(EXIT_FAILURE, EAUTH,
 			"load_pack: pack checksum mismatch -- "
 			"expected: %s, received: %s",
 			legible_hash(connection->response + pack_size),
-			legible_hash(hash_buffer));
+			legible_hash(hash));
 
 	/* Process the pack data. */
 
@@ -1775,7 +1795,7 @@ load_pack(connector *connection)
 static void
 fetch_pack(connector *connection, char *command)
 {
-	char *pack_start = NULL, hash_buffer[20];
+	char *pack_start = NULL, hash[20];
 	int   chunk_size = 1, pack_size = 0, source = 0, target = 0;
 
 	/* Request the pack data. */
@@ -1803,7 +1823,10 @@ fetch_pack(connector *connection, char *command)
 		if (chunk_size == 0)
 			break;
 
-		memmove(connection->response + target, connection->response + source + 5, chunk_size - 5);
+		memmove(connection->response + target,
+			connection->response + source + 5,
+			chunk_size - 5);
+
 		target += chunk_size - 5;
 		source += chunk_size;
 		connection->response_size -= 5;
@@ -1814,19 +1837,19 @@ fetch_pack(connector *connection, char *command)
 
 	/* Verify the pack data checksum. */
 
-	SHA1((uint8_t *)connection->response, pack_size, (uint8_t *)hash_buffer);
+	SHA1((uint8_t *)connection->response, pack_size, (uint8_t *)hash);
 
-	if (memcmp(connection->response + pack_size, hash_buffer, 20) != 0)
+	if (memcmp(connection->response + pack_size, hash, 20) != 0)
 		errc(EXIT_FAILURE, EAUTH,
 			"fetch_pack: pack checksum mismatch -- "
 			"expected: %s, received: %s",
 			legible_hash(connection->response + pack_size),
-			legible_hash(hash_buffer));
+			legible_hash(hash));
 
 	/* Save the pack data. */
 
 	if (connection->keep_pack_file == true)
-		save_file(connection->pack_file,
+		save_file(connection->pack_data_file,
 			0644,
 			connection->response,
 			connection->response_size,
@@ -1916,18 +1939,18 @@ unpack_objects(connector *connection)
 {
 	int            buffer_size = 0, total_objects = 0, object_type = 0;
 	int            index_delta = 0, stream_code = 0, version = 0;
-	int            stream_bytes = 0, x = 0, nobj_old, tot_len = 0;
+	int            stream_bytes = 0, x = 0, tot_len = 0;
 	char          *buffer = NULL, *ref_delta_hash = NULL;
 	char           remote_files_tmp[BUFFER_UNIT_SMALL];
 	uint32_t       file_size = 0, file_bits = 0, pack_offset = 0;
-	uint32_t       lookup_offset = 0, position = 4;
+	uint32_t       lookup_offset = 0, position = 4, nobj_old = 0;
 	unsigned char  zlib_out[16384];
 
 	/* Setup the temporary object store file. */
 
 	snprintf(remote_files_tmp, BUFFER_UNIT_SMALL,
 		"%s.tmp",
-		connection->remote_files);
+		connection->remote_data_file);
 
 	connection->back_store = open(remote_files_tmp,
 		O_WRONLY | O_CREAT | O_TRUNC);
@@ -2150,7 +2173,6 @@ static void
 apply_deltas(connector *connection)
 {
 	struct object_node *delta, *base, lookup;
-
 	int       x = 0, instruction = 0, length_bits = 0, offset_bits = 0;
 	int       o = 0, delta_count = -1, deltas[BUFFER_UNIT_SMALL];
 	char     *start, *merge_buffer = NULL, *layer_buffer = NULL;
@@ -2314,9 +2336,10 @@ extract_tree_item(struct file_node *file, char **position)
 	/* Extract the file SHA checksum. */
 
 	for (x = 0; x < 20; x++)
-		snprintf(&file->hash[x * 2], 3,
+		snprintf(&file->hash[x * 2],
+			3,
 			"%02x",
-			(unsigned char)*(*position)++);
+			(uint8_t)*(*position)++);
 
 	file->hash[40] = '\0';
 }
@@ -2464,7 +2487,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 		}
 	}
 
-	/* Add the tree data to the remote files list. */
+	/* Add the tree data to the remote data list. */
 
 	release_buffer(tree);
 	write(remote_descriptor, buffer, buffer_size);
@@ -2487,7 +2510,6 @@ save_repairs(connector *connection)
 {
 	struct object_node  find_object, *found_object;
 	struct file_node   *local_file, *remote_file, *found_file;
-	struct stat         check_file;
 	char               *check_hash = NULL, *buffer_hash = NULL;
 	bool                missing = false, update = false;
 
@@ -2512,7 +2534,7 @@ save_repairs(connector *connection)
 					"save_repairs: cannot create %s",
 					found_file->path);
 		} else {
-			missing = stat(found_file->path, &check_file);
+			missing = !path_exists(found_file->path);
 			update  = true;
 
 			/*
@@ -2579,7 +2601,7 @@ save_objects(connector *connection)
 {
 	struct object_node *found_object = NULL, find_object;
 	struct file_node   *found_file = NULL;
-	char                tree[41], remote_files_new[BUFFER_UNIT_SMALL];
+	char                tree[41], remote_data_file_new[BUFFER_UNIT_SMALL];
 	int                 fd;
 
 	/* Find the tree object referenced in the commit. */
@@ -2605,34 +2627,34 @@ save_objects(connector *connection)
 
 	/* Recursively start processing the tree. */
 
-	snprintf(remote_files_new, BUFFER_UNIT_SMALL,
+	snprintf(remote_data_file_new, BUFFER_UNIT_SMALL,
 		"%s.new",
-		connection->remote_files);
+		connection->remote_data_file);
 
-	fd = open(remote_files_new, O_WRONLY | O_CREAT | O_TRUNC);
+	fd = open(remote_data_file_new, O_WRONLY | O_CREAT | O_TRUNC);
 
 	if ((fd == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE,
 			"save_objects: write file failure %s",
-			remote_files_new);
+			remote_data_file_new);
 
-	chmod(remote_files_new, 0644);
+	chmod(remote_data_file_new, 0644);
 	write(fd, connection->want, strlen(connection->want));
 	write(fd, "\n", 1);
 	process_tree(connection, fd, tree, connection->path_target);
 	close(fd);
 
-	/* Save the remote files list. */
+	/* Save the remote data list. */
 
-	if (((remove(connection->remote_files)) != 0) && (errno != ENOENT))
+	if (((remove(connection->remote_data_file)) != 0) && (errno != ENOENT))
 		err(EXIT_FAILURE,
 			"save_objects: cannot remove %s",
-			connection->remote_files);
+			connection->remote_data_file);
 
-	if ((rename(remote_files_new, connection->remote_files)) != 0)
+	if ((rename(remote_data_file_new, connection->remote_data_file)) != 0)
 		err(EXIT_FAILURE,
 			"save_objects: cannot rename %s",
-			connection->remote_files);
+			connection->remote_data_file);
 
 	/* Save all of the new and modified files. */
 
@@ -2757,7 +2779,7 @@ load_configuration(connector *connection, const char *configuration_file, char *
 	if ((sections = (char *)malloc(sections_size)) == NULL)
 		err(EXIT_FAILURE, "load_configuration: malloc");
 
-	/* Vheck to make sure the configuration file is actually a file. */
+	/* Check to make sure the configuration file is actually a file. */
 
 	stat(configuration_file, &check_file);
 
@@ -2977,6 +2999,52 @@ load_configuration(connector *connection, const char *configuration_file, char *
 
 
 /*
+ * extract_command_line_want
+ *
+ * Procedure that stores the pack data file from the command line argument,
+ * extracts the want and creates the pack commit data file name.
+ */
+
+static void
+extract_command_line_want(connector *connection, char *option)
+{
+	char *extension = NULL, *temp = NULL, *want = NULL, *start = NULL;
+	int   length = 0;
+
+	if (!path_exists(option))
+		err(EXIT_FAILURE,
+			"extract_command_line_want: %s",
+			option);
+
+	connection->use_pack_file  = true;
+	connection->pack_data_file = strdup(option);
+
+	length    = strlen(option);
+	start     = option;
+	temp      = option;
+	extension = strnstr(option, ".pack", length);
+
+	/* Try and extract the want from the file name. */
+
+	while ((temp = strchr(start, '/')) != NULL)
+		start = temp + 1;
+
+	want = strnstr(start, connection->section, length - (start - option));
+
+	if (want == NULL)
+		return;
+	else
+		want += strlen(connection->section) + 1;
+
+	if (extension != NULL)
+		*extension = '\0';
+
+	if (strlen(want) == 40)
+		connection->want = strdup(want);
+}
+
+
+/*
  * usage
  *
  * Procedure that prints a summary of command line options and exits.
@@ -3019,22 +3087,21 @@ int
 main(int argc, char **argv)
 {
 	struct object_node *object = NULL, *next_object = NULL;
-	struct file_node   *file   = NULL, *next_file = NULL;
-	struct stat         check_file;
+	struct file_node   *file   = NULL, *next_file   = NULL;
 	const char         *configuration_file = CONFIG_FILE_PATH;
 
-	char *command = NULL, *start = NULL, *display_path = NULL;
-	char *extension = NULL, *want = NULL, *temp = NULL;
-	char  base64_credentials[BUFFER_UNIT_SMALL];
-	char  credentials[BUFFER_UNIT_SMALL];
-	char  section[BUFFER_UNIT_SMALL];
-	char  gitup_revision[BUFFER_UNIT_SMALL];
-	char  gitup_revision_path[BUFFER_UNIT_SMALL];
-	int   x = 0, o = 0, option = 0, length = 0;
-	int   base64_credentials_length = 0, skip_optind = 0;
-	bool  encoded = false, just_added = false;
-	bool  current_repository = false, path_target_exists = false;
-	bool  remote_files_exists = false, pack_file_exists = false;
+	char     *command = NULL, *display_path = NULL, *temp = NULL;
+	char      base64_credentials[BUFFER_UNIT_SMALL];
+	char      credentials[BUFFER_UNIT_SMALL];
+	char      section[BUFFER_UNIT_SMALL];
+	char      gitup_revision[BUFFER_UNIT_SMALL];
+	char      gitup_revision_path[BUFFER_UNIT_SMALL];
+	int       x = 0, option = 0, length = 0;
+	int       base64_credentials_length = 0, skip_optind = 0;
+	uint32_t  o = 0;
+	bool      encoded = false, just_added = false;
+	bool      current_repository = false, path_target_exists = false;
+	bool      remote_data_exists = false, pack_data_exists = false;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	EVP_ENCODE_CTX      evp_ctx;
@@ -3067,10 +3134,10 @@ main(int argc, char **argv)
 		.repair            = false,
 		.object            = NULL,
 		.objects           = 0,
-		.pack_file         = NULL,
+		.pack_data_file    = NULL,
 		.path_target       = NULL,
 		.path_work         = NULL,
-		.remote_files      = NULL,
+		.remote_data_file  = NULL,
 		.ignore            = NULL,
 		.ignores           = 0,
 		.keep_pack_file    = false,
@@ -3129,33 +3196,7 @@ main(int argc, char **argv)
 				connection.tag = strdup(optarg);
 				break;
 			case 'u':
-				if (stat(optarg, &check_file) == 0) {
-					connection.use_pack_file = true;
-					connection.pack_file     = strdup(optarg);
-
-					/* Try and extract the want from the file name. */
-
-					length    = strlen(optarg);
-					start     = optarg;
-					temp      = optarg;
-					extension = strnstr(optarg, ".pack", length);
-
-					while ((temp = strchr(start, '/')) != NULL)
-						start = temp + 1;
-
-					want = strnstr(start, connection.section, length - (start - optarg));
-
-					if (want == NULL)
-						break;
-					else
-						want += strlen(connection.section) + 1;
-
-					if (extension != NULL)
-						*extension = '\0';
-
-					if (strlen(want) == 40)
-						connection.want = strdup(want);
-				}
+				extract_command_line_want(&connection, optarg);
 				break;
 			case 'v':
 				connection.verbosity = strtol(optarg, (char **)NULL, 10);
@@ -3237,19 +3278,23 @@ main(int argc, char **argv)
 		errc(EXIT_FAILURE, EINVAL,
 			"A tag and a want cannot both be requested");
 
-	/* Create the work path and build the remote files path. */
+	/* Create the work path and build the remote data path. */
 
 	make_path(connection.path_work, 0755);
 
 	length = strlen(connection.path_work) + strlen(connection.section) + 1;
 
-	connection.remote_files = (char *)malloc(length + 1);
+	connection.remote_data_file = (char *)malloc(length + 1);
 
-	if (connection.remote_files == NULL)
+	if (connection.remote_data_file == NULL)
 		err(EXIT_FAILURE, "main: malloc");
 
-	snprintf(connection.remote_files, length + 1, "%s/%s", connection.path_work, connection.section);
-	temp = strdup(connection.remote_files);
+	snprintf(connection.remote_data_file, length + 1,
+		"%s/%s",
+		connection.path_work,
+		connection.section);
+
+	temp = strdup(connection.remote_data_file);
 
 	/* If non-alphanumerics exist in the section, encode them. */
 
@@ -3261,7 +3306,10 @@ main(int argc, char **argv)
 				err(EXIT_FAILURE, "main: realloc");
 
 			memcpy(section, connection.section + x + 1, length - x);
-			snprintf(connection.section + x, length - x + 3, "%%%X%s", connection.section[x], section);
+			snprintf(connection.section + x, length - x + 3,
+				"%%%X%s",
+				connection.section[x],
+				section);
 
 			length += 2;
 			x += 2;
@@ -3269,24 +3317,24 @@ main(int argc, char **argv)
 		}
 
 	if (encoded == true) {
-		/* Store the updated remote files path. */
+		/* Store the updated remote data path. */
 
 		length += strlen(connection.path_work) + 1;
 
-		if ((connection.remote_files = (char *)realloc(connection.remote_files, length + 1)) == NULL)
+		if ((connection.remote_data_file = (char *)realloc(connection.remote_data_file, length + 1)) == NULL)
 			err(EXIT_FAILURE, "main: realloc");
 
-		snprintf(connection.remote_files, length + 1,
+		snprintf(connection.remote_data_file, length + 1,
 			"%s/%s",
 			connection.path_work,
 			connection.section);
 
-		/* If a non-encoded remote path exists, try and rename it. */
+		/* If a non-encoded remote data path exists, try and rename it. */
 
-		if ((stat(temp, &check_file) == 0) && ((rename(temp, connection.remote_files)) != 0))
+		if ((path_exists(temp)) && ((rename(temp, connection.remote_data_file)) != 0))
 			err(EXIT_FAILURE,
 				"main: cannot rename %s",
-				connection.remote_files);
+				connection.remote_data_file);
 	}
 
 	free(temp);
@@ -3297,11 +3345,11 @@ main(int argc, char **argv)
 	 */
 
 	path_target_exists  = path_exists(connection.path_target);
-	remote_files_exists = path_exists(connection.remote_files);
-	pack_file_exists    = path_exists(connection.pack_file);
+	remote_data_exists  = path_exists(connection.remote_data_file);
+	pack_data_exists    = path_exists(connection.pack_data_file);
 
-	if ((path_target_exists == true) && (remote_files_exists == true))
-		load_remote_file_list(&connection);
+	if ((path_target_exists == true) && (remote_data_exists == true))
+		load_remote_data(&connection);
 	else
 		connection.clone = true;
 
@@ -3344,7 +3392,7 @@ main(int argc, char **argv)
 		if (connection.use_pack_file == true)
 			fprintf(stderr,
 				"# Using pack file: %s\n",
-				connection.pack_file);
+				connection.pack_data_file);
 
 		if (connection.tag)
 			fprintf(stderr, "# Tag: %s\n", connection.tag);
@@ -3376,7 +3424,7 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	if ((connection.use_pack_file == true) && (pack_file_exists == true)) {
+	if ((connection.use_pack_file == true) && (pack_data_exists == true)) {
 		if (connection.verbosity)
 			fprintf(stderr,
 				"# Action: %s\n",
@@ -3386,7 +3434,7 @@ main(int argc, char **argv)
 		apply_deltas(&connection);
 		save_objects(&connection);
 	} else {
-		if ((connection.use_pack_file == false) || ((connection.use_pack_file == true) && (pack_file_exists == false)))
+		if ((connection.use_pack_file == false) || ((connection.use_pack_file == true) && (pack_data_exists == false)))
 			get_commit_details(&connection);
 
 		if ((connection.have != NULL) && (connection.want != NULL) && (strncmp(connection.have, connection.want, 40) == 0))
@@ -3430,7 +3478,7 @@ main(int argc, char **argv)
 
 	/* Save .gituprevision. */
 
-	if ((connection.want != NULL) || (connection.tag != NULL)) {
+	if ((connection.want) || (connection.tag)) {
 		snprintf(gitup_revision_path, BUFFER_UNIT_SMALL,
 			"%s/.gituprevision",
 			connection.path_target);
@@ -3534,10 +3582,10 @@ main(int argc, char **argv)
 	free(connection.tag);
 	free(connection.have);
 	free(connection.want);
-	free(connection.pack_file);
+	free(connection.pack_data_file);
 	free(connection.path_target);
 	free(connection.path_work);
-	free(connection.remote_files);
+	free(connection.remote_data_file);
 	free(connection.updating);
 
 	if (connection.ssl) {
