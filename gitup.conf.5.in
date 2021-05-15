@@ -78,6 +78,8 @@ The local directory to store your copy of the repository.
 An array of directories in the local tree that should be ignored only when
 deleting files.  Any changes to upstream files in these directories will be
 pulled down and merged.
+.It Cm low_memory
+Low memory mode reduces memory usage by storing temporary object data to disk.
 .It Cm verbosity
 How much of the transfer details to display.  0 = no output, 1 = show only
 names of the updated files, 2 = also show commands sent to the server and
