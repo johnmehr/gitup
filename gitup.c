@@ -121,6 +121,7 @@ typedef struct {
 	int                  verbosity;
 	uint8_t              display_depth;
 	char                *updating;
+	bool                 low_memory;
 	int                  back_store;
 } connector;
 
@@ -158,7 +159,7 @@ static bool     path_exists(const char *);
 static void     process_command(connector *, char *);
 static void     process_tree(connector *, int, char *, char *);
 static void     prune_tree(connector *, char *);
-static void     release_buffer(struct object_node *);
+static void     release_buffer(connector *, struct object_node *);
 static void     save_file(char *, int, char *, int, int, int);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
@@ -252,11 +253,11 @@ RB_GENERATE(Tree_Trim_Path,  file_node, link_path, file_node_compare_path)
  * Function that frees an object buffer.
  */
 
-
-static void release_buffer(struct object_node *obj)
+static void release_buffer(connector *connection, struct object_node *obj)
 {
-	if (!obj->can_free) {
-		/* Do not release non file backed objects. */
+	/* Do not release non file backed objects. */
+
+	if ((connection->low_memory) && (!obj->can_free)) {
 		free(obj->buffer);
 		obj->buffer = NULL;
 	}
@@ -269,11 +270,11 @@ static void release_buffer(struct object_node *obj)
  * Function that loads an object buffer from disk.
  */
 
-static void load_buffer(connector * connection, struct object_node *obj)
+static void load_buffer(connector *connection, struct object_node *obj)
 {
 	int rd;
 
-	if (!obj->buffer) {
+	if ((connection->low_memory) && (!obj->buffer)) {
 		obj->buffer = malloc(obj->buffer_size);
 
 		if (!obj->buffer)
@@ -1948,19 +1949,21 @@ unpack_objects(connector *connection)
 
 	/* Setup the temporary object store file. */
 
-	snprintf(remote_files_tmp, BUFFER_UNIT_SMALL,
-		"%s.tmp",
-		connection->remote_data_file);
+	if (connection->low_memory) {
+		snprintf(remote_files_tmp, BUFFER_UNIT_SMALL,
+			"%s.tmp",
+			connection->remote_data_file);
 
-	connection->back_store = open(remote_files_tmp,
-		O_WRONLY | O_CREAT | O_TRUNC);
+		connection->back_store = open(remote_files_tmp,
+			O_WRONLY | O_CREAT | O_TRUNC);
 
-	if (connection->back_store == -1)
-		err(EXIT_FAILURE,
-			"unpack_objects: object file write failure %s",
-			remote_files_tmp);
+		if (connection->back_store == -1)
+			err(EXIT_FAILURE,
+				"unpack_objects: object file write failure %s",
+				remote_files_tmp);
 
-	chmod(remote_files_tmp, 0644);
+		chmod(remote_files_tmp, 0644);
+	}
 
 	/* Check the pack version number. */
 
@@ -2068,8 +2071,10 @@ unpack_objects(connector *connection)
 		inflateEnd(&stream);
 		position += stream.total_in;
 
-		write(connection->back_store, buffer, buffer_size);
-		nobj_old = connection->objects;
+		if (connection->low_memory) {
+			write(connection->back_store, buffer, buffer_size);
+			nobj_old = connection->objects;
+		}
 
 		store_object(connection,
 			object_type,
@@ -2079,30 +2084,35 @@ unpack_objects(connector *connection)
 			index_delta,
 			ref_delta_hash);
 
-		if (nobj_old != connection->objects) {
-			connection->object[nobj_old]->buffer      = NULL;
-			connection->object[nobj_old]->can_free    = false;
-			connection->object[nobj_old]->file_offset = tot_len;
+		if (connection->low_memory) {
+			if (nobj_old != connection->objects) {
+				connection->object[nobj_old]->buffer      = NULL;
+				connection->object[nobj_old]->can_free    = false;
+				connection->object[nobj_old]->file_offset = tot_len;
+			}
+
+			tot_len += buffer_size;
+
+			free(buffer);
 		}
 
-		tot_len += buffer_size;
-
-		free(buffer);
 		free(ref_delta_hash);
 	}
 
-	close(connection->back_store);
+	if (connection->low_memory) {
+		close(connection->back_store);
 
-	/* Reopen the temporary object store file for reading. */
+		/* Reopen the temporary object store file for reading. */
 
-	connection->back_store = open(remote_files_tmp, O_RDONLY);
+		connection->back_store = open(remote_files_tmp, O_RDONLY);
 
-	if (connection->back_store == -1)
-		err(EXIT_FAILURE,
-			"unpack_objects: open tmp ro failure %s",
-			remote_files_tmp);
+		if (connection->back_store == -1)
+			err(EXIT_FAILURE,
+				"unpack_objects: open tmp ro failure %s",
+				remote_files_tmp);
 
-	unlink(remote_files_tmp);   /* unlink now / dealocate when exit */
+		unlink(remote_files_tmp);   /* unlink now / dealocate when exit */
+	}
 }
 
 
@@ -2292,12 +2302,12 @@ apply_deltas(connector *connection)
 			 */
 
 			memcpy(merge_buffer, layer_buffer, new_file_size);
-			release_buffer(delta);
+			release_buffer(connection, delta);
 		}
 
 		/* Store the completed object. */
 
-		release_buffer(base);
+		release_buffer(connection, base);
 
 		store_object(connection,
 			base->type,
@@ -2489,7 +2499,7 @@ process_tree(connector *connection, int remote_descriptor, char *hash, char *bas
 
 	/* Add the tree data to the remote data list. */
 
-	release_buffer(tree);
+	release_buffer(connection, tree);
 	write(remote_descriptor, buffer, buffer_size);
 	write(remote_descriptor, "\n", 1);
 
@@ -2554,7 +2564,7 @@ save_repairs(connector *connection)
 					found_object->buffer_size,
 					3);
 
-				release_buffer(found_object);
+				release_buffer(connection, found_object);
 
 				if (strncmp(check_hash, buffer_hash, 40) == 0)
 					update = false;
@@ -2570,7 +2580,7 @@ save_repairs(connector *connection)
 					connection->verbosity,
 					connection->display_depth);
 
-				release_buffer(found_object);
+				release_buffer(connection, found_object);
 
 				if (strstr(found_file->path, "UPDATING"))
 					extend_updating_list(connection,
@@ -2623,7 +2633,7 @@ save_objects(connector *connection)
 	memcpy(tree, found_object->buffer + 5, 40);
 	tree[40] = '\0';
 
-	release_buffer(found_object);
+	release_buffer(connection, found_object);
 
 	/* Recursively start processing the tree. */
 
@@ -2679,7 +2689,7 @@ save_objects(connector *connection)
 			connection->verbosity,
 			connection->display_depth);
 
-		release_buffer(found_object);
+		release_buffer(connection, found_object);
 
 		if (strstr(found_file->path, "UPDATING"))
 			extend_updating_list(connection, found_file->path);
@@ -2890,6 +2900,9 @@ load_configuration(connector *connection, const char *configuration_file, char *
 					connection->ignore[connection->ignores++] = strdup(temp);
 				}
 
+			if (strnstr(key, "low_memory", 10) != NULL)
+				connection->low_memory = ucl_object_toboolean(pair);
+
 			if (strnstr(key, "port", 4) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
 					connection->port = ucl_object_toint(pair);
@@ -3054,7 +3067,7 @@ static void
 usage(const char *configuration_file)
 {
 	fprintf(stderr,
-		"Usage: gitup <section> [-ckrV] [-h checksum] [-t tag] "
+		"Usage: gitup <section> [-cklrV] [-h checksum] [-t tag] "
 		"[-u pack file] [-v verbosity] [-w checksum]\n"
 		"  Please see %s for the list of <section> options.\n\n"
 		"  Options:\n"
@@ -3064,6 +3077,7 @@ usage(const char *configuration_file)
 		"          directory levels deep (0 = display the entire path).\n"
 		"    -h  Override the 'have' checksum.\n"
 		"    -k  Save a copy of the pack data to the current working directory.\n"
+		"    -l  Low memory mode -- stores temporary object data to disk.\n"
 		"    -r  Repair all missing/modified files in the local repository.\n"
 		"    -t  Fetch the commit referenced by the specified tag.\n"
 		"    -u  Path to load a copy of the pack data, skipping the download.\n"
@@ -3145,6 +3159,8 @@ main(int argc, char **argv)
 		.verbosity         = 1,
 		.display_depth     = 0,
 		.updating          = NULL,
+		.back_store        = -1,
+		.low_memory        = false,
 		};
 
 	if (argc < 2)
@@ -3169,7 +3185,7 @@ main(int argc, char **argv)
 
 	/* Process the command line parameters. */
 
-	while ((option = getopt(argc, argv, "C:cd:h:krt:u:v:w:")) != -1) {
+	while ((option = getopt(argc, argv, "C:cd:h:klrt:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
 				if (connection.verbosity)
@@ -3188,6 +3204,9 @@ main(int argc, char **argv)
 				break;
 			case 'k':
 				connection.keep_pack_file = true;
+				break;
+			case 'l':
+				connection.low_memory = true;
 				break;
 			case 'r':
 				connection.repair = true;
@@ -3402,6 +3421,9 @@ main(int argc, char **argv)
 
 		if (connection.want)
 			fprintf(stderr, "# Want: %s\n", connection.want);
+
+		if (connection.low_memory)
+			fprintf(stderr, "# Low memory mode: Yes\n");
 	}
 
 	/* Adjust the display depth to include path_target. */
