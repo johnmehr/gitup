@@ -53,7 +53,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.94"
+#define	GITUP_VERSION     "0.95"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -63,16 +63,18 @@
 
 struct object_node {
 	RB_ENTRY(object_node) link;
-	char     *hash;
-	uint8_t   type;
-	uint32_t  index;
-	uint32_t  index_delta;
-	char     *ref_delta_hash;
-	uint32_t  pack_offset;
-	char     *buffer;
-	uint32_t  buffer_size;
-	uint32_t  file_offset;
-	bool      can_free;
+	char      *hash;
+	uint8_t    type;
+	uint32_t   index;
+	uint32_t   index_delta;
+	char      *ref_delta_hash;
+	uint32_t   pack_offset;
+	char      *buffer;
+	uint32_t   buffer_size;
+	uint32_t   file_offset;
+	bool       can_free;
+	char     **parent;
+	uint8_t    parents;
 };
 
 struct file_node {
@@ -111,13 +113,16 @@ typedef struct {
 	struct object_node **object;
 	uint32_t             objects;
 	char                *pack_data_file;
+	char                *pack_history_file;
 	char                *path_target;
 	char                *path_work;
 	char                *remote_data_file;
+	char                *remote_history_file;
 	char               **ignore;
 	int                  ignores;
 	bool                 keep_pack_file;
 	bool                 use_pack_file;
+	bool                 commit_history;
 	int                  verbosity;
 	uint8_t              display_depth;
 	char                *updating;
@@ -128,6 +133,7 @@ typedef struct {
 static void     append(char **, unsigned int *, const char *, size_t);
 static void     apply_deltas(connector *);
 static char *   build_clone_command(connector *);
+static char *   build_commit_command(connector *);
 static char *   build_pull_command(connector *);
 static char *   build_repair_command(connector *);
 static char *   calculate_file_hash(char *, int);
@@ -150,7 +156,7 @@ static void     load_buffer(connector *, struct object_node *);
 static int      load_configuration(connector *, const char *, char **, int);
 static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
-static void     load_pack(connector *);
+static void     load_pack(connector *, char *, bool);
 static void     load_remote_data(connector *);
 static void     make_path(char *, mode_t);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
@@ -160,6 +166,7 @@ static void     process_command(connector *, char *);
 static void     process_tree(connector *, int, char *, char *);
 static void     prune_tree(connector *, char *);
 static void     release_buffer(connector *, struct object_node *);
+static void     save_commit_history(connector *);
 static void     save_file(char *, int, char *, int, int, int);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
@@ -219,6 +226,10 @@ file_node_free(struct file_node *node)
 static void
 object_node_free(struct object_node *node)
 {
+	for (int x = 0; x < node->parents; x++)
+		free(node->parent[x]);
+
+	free(node->parent);
 	free(node->hash);
 	free(node->ref_delta_hash);
 	free(node->buffer);
@@ -514,8 +525,10 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
 		if ((fd = open(path, O_RDONLY)) == -1)
 			err(EXIT_FAILURE, "load_file: cannot read %s", path);
 
-		if ((uint32_t)read(fd, *buffer, *buffer_size) != *buffer_size)
-			err(EXIT_FAILURE, "load_file: problem reading %s", path);
+		if ((uint32_t)read(fd, *buffer, *buffer_size) != file.st_size)
+			errc(EXIT_FAILURE, EIO,
+				"load_file: problem reading %s",
+				path);
 
 		close(fd);
 
@@ -868,6 +881,28 @@ load_remote_data(connector *connection)
 		file->path = strdup(temp);
 
 		RB_INSERT(Tree_Remote_Path, &Remote_Path, file);
+	}
+
+	/* Load the commit history. */
+
+	if (!path_exists(connection->remote_history_file))
+		return;
+
+	load_file(connection->remote_history_file, &data, &data_size);
+	raw = data;
+
+	while ((line = strsep(&raw, "\n"))) {
+		if (strlen(line) == 0)
+			continue;
+
+		hash = strchr(line, ' ');
+
+		if (hash) {
+			*hash = '\0';
+			*(hash + 41) = '\0';
+
+//			insert_commit_node(strdup(hash), line);
+		}
 	}
 
 	free(data);
@@ -1495,6 +1530,53 @@ build_clone_command(connector *connection)
 
 
 /*
+ * build_commit_command
+ *
+ * Function that constructs and executes the command to the fetch the commit
+ * data.
+ */
+
+static char *
+build_commit_command(connector *connection)
+{
+	char *command = NULL, temp[64];
+	bool  have = false;
+
+	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
+		err(EXIT_FAILURE, "build_commit_command: malloc");
+
+	if (connection->have)
+		have = true;
+
+	if ((connection->keep_pack_file) && (!path_exists(connection->pack_history_file)))
+		have = false;
+
+	if (!path_exists(connection->remote_history_file))
+		have = false;
+
+	if (have == false)
+		temp[0] = '\0';
+	else
+		snprintf(temp, sizeof(temp), "0032have %s\n", connection->have);
+
+	snprintf(command,
+		BUFFER_UNIT_SMALL,
+		"0011command=fetch0001"
+		"000dthin-pack"
+		"000fno-progress"
+		"000dofs-delta"
+		"0012filter tree:0\n"
+		"0032want %s\n"
+		"%s"
+		"0009done\n0000",
+		connection->want,
+		temp);
+
+	return (command);
+}
+
+
+/*
  * build_pull_command
  *
  * Function that constructs and executes the command to the fetch the
@@ -1631,6 +1713,15 @@ get_commit_details(connector *connection)
 			"%s does not support the version 2 wire protocol",
 			connection->host);
 
+	if ((strnstr(connection->response, "filter", connection->response_size) == NULL) && (connection->commit_history)) {
+		fprintf(stderr,
+			"! %s does not support the filter feature and the "
+			"commit history is unavailable\n",
+			connection->host);
+
+		connection->commit_history = false;
+	}
+
 	/* Fetch the list of refs. */
 
 	snprintf(command,
@@ -1723,14 +1814,18 @@ get_commit_details(connector *connection)
 	if ((connection->verbosity) && (connection->tag == NULL))
 		fprintf(stderr, "# Branch: %s\n", connection->branch);
 
-	/* Create the pack file name. */
+	/* Create the pack file names. */
 
 	if (connection->keep_pack_file == true) {
 		length = strlen(connection->section) + 47;
 
-		connection->pack_data_file = (char *)malloc(length + 1);
+		connection->pack_data_file    = (char *)malloc(length + 1);
+		connection->pack_history_file = (char *)malloc(length + 9);
 
 		if (connection->pack_data_file == NULL)
+			err(EXIT_FAILURE, "get_commit_details: malloc");
+
+		if (connection->pack_history_file == NULL)
 			err(EXIT_FAILURE, "get_commit_details: malloc");
 
 		snprintf(connection->pack_data_file, length,
@@ -1738,10 +1833,9 @@ get_commit_details(connector *connection)
 			connection->section,
 			connection->want);
 
-		if (connection->verbosity)
-			fprintf(stderr,
-				"# Saving pack file: %s\n",
-				connection->pack_data_file);
+		snprintf(connection->pack_history_file, length + 8,
+			"%s.history",
+			connection->pack_data_file);
 	}
 }
 
@@ -1754,14 +1848,30 @@ get_commit_details(connector *connection)
  */
 
 static void
-load_pack(connector *connection)
+load_pack(connector *connection, char *file, bool history_file)
 {
-	char hash[20];
+	char hash[20], *command = NULL;
 	int  pack_size = 0;
 
-	load_file(connection->pack_data_file,
-		&connection->response,
-		&connection->response_size);
+	if ((path_exists(file)) && (connection->use_pack_file)) {
+		if (connection->verbosity)
+			fprintf(stderr, "# Loading pack file: %s\n", file);
+
+		connection->response_size = 0;
+
+		load_file(file,
+			&connection->response,
+			&connection->response_size);
+	} else {
+		if (history_file)
+			command = build_commit_command(connection);
+		else if (!connection->clone)
+			command = build_pull_command(connection);
+		else
+			command = build_clone_command(connection);
+
+		fetch_pack(connection, command);
+	}
 
 	pack_size = connection->response_size - 20;
 
@@ -1775,6 +1885,20 @@ load_pack(connector *connection)
 			"expected: %s, received: %s",
 			legible_hash(connection->response + pack_size),
 			legible_hash(hash));
+
+	/* Save the pack data. */
+
+	if ((!path_exists(file)) && (connection->keep_pack_file)) {
+		if (connection->verbosity)
+			fprintf(stderr, "# Saving pack file: %s\n", file);
+
+		save_file(file,
+			0644,
+			connection->response,
+			connection->response_size,
+			0,
+			0);
+	}
 
 	/* Process the pack data. */
 
@@ -1847,16 +1971,6 @@ fetch_pack(connector *connection, char *command)
 			legible_hash(connection->response + pack_size),
 			legible_hash(hash));
 
-	/* Save the pack data. */
-
-	if (connection->keep_pack_file == true)
-		save_file(connection->pack_data_file,
-			0644,
-			connection->response,
-			connection->response_size,
-			0,
-			0);
-
 	/* Process the pack data. */
 
 	unpack_objects(connection);
@@ -1876,7 +1990,10 @@ static void
 store_object(connector *connection, int type, char *buffer, int buffer_size, int pack_offset, int index_delta, char *ref_delta_hash)
 {
 	struct object_node *object = NULL, find;
-	char               *hash = NULL;
+	char               *hash = NULL, *temp = NULL, parent[41];
+	bool                ok = true;
+
+	parent[40] = '\0';
 
 	hash = calculate_object_hash(buffer, buffer_size, type);
 
@@ -1905,6 +2022,8 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 		object->pack_offset    = pack_offset;
 		object->index_delta    = index_delta;
 		object->ref_delta_hash = (ref_delta_hash ? legible_hash(ref_delta_hash) : NULL);
+		object->parent         = NULL;
+		object->parents        = 0;
 		object->buffer         = buffer;
 		object->buffer_size    = buffer_size;
 		object->can_free       = true;
@@ -1920,6 +2039,53 @@ store_object(connector *connection, int type, char *buffer, int buffer_size, int
 				object->hash,
 				object->index_delta,
 				object->ref_delta_hash);
+
+		/* Find the parent commits for commit objects. */
+
+		if (type == 1) {
+			temp = buffer;
+
+			while ((temp + 47 - buffer < buffer_size) && ((temp = strstr(temp, "parent ")) != NULL)) {
+				ok    = true;
+				temp += 47;
+
+				/* Make sure the commit is valid. */
+
+				if (*temp != '\n')
+					continue;
+
+				memcpy(parent, temp - 40, 40);
+
+				for (int x = 0; x < 40; x++)
+					if (!isxdigit(parent[x]))
+						ok = false;
+
+				if (!ok)
+					continue;
+
+				/* Store the parent commit. */
+
+				object->parent = (char **)realloc(object->parent, (object->parents + 1) * sizeof(char *));
+
+				if (object->parent == NULL)
+					err(EXIT_FAILURE, "store_object: realloc");
+
+				object->parent[object->parents++] = strdup(parent);
+			}
+/*
+			char path[1024];
+			int fd;
+
+			snprintf(path, sizeof(path), "./temp/b%04d-%d-%s.out", object->index, object->type, object->hash);
+
+			if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
+				err(EXIT_FAILURE, "save_objects: write file failure %s", path);
+
+			chmod(path, 0644);
+			write(fd, object->buffer, object->buffer_size);
+			close(fd);
+*/
+		}
 
 		if (type < 6)
 			RB_INSERT(Tree_Objects, &Objects, object);
@@ -2601,6 +2767,51 @@ save_repairs(connector *connection)
 
 
 /*
+ * save_commit_history
+ *
+ * Procedure that saves the commit history to disk.
+ */
+
+static void
+save_commit_history(connector *connection)
+{
+	struct object_node *found_object = NULL;
+	char path[BUFFER_UNIT_SMALL];
+	int  fd, x = 0;
+
+	snprintf(path, BUFFER_UNIT_SMALL,
+		"%s.new",
+		connection->remote_history_file);
+
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
+
+	if ((fd == -1) && (errno != EEXIST))
+		err(EXIT_FAILURE, "save_objects: write failure %s", path);
+
+	RB_FOREACH(found_object, Tree_Objects, &Objects)
+		if (found_object->type == 1) {
+			write(fd, found_object->hash, 40);
+
+			for (x = 0; x < found_object->parents; x++) {
+				write(fd, " ", 1);
+				write(fd, found_object->parent[x], 40);
+			}
+
+			write(fd, "\n", 1);
+		}
+
+	close(fd);
+	chmod(path, 0644);
+
+	if (((remove(connection->remote_history_file)) != 0) && (errno != ENOENT))
+		err(EXIT_FAILURE, "save_objects: cannot remove %s", path);
+
+	if ((rename(path, connection->remote_history_file)) != 0)
+		err(EXIT_FAILURE, "save_objects: cannot rename %s", path);
+}
+
+
+/*
  * save_objects
  *
  * Procedure that commits the objects and trees to disk.
@@ -2611,8 +2822,27 @@ save_objects(connector *connection)
 {
 	struct object_node *found_object = NULL, find_object;
 	struct file_node   *found_file = NULL;
-	char                tree[41], remote_data_file_new[BUFFER_UNIT_SMALL];
-	int                 fd;
+	char tree[41], path[BUFFER_UNIT_SMALL];
+	int  fd;
+
+	/* Save the commit history. */
+
+	save_commit_history(connection);
+
+	/* Open the remote data file. */
+
+	snprintf(path, BUFFER_UNIT_SMALL,
+		"%s.new",
+		connection->remote_data_file);
+
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
+
+	if ((fd == -1) && (errno != EEXIST))
+		err(EXIT_FAILURE, "save_objects: write file failure %s", path);
+
+	chmod(path, 0644);
+	write(fd, connection->want, strlen(connection->want));
+	write(fd, "\n", 1);
 
 	/* Find the tree object referenced in the commit. */
 
@@ -2637,20 +2867,6 @@ save_objects(connector *connection)
 
 	/* Recursively start processing the tree. */
 
-	snprintf(remote_data_file_new, BUFFER_UNIT_SMALL,
-		"%s.new",
-		connection->remote_data_file);
-
-	fd = open(remote_data_file_new, O_WRONLY | O_CREAT | O_TRUNC);
-
-	if ((fd == -1) && (errno != EEXIST))
-		err(EXIT_FAILURE,
-			"save_objects: write file failure %s",
-			remote_data_file_new);
-
-	chmod(remote_data_file_new, 0644);
-	write(fd, connection->want, strlen(connection->want));
-	write(fd, "\n", 1);
 	process_tree(connection, fd, tree, connection->path_target);
 	close(fd);
 
@@ -2661,7 +2877,7 @@ save_objects(connector *connection)
 			"save_objects: cannot remove %s",
 			connection->remote_data_file);
 
-	if ((rename(remote_data_file_new, connection->remote_data_file)) != 0)
+	if ((rename(path, connection->remote_data_file)) != 0)
 		err(EXIT_FAILURE,
 			"save_objects: cannot rename %s",
 			connection->remote_data_file);
@@ -2853,6 +3069,9 @@ load_configuration(connector *connection, const char *configuration_file, char *
 			if (strnstr(key, "branch", 6) != NULL)
 				connection->branch = strdup(ucl_object_tostring(pair));
 
+			if (strnstr(key, "commit_history", 14) != NULL)
+				connection->commit_history = ucl_object_toboolean(pair);
+
 			if (strnstr(key, "display_depth", 16) != NULL) {
 				if (ucl_object_type(pair) == UCL_INT)
 					connection->display_depth = ucl_object_toint(pair);
@@ -3037,6 +3256,17 @@ extract_command_line_want(connector *connection, char *option)
 	temp      = option;
 	extension = strnstr(option, ".pack", length);
 
+	/* Build the pack commit history file name. */
+
+	connection->pack_history_file = (char *)malloc(length + 10);
+
+	if (connection->pack_history_file == NULL)
+		err(EXIT_FAILURE, "extract_command_line_want: malloc");
+
+	snprintf(connection->pack_history_file, length + 9,
+		"%s.history",
+		option);
+
 	/* Try and extract the want from the file name. */
 
 	while ((temp = strchr(start, '/')) != NULL)
@@ -3115,7 +3345,8 @@ main(int argc, char **argv)
 	uint32_t  o = 0;
 	bool      encoded = false, just_added = false;
 	bool      current_repository = false, path_target_exists = false;
-	bool      remote_data_exists = false, pack_data_exists = false;
+	bool      remote_data_exists = false, remote_history_exists = false;
+	bool      pack_data_exists = false, pack_history_exists = false;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	EVP_ENCODE_CTX      evp_ctx;
@@ -3124,43 +3355,46 @@ main(int argc, char **argv)
 #endif
 
 	connector connection = {
-		.ssl               = NULL,
-		.ctx               = NULL,
-		.socket_descriptor = 0,
-		.host              = NULL,
-		.host_bracketed    = NULL,
-		.port              = 0,
-		.proxy_host        = NULL,
-		.proxy_port        = 0,
-		.proxy_username    = NULL,
-		.proxy_password    = NULL,
-		.proxy_credentials = NULL,
-		.section           = NULL,
-		.repository_path   = NULL,
-		.branch            = NULL,
-		.tag               = NULL,
-		.have              = NULL,
-		.want              = NULL,
-		.response          = NULL,
-		.response_blocks   = 0,
-		.response_size     = 0,
-		.clone             = false,
-		.repair            = false,
-		.object            = NULL,
-		.objects           = 0,
-		.pack_data_file    = NULL,
-		.path_target       = NULL,
-		.path_work         = NULL,
-		.remote_data_file  = NULL,
-		.ignore            = NULL,
-		.ignores           = 0,
-		.keep_pack_file    = false,
-		.use_pack_file     = false,
-		.verbosity         = 1,
-		.display_depth     = 0,
-		.updating          = NULL,
-		.back_store        = -1,
-		.low_memory        = false,
+		.ssl                 = NULL,
+		.ctx                 = NULL,
+		.socket_descriptor   = 0,
+		.host                = NULL,
+		.host_bracketed      = NULL,
+		.port                = 0,
+		.proxy_host          = NULL,
+		.proxy_port          = 0,
+		.proxy_username      = NULL,
+		.proxy_password      = NULL,
+		.proxy_credentials   = NULL,
+		.section             = NULL,
+		.repository_path     = NULL,
+		.branch              = NULL,
+		.tag                 = NULL,
+		.have                = NULL,
+		.want                = NULL,
+		.response            = NULL,
+		.response_blocks     = 0,
+		.response_size       = 0,
+		.clone               = false,
+		.repair              = false,
+		.object              = NULL,
+		.objects             = 0,
+		.pack_data_file      = NULL,
+		.pack_history_file   = NULL,
+		.path_target         = NULL,
+		.path_work           = NULL,
+		.remote_data_file    = NULL,
+		.remote_history_file = NULL,
+		.ignore              = NULL,
+		.ignores             = 0,
+		.commit_history      = true,
+		.keep_pack_file      = false,
+		.use_pack_file       = false,
+		.verbosity           = 1,
+		.display_depth       = 0,
+		.updating            = NULL,
+		.back_store          = -1,
+		.low_memory          = false,
 		};
 
 	if (argc < 2)
@@ -3297,7 +3531,7 @@ main(int argc, char **argv)
 		errc(EXIT_FAILURE, EINVAL,
 			"A tag and a want cannot both be requested");
 
-	/* Create the work path and build the remote data path. */
+	/* Create the work path and build the remote data and history paths. */
 
 	make_path(connection.path_work, 0755);
 
@@ -3313,10 +3547,19 @@ main(int argc, char **argv)
 		connection.path_work,
 		connection.section);
 
-	temp = strdup(connection.remote_data_file);
+	connection.remote_history_file = (char *)malloc(length + 9);
+
+	if (connection.remote_history_file == NULL)
+		err(EXIT_FAILURE, "main: malloc");
+
+	snprintf(connection.remote_history_file, length + 9,
+		"%s/%s.history",
+		connection.path_work,
+		connection.section);
 
 	/* If non-alphanumerics exist in the section, encode them. */
 
+	temp   = strdup(connection.remote_data_file);
 	length = strlen(connection.section);
 
 	for (x = 0; x < length - 1; x++)
@@ -3363,9 +3606,11 @@ main(int argc, char **argv)
 	 * must be performed.
 	 */
 
-	path_target_exists  = path_exists(connection.path_target);
-	remote_data_exists  = path_exists(connection.remote_data_file);
-	pack_data_exists    = path_exists(connection.pack_data_file);
+	path_target_exists    = path_exists(connection.path_target);
+	pack_data_exists      = path_exists(connection.pack_data_file);
+	pack_history_exists   = path_exists(connection.pack_history_file);
+	remote_data_exists    = path_exists(connection.remote_data_file);
+	remote_history_exists = path_exists(connection.remote_history_file);
 
 	if ((path_target_exists == true) && (remote_data_exists == true))
 		load_remote_data(&connection);
@@ -3408,6 +3653,10 @@ main(int argc, char **argv)
 			connection.repository_path,
 			connection.path_target);
 
+		fprintf(stderr,
+			"# Commit History: %s\n",
+			(connection.commit_history ? "yes" : "no"));
+
 		if (connection.use_pack_file == true)
 			fprintf(stderr,
 				"# Using pack file: %s\n",
@@ -3446,56 +3695,50 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	if ((connection.use_pack_file == true) && (pack_data_exists == true)) {
+	if ((!connection.use_pack_file) || ((connection.use_pack_file) && (!pack_data_exists)))
+		get_commit_details(&connection);
+
+	if ((connection.have) && (connection.want) && (strncmp(connection.have, connection.want, 40) == 0))
+		current_repository = true;
+
+	/* Fetch the commit history. */
+
+	if (connection.commit_history) {
+		load_pack(&connection, connection.pack_history_file, true);
+
+		if (!remote_history_exists)
+			save_commit_history(&connection);
+	}
+
+	/* When pulling, first ensure the local tree is pristine. */
+
+	if ((connection.repair) || (!connection.clone)) {
+		command = build_repair_command(&connection);
+
+		if (command != NULL) {
+			connection.repair = true;
+
+			if (connection.verbosity)
+				fprintf(stderr, "# Action: repair\n");
+
+			fetch_pack(&connection, command);
+			apply_deltas(&connection);
+			save_repairs(&connection);
+		}
+	}
+
+	/* Process the clone or pull. */
+
+	if ((!current_repository) && (!connection.repair)) {
+		load_pack(&connection, connection.pack_data_file, false);
+
 		if (connection.verbosity)
 			fprintf(stderr,
 				"# Action: %s\n",
 				(connection.clone ? "clone" : "pull"));
 
-		load_pack(&connection);
 		apply_deltas(&connection);
 		save_objects(&connection);
-	} else {
-		if ((connection.use_pack_file == false) || ((connection.use_pack_file == true) && (pack_data_exists == false)))
-			get_commit_details(&connection);
-
-		if ((connection.have != NULL) && (connection.want != NULL) && (strncmp(connection.have, connection.want, 40) == 0))
-			current_repository = true;
-
-		/* When pulling, first ensure the local tree is pristine. */
-
-		if ((connection.repair == true) || (connection.clone == false)) {
-			command = build_repair_command(&connection);
-
-			if (command != NULL) {
-				connection.repair = true;
-
-				if (connection.verbosity)
-					fprintf(stderr, "# Action: repair\n");
-
-				fetch_pack(&connection, command);
-				apply_deltas(&connection);
-				save_repairs(&connection);
-			}
-		}
-
-		/* Process the clone or pull. */
-
-		if ((current_repository == false) && (connection.repair == false)) {
-			if (connection.verbosity)
-				fprintf(stderr,
-					"# Action: %s\n",
-					(connection.clone ? "clone" : "pull"));
-
-			if (connection.clone == false)
-				command = build_pull_command(&connection);
-			else
-				command = build_clone_command(&connection);
-
-			fetch_pack(&connection, command);
-			apply_deltas(&connection);
-			save_objects(&connection);
-		}
 	}
 
 	/* Save .gituprevision. */
@@ -3605,9 +3848,11 @@ main(int argc, char **argv)
 	free(connection.have);
 	free(connection.want);
 	free(connection.pack_data_file);
+	free(connection.pack_history_file);
 	free(connection.path_target);
 	free(connection.path_work);
 	free(connection.remote_data_file);
+	free(connection.remote_history_file);
 	free(connection.updating);
 
 	if (connection.ssl) {
