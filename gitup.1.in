@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd May 14, 2021
+.Dd June 21, 2021
 .Dt GITUP(1)
 .Os
 .Sh NAME
@@ -33,7 +33,7 @@
 .Sh SYNOPSIS
 .Nm
 .Cm section
-.Op Fl cklrV
+.Op Fl cklrSV
 .Op Fl C Ar configuration file
 .Op Fl d Ar display depth
 .Op Fl h Ar commit checksum
@@ -81,6 +81,8 @@ of memory.
 .It Fl r
 Repair the local repository, replacing any files that are missing or have been
 modified.
+.It Fl S
+Specify the local IP address to use.
 .It Fl t
 Fetch the commit referenced by the specified tag.
 .It Fl u

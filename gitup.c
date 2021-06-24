@@ -91,6 +91,7 @@ typedef struct {
 	SSL                 *ssl;
 	SSL_CTX             *ctx;
 	int                  socket_descriptor;
+	char                *local_ip_address;
 	char                *host;
 	char                *host_bracketed;
 	uint16_t             port;
@@ -1108,70 +1109,101 @@ create_tunnel(connector *session)
 /*
  * connect_server
  *
- * Procedure that (re)establishes a session with the server.
+ * Procedure that establishes a connection with the server.
  */
 
 static void
 connect_server(connector *session)
 {
-	struct addrinfo hints, *start, *temp;
+	struct addrinfo hints, *start = NULL, *tmp = NULL, *local = NULL;
 	struct timeval  timeout;
-	int             error = 0, option = 1;
-	char            type[10];
-	char           *host = (session->proxy_host ? session->proxy_host : session->host);
+	int             sd = 0, error = 0, option = 1, size = 0;
+	char            type[10], *host = NULL;
 
-	snprintf(type, sizeof(type), "%d", (session->proxy_host ? session->proxy_port : session->port));
+	/* Get addrinfo for local address. */
+
+	if (session->local_ip_address) {
+		bzero(&hints, sizeof(struct addrinfo));
+		hints.ai_socktype = SOCK_STREAM;
+		hints.ai_flags    = AI_ADDRCONFIG | AI_PASSIVE;
+
+		error = getaddrinfo(session->local_ip_address,
+			0,
+			&hints,
+			&local);
+
+		if (error)
+			errx(EXIT_FAILURE,
+				"connect_server: getaddrinfo failure: %s",
+				gai_strerror(error));
+	}
+
+	/* Get addrinfo for remote address. */
+
+	host = (session->proxy_host ? session->proxy_host : session->host);
+
+	snprintf(type, sizeof(type),
+		"%d",
+		(session->proxy_host ? session->proxy_port : session->port));
 
 	bzero(&hints, sizeof(struct addrinfo));
-	hints.ai_family = AF_UNSPEC;
+	hints.ai_family   = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
 
 	if ((error = getaddrinfo(host, type, &hints, &start)))
-		errx(EXIT_FAILURE, "%s", gai_strerror(error));
+		errx(EXIT_FAILURE,
+			"connect_server: getaddrinfo failure: %s",
+			gai_strerror(error));
 
-	for (temp = start; temp != NULL; temp = temp->ai_next) {
-		if ((session->socket_descriptor = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol)) < 0)
+	/* Open the socket. */
+
+	for (tmp = start; tmp != NULL; tmp = tmp->ai_next) {
+		sd = socket(tmp->ai_family, tmp->ai_socktype, tmp->ai_protocol);
+
+		if (sd < 0)
 			/* trying each addr returned, cont. with next in list */
 			continue;
 
-		if (connect(session->socket_descriptor, temp->ai_addr, temp->ai_addrlen) != -1)
-			break;
+		if ((local) && (bind(sd, local->ai_addr, local->ai_addrlen)))
+			err(EXIT_FAILURE, "connect_server: bind failure");
 
-		close(session->socket_descriptor);
+		if (connect(sd, tmp->ai_addr, tmp->ai_addrlen) != -1)
+			break;
+		else
+			close(sd);
 	}
 
 	freeaddrinfo(start);
+	freeaddrinfo(local);
 
-	if (temp == NULL)
-		err(EXIT_FAILURE,
-			"connect_server: connect failure (%d)",
-			errno);
+	if (tmp == NULL)
+		err(EXIT_FAILURE, "connect_server: connect failure");
 
-	if (setsockopt(session->socket_descriptor, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
-		err(EXIT_FAILURE,
-			"setup_ssl: setsockopt SO_KEEPALIVE error");
+	/* Set the socket options. */
+
+	if (setsockopt(sd, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_KEEPALIVE");
 
 	option = BUFFER_UNIT_LARGE;
 
-	if (setsockopt(session->socket_descriptor, SOL_SOCKET, SO_SNDBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE,
-			"setup_ssl: setsockopt SO_SNDBUF error");
+	if (setsockopt(sd, SOL_SOCKET, SO_SNDBUF, &option, sizeof(int)))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDBUF");
 
-	if (setsockopt(session->socket_descriptor, SOL_SOCKET, SO_RCVBUF, &option, sizeof(int)))
-		err(EXIT_FAILURE,
-			"setup_ssl: setsockopt SO_RCVBUF error");
+	if (setsockopt(sd, SOL_SOCKET, SO_RCVBUF, &option, sizeof(int)))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_RCVBUF");
 
-	bzero(&timeout, sizeof(struct timeval));
+	size = sizeof(struct timeval);
+	bzero(&timeout, size);
 	timeout.tv_sec = 300;
 
-	if (setsockopt(session->socket_descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE,
-			"setup_ssl: setsockopt SO_RCVTIMEO error");
+	if (setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &timeout, size))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_RCVTIMEO");
 
-	if (setsockopt(session->socket_descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(struct timeval)))
-		err(EXIT_FAILURE,
-			"setup_ssl: setsockopt SO_SNDTIMEO error");
+	if (setsockopt(sd, SOL_SOCKET, SO_SNDTIMEO, &timeout, size))
+		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDTIMEO");
+
+	session->socket_descriptor = sd;
 }
 
 
@@ -3128,6 +3160,9 @@ load_configuration(connector *session, const char *configuration_file, char **ar
 					session->ignore[session->ignores++] = strdup(temp);
 				}
 
+			if (strnstr(key, "local_ip_address", 16) != NULL)
+				session->local_ip_address = strdup(ucl_object_tostring(pair));
+
 			if (strnstr(key, "low_memory", 10) != NULL)
 				session->low_memory = ucl_object_toboolean(pair);
 
@@ -3367,6 +3402,7 @@ main(int argc, char **argv)
 		.ssl                 = NULL,
 		.ctx                 = NULL,
 		.socket_descriptor   = 0,
+		.local_ip_address    = NULL,
 		.host                = NULL,
 		.host_bracketed      = NULL,
 		.port                = 0,
@@ -3428,7 +3464,7 @@ main(int argc, char **argv)
 
 	/* Process the command line parameters. */
 
-	while ((option = getopt(argc, argv, "C:cd:h:klrt:u:v:w:")) != -1) {
+	while ((option = getopt(argc, argv, "C:cd:h:klrS:t:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
 				if (session.verbosity)
@@ -3453,6 +3489,9 @@ main(int argc, char **argv)
 				break;
 			case 'r':
 				session.repair = true;
+				break;
+			case 'S':
+				session.local_ip_address = strdup(optarg);
 				break;
 			case 't':
 				session.tag = strdup(optarg);
@@ -3845,6 +3884,7 @@ main(int argc, char **argv)
 	free(session.ignore);
 	free(session.response);
 	free(session.object);
+	free(session.local_ip_address);
 	free(session.host);
 	free(session.host_bracketed);
 	free(session.proxy_host);
