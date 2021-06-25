@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd June 21, 2021
+.Dd June 25, 2021
 .Dt GITUP(1)
 .Os
 .Sh NAME
@@ -82,7 +82,7 @@ of memory.
 Repair the local repository, replacing any files that are missing or have been
 modified.
 .It Fl S
-Specify the local IP address to use.
+Specify the source IP address on the local machine to use.
 .It Fl t
 Fetch the commit referenced by the specified tag.
 .It Fl u

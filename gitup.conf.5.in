@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd June 21, 2021
+.Dd June 25, 2021
 .Dt GITUP.CONF(5)
 .Os
 .Sh NAME
@@ -68,8 +68,8 @@ The port on the proxy server to connect to (if required).
 The username of the account used to access the proxy server (if required).
 .It Cm proxy_password
 The password of the account used to access the proxy server (if required).
-.It Cm local_ip_address
-The local ip_address to use.
+.It Cm source_address
+The source IP address on the local machine to use.
 .It Cm repository_path
 The repository path to use.
 .It Cm branch

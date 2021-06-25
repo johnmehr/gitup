@@ -91,7 +91,7 @@ typedef struct {
 	SSL                 *ssl;
 	SSL_CTX             *ctx;
 	int                  socket_descriptor;
-	char                *local_ip_address;
+	char                *source_address;
 	char                *host;
 	char                *host_bracketed;
 	uint16_t             port;
@@ -1122,12 +1122,12 @@ connect_server(connector *session)
 
 	/* Get addrinfo for local address. */
 
-	if (session->local_ip_address) {
+	if (session->source_address) {
 		bzero(&hints, sizeof(struct addrinfo));
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_flags    = AI_ADDRCONFIG | AI_PASSIVE;
 
-		error = getaddrinfo(session->local_ip_address,
+		error = getaddrinfo(session->source_address,
 			0,
 			&hints,
 			&local);
@@ -3160,9 +3160,6 @@ load_configuration(connector *session, const char *configuration_file, char **ar
 					session->ignore[session->ignores++] = strdup(temp);
 				}
 
-			if (strnstr(key, "local_ip_address", 16) != NULL)
-				session->local_ip_address = strdup(ucl_object_tostring(pair));
-
 			if (strnstr(key, "low_memory", 10) != NULL)
 				session->low_memory = ucl_object_toboolean(pair);
 
@@ -3197,6 +3194,9 @@ load_configuration(connector *session, const char *configuration_file, char **ar
 
 				session->repository_path = strdup(temp);
 			}
+
+			if (strnstr(key, "source_address", 14) != NULL)
+				session->source_address = strdup(ucl_object_tostring(pair));
 
 			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL)) {
 				session->path_target = strdup(ucl_object_tostring(pair));
@@ -3402,7 +3402,7 @@ main(int argc, char **argv)
 		.ssl                 = NULL,
 		.ctx                 = NULL,
 		.socket_descriptor   = 0,
-		.local_ip_address    = NULL,
+		.source_address    = NULL,
 		.host                = NULL,
 		.host_bracketed      = NULL,
 		.port                = 0,
@@ -3491,7 +3491,7 @@ main(int argc, char **argv)
 				session.repair = true;
 				break;
 			case 'S':
-				session.local_ip_address = strdup(optarg);
+				session.source_address = strdup(optarg);
 				break;
 			case 't':
 				session.tag = strdup(optarg);
@@ -3683,6 +3683,11 @@ main(int argc, char **argv)
 	if (session.verbosity) {
 		fprintf(stderr, "# Host: %s\n", session.host);
 		fprintf(stderr, "# Port: %d\n", session.port);
+
+		if (session.source_address)
+			fprintf(stderr,
+				"# Source Address: %s\n",
+				session.source_address);
 
 		if (session.proxy_host)
 			fprintf(stderr,
@@ -3884,7 +3889,7 @@ main(int argc, char **argv)
 	free(session.ignore);
 	free(session.response);
 	free(session.object);
-	free(session.local_ip_address);
+	free(session.source_address);
 	free(session.host);
 	free(session.host_bracketed);
 	free(session.proxy_host);
