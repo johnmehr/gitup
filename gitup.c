@@ -160,6 +160,7 @@ static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *, char *, bool);
 static void     load_remote_data(connector *);
 static void     make_path(char *, mode_t);
+static struct file_node * new_file_node(char *, mode_t, char *, bool, bool);
 static int      object_node_compare(const struct object_node *, const struct object_node *);
 static void     object_node_free(struct object_node *);
 static bool     path_exists(const char *);
@@ -378,6 +379,32 @@ ignore_file(connector *session, char *path)
 
 
 /*
+ * new_file_node
+ *
+ * Function that creates a new file node.
+ */
+
+static struct file_node *
+new_file_node(char *path, mode_t mode, char *hash, bool keep, bool save)
+{
+	struct file_node *new_node = NULL;
+
+	new_node = (struct file_node *)malloc(sizeof(struct file_node));
+
+	if (new_node == NULL)
+		err(EXIT_FAILURE, "new_file_node: malloc");
+
+	new_node->mode = mode;
+	new_node->hash = hash;
+	new_node->path = path;
+	new_node->keep = keep;
+	new_node->save = save;
+
+	return (new_node);
+}
+
+
+/*
  * make_path
  *
  * Procedure that creates a directory and all intermediate directories if they
@@ -567,15 +594,12 @@ trim_path(char *path, int display_depth, bool *just_added)
 	find.path = trimmed_path;
 
 	if (!RB_FIND(Tree_Trim_Path, &Trim_Path, &find)) {
-		new_node = (struct file_node *)malloc(sizeof(struct file_node));
-
-		if (new_node == NULL)
-			err(EXIT_FAILURE, "trim_path: malloc");
-
-		new_node->path = strdup(trimmed_path);
-		new_node->mode = 0;
-		new_node->hash = NULL;
-		new_node->save = 0;
+		new_node = new_file_node(
+			strdup(trimmed_path),
+			0,
+			NULL,
+			false,
+			false);
 
 		RB_INSERT(Tree_Trim_Path, &Trim_Path, new_node);
 		*just_added = true;
@@ -845,14 +869,12 @@ load_remote_data(connector *session)
 
 		/* Store the file data. */
 
-		file = (struct file_node *)malloc(sizeof(struct file_node));
-
-		if (file == NULL)
-			err(EXIT_FAILURE, "load_remote_data: malloc");
-
-		file->mode = strtol(line, (char **)NULL, 8);
-		file->hash = strdup(hash);
-		file->save = 0;
+		file = new_file_node(
+			NULL,
+			strtol(line, (char **)NULL, 8),
+			strdup(hash),
+			false,
+			false);
 
 		if (path[strlen(path) - 1] == '/') {
 			snprintf(base_path, sizeof(base_path), "%s", path);
@@ -934,14 +956,12 @@ scan_local_repository(connector *session, char *base_path)
 
 	/* Add the base path to the local trees. */
 
-	if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-		err(EXIT_FAILURE, "scan_local_repository: malloc");
-
-	new_node->mode = (found ? found->mode : 040000);
-	new_node->hash = (found ? strdup(found->hash) : NULL);
-	new_node->path = strdup(base_path);
-	new_node->keep = (strlen(base_path) == strlen(session->path_target) ? true : false);
-	new_node->save = false;
+	new_node = new_file_node(
+		strdup(base_path),
+		(found ? found->mode : 040000),
+		(found ? strdup(found->hash) : NULL),
+		(strlen(base_path) == strlen(session->path_target) ? true : false),
+		false);
 
 	RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
 
@@ -994,14 +1014,12 @@ scan_local_repository(connector *session, char *base_path)
 				scan_local_repository(session, full_path);
 				free(full_path);
 			} else {
-				if ((new_node = (struct file_node *)malloc(sizeof(struct file_node))) == NULL)
-					err(EXIT_FAILURE,
-						"scan_local_repository: malloc");
-
-				new_node->mode = file.st_mode;
-				new_node->path = full_path;
-				new_node->keep = (strnstr(full_path, ".gituprevision", strlen(full_path)) != NULL ? true : false);
-				new_node->save = false;
+				new_node = new_file_node(
+					full_path,
+					file.st_mode,
+					NULL,
+					(strnstr(full_path, ".gituprevision", strlen(full_path)) != NULL ? true : false),
+					false);
 
 				if (ignore_file(session, full_path)) {
 					new_node->hash = (char *)malloc(20);
@@ -2567,7 +2585,7 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 {
 	struct object_node  object, *found_object = NULL, *tree = NULL;
 	struct file_node    file, *found_file = NULL;
-	struct file_node   *new_file_node = NULL, *remote_file = NULL;
+	struct file_node   *new_node = NULL, *remote_file = NULL;
 	char                full_path[BUFFER_UNIT_SMALL], *buffer = NULL;
 	char                line[BUFFER_UNIT_SMALL], *position = NULL;
 	unsigned int        buffer_size = 0;
@@ -2635,69 +2653,86 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 				remote_descriptor,
 				file.hash,
 				full_path);
-		} else {
-			/*
-			 * Locate the pack file object and local copy of
-			 * the file.
-			 */
 
-			memcpy(object.hash, file.hash, 41);
-			memcpy(file.path, full_path, strlen(full_path) + 1);
+			continue;
+		}
 
+		/*
+		 * Locate the pack file object and local copy of
+		 * the file.
+		 */
+
+		memcpy(object.hash, file.hash, 41);
+		memcpy(file.path, full_path, strlen(full_path) + 1);
+
+		found_object = RB_FIND(Tree_Objects, &Objects, &object);
+		found_file   = RB_FIND(Tree_Local_Path, &Local_Path, &file);
+
+		/* If the local file hasn't changed, skip it. */
+
+		if (found_file != NULL) {
+			found_file->keep = true;
+			found_file->save = false;
+
+			if (strncmp(file.hash, found_file->hash, 40) == 0)
+				continue;
+		}
+
+		/* Create the submodule directory. */
+
+		if (S_ISWHT(file.mode)) {
+			make_path(full_path, 0755);
+
+			new_node = new_file_node(
+				strdup(full_path),
+				file.mode,
+				strdup(file.hash),
+				true,
+				false);
+
+			RB_INSERT(Tree_Remote_Path, &Remote_Path, new_node);
+
+			continue;
+		}
+
+		/*
+		 * Missing objects can sometimes be found by searching
+		 * the local tree.
+		 */
+
+		if (found_object == NULL) {
+			load_object(session, file.hash, full_path);
 			found_object = RB_FIND(Tree_Objects, &Objects, &object);
-			found_file   = RB_FIND(Tree_Local_Path, &Local_Path, &file);
+		}
 
-			/* If the local file hasn't changed, skip it. */
+		/* If the object is still missing, exit. */
 
-			if (found_file != NULL) {
-				found_file->keep = true;
-				found_file->save = false;
+		if (found_object == NULL)
+			errc(EXIT_FAILURE, ENOENT,
+				"process_tree: file %s -- %s cannot be found",
+				full_path,
+				file.hash);
 
-				if (strncmp(file.hash, found_file->hash, 40) == 0)
-					continue;
-			}
+		/* Otherwise retain it. */
 
-			/*
-			 * Missing objects can sometimes be found by searching
-			 * the local tree.
-			 */
+		remote_file = RB_FIND(Tree_Remote_Path, &Remote_Path, &file);
 
-			if (found_object == NULL) {
-				load_object(session, file.hash, full_path);
-				found_object = RB_FIND(Tree_Objects, &Objects, &object);
-			}
+		if (remote_file == NULL) {
+			new_node = new_file_node(
+				strdup(full_path),
+				file.mode,
+				strdup(found_object->hash),
+				true,
+				true);
 
-			/* If the object is still missing, exit. */
+			RB_INSERT(Tree_Remote_Path, &Remote_Path, new_node);
+		} else {
+			free(remote_file->hash);
 
-			if (found_object == NULL)
-				errc(EXIT_FAILURE, ENOENT,
-					"process_tree: file %s -- %s cannot be found",
-					full_path,
-					file.hash);
-
-			/* Otherwise retain it. */
-
-			if ((remote_file = RB_FIND(Tree_Remote_Path, &Remote_Path, &file)) == NULL) {
-				new_file_node = (struct file_node *)malloc(sizeof(struct file_node));
-
-				if (new_file_node == NULL)
-					err(EXIT_FAILURE,
-						"process_tree: malloc");
-
-				new_file_node->mode = file.mode;
-				new_file_node->hash = strdup(found_object->hash);
-				new_file_node->path = strdup(full_path);
-				new_file_node->keep = true;
-				new_file_node->save = true;
-
-				RB_INSERT(Tree_Remote_Path, &Remote_Path, new_file_node);
-			} else {
-				free(remote_file->hash);
-				remote_file->mode = file.mode;
-				remote_file->hash = strdup(found_object->hash);
-				remote_file->keep = true;
-				remote_file->save = true;
-			}
+			remote_file->mode = file.mode;
+			remote_file->hash = strdup(found_object->hash);
+			remote_file->keep = true;
+			remote_file->save = true;
 		}
 	}
 
@@ -3402,7 +3437,7 @@ main(int argc, char **argv)
 		.ssl                 = NULL,
 		.ctx                 = NULL,
 		.socket_descriptor   = 0,
-		.source_address    = NULL,
+		.source_address      = NULL,
 		.host                = NULL,
 		.host_bracketed      = NULL,
 		.port                = 0,
