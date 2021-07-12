@@ -154,7 +154,8 @@ static bool     ignore_file(connector *, char *);
 static char *   illegible_hash(char *);
 static char *   legible_hash(char *);
 static void     load_buffer(connector *, struct object_node *);
-static int      load_configuration(connector *, const char *, char **, int);
+static int      load_config(connector *, const char *, char **, int);
+static void     load_config_section(connector *, const ucl_object_t *);
 static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *, char *, bool);
@@ -3057,26 +3058,206 @@ extract_proxy_data(connector *session, const char *data)
 
 
 /*
- * load_configuration
+ * load_config_section
  *
- * Procedure that loads the section options from gitup.conf
+ * Procedure that stores the configuration options from a gitup.conf section.
+ */
+
+static void
+load_config_section(connector *session, const ucl_object_t *section)
+{
+	const ucl_object_t *pair = NULL, *ignore = NULL;
+	ucl_object_iter_t   its = NULL, iti = NULL;
+	const char         *key = NULL, *string = NULL;
+	char                temp[BUFFER_UNIT_SMALL];
+	int                 integer, length = 0;
+	bool                boolean, target, path, ignores;
+
+	its = ucl_object_iterate_new(section);
+
+	while ((pair = ucl_object_iterate_safe(its, true))) {
+		key     = ucl_object_key(pair);
+		string  = ucl_object_tostring(pair);
+		boolean = ucl_object_toboolean(pair);
+
+		if (ucl_object_type(pair) == UCL_INT)
+			integer = ucl_object_toint(pair);
+		else if (ucl_object_type(pair) == UCL_STRING)
+			integer = strtol(string, (char **)NULL, 10);
+		else
+			integer = 0;
+
+		if (strnstr(key, "branch", 6) != NULL) {
+			free(session->branch);
+			session->branch = strdup(string);
+		}
+
+		if (strnstr(key, "commit_history", 14) != NULL)
+			session->commit_history = boolean;
+
+		if (strnstr(key, "display_depth", 16) != NULL)
+			session->display_depth = integer;
+
+		if (strnstr(key, "host", 4) != NULL) {
+			free(session->host);
+			session->host = strdup(string);
+
+			/* Add brackets to IPv6 addresses, if needed. */
+
+			length = strlen(session->host) + 3;
+
+			session->host_bracketed = (char *)realloc(
+				session->host_bracketed,
+				length);
+
+			if (session->host_bracketed == NULL)
+				err(EXIT_FAILURE,
+					"load_config_section: malloc");
+
+			snprintf(session->host_bracketed, length,
+				"%s",
+				session->host);
+
+			if (strchr(session->host, ':'))
+				if (strchr(session->host, '[') == NULL)
+					snprintf(session->host_bracketed,
+						length,
+						"[%s]",
+						session->host);
+		}
+
+		if (strnstr(key, "ignores", 7) != NULL)
+			ignores = true;
+		else if (strnstr(key, "ignore", 6) != NULL)
+			ignores = true;
+		else
+			ignores = false;
+
+		if ((ignores) && (ucl_object_type(pair) == UCL_ARRAY)) {
+			iti = ucl_object_iterate_new(pair);
+
+			while ((ignore = ucl_object_iterate_safe(iti, true))) {
+				string = ucl_object_tostring(ignore);
+
+				session->ignore = (char **)realloc(
+					session->ignore,
+					(session->ignores + 1)*sizeof(char *));
+
+				if (session->ignore == NULL)
+					err(EXIT_FAILURE,
+						"load_config_section: malloc");
+
+				snprintf(temp, sizeof(temp),
+					"%s",
+					string);
+
+				if (temp[0] != '/')
+					snprintf(temp, sizeof(temp),
+						"%s/%s",
+						session->path_target,
+						string);
+
+				length = session->ignores++;
+				session->ignore[length] = strdup(temp);
+			}
+
+			ucl_object_iterate_free(iti);
+		}
+
+		if (strnstr(key, "low_memory", 10) != NULL)
+			session->low_memory = boolean;
+
+		if (strnstr(key, "port", 4) != NULL)
+			session->port = integer;
+
+		if (strnstr(key, "proxy_host", 10) != NULL) {
+			free(session->proxy_host);
+			session->proxy_host = strdup(string);
+		}
+
+		if (strnstr(key, "proxy_port", 10) != NULL)
+			session->proxy_port = integer;
+
+		if (strnstr(key, "proxy_password", 14) != NULL) {
+			free(session->proxy_password);
+			session->proxy_password = strdup(string);
+		}
+
+		if (strnstr(key, "proxy_username", 14) != NULL) {
+			free(session->proxy_username);
+			session->proxy_username = strdup(string);
+		}
+
+		if (strnstr(key, "repository_path", 15) != NULL)
+			path = true;
+		else if (strnstr(key, "repository", 10) != NULL)
+			path = true;
+		else
+			path = false;
+
+		if (path) {
+			snprintf(temp, sizeof(temp), "%s", string);
+
+			if (temp[0] != '/')
+				snprintf(temp, sizeof(temp), "/%s", string);
+
+			free(session->repository_path);
+			session->repository_path = strdup(temp);
+		}
+
+		if (strnstr(key, "source_address", 14) != NULL) {
+			free(session->source_address);
+			session->source_address = strdup(string);
+		}
+
+		if (strnstr(key, "target_directory", 16) != NULL)
+			target = true;
+		else if (strnstr(key, "target", 6) != NULL)
+			target = true;
+		else
+			target = false;
+
+		if (target) {
+			free(session->path_target);
+			session->path_target = strdup(string);
+
+			length = strlen(session->path_target) - 1;
+
+			if (*(session->path_target + length) == '/')
+				*(session->path_target + length) = '\0';
+		}
+
+		if (strnstr(key, "verbosity", 9) != NULL)
+			session->verbosity = integer;
+
+		if (strnstr(key, "work_directory", 14) != NULL) {
+			free(session->path_work);
+			session->path_work = strdup(string);
+		}
+	}
+
+	ucl_object_iterate_free(its);
+}
+
+
+/*
+ * load_config
+ *
+ * Function that loads the section options from gitup.conf
  */
 
 static int
-load_configuration(connector *session, const char *configuration_file, char **argv, int argc)
+load_config(connector *session, const char *configuration_file, char **argv, int argc)
 {
 	struct ucl_parser  *parser = NULL;
+	const ucl_object_t *section = NULL;
 	ucl_object_t       *object = NULL;
-	const ucl_object_t *section = NULL, *pair = NULL, *ignore = NULL;
-	ucl_object_iter_t   it = NULL, it_section = NULL, it_ignores = NULL;
-	const char         *key = NULL, *config_section = NULL;
+	ucl_object_iter_t   it = NULL;
+	const char         *target = NULL;
 	char               *sections = NULL, temp[BUFFER_UNIT_SMALL];
 	unsigned int        sections_size = 0;
-	uint8_t             argument_index = 0, x = 0, length = 0;
+	uint8_t             argument_index = 0, x = 0;
 	struct stat         check_file;
-
-	if ((sections = (char *)malloc(sections_size)) == NULL)
-		err(EXIT_FAILURE, "load_configuration: malloc");
 
 	/* Check to make sure the configuration file is actually a file. */
 
@@ -3084,7 +3265,7 @@ load_configuration(connector *session, const char *configuration_file, char **ar
 
 	if (!S_ISREG(check_file.st_mode))
 		errc(EXIT_FAILURE, EFTYPE,
-			"load_configuration: cannot load %s",
+			"load_config: cannot load %s",
 			configuration_file);
 
 	/* Load and process the configuration file. */
@@ -3093,167 +3274,45 @@ load_configuration(connector *session, const char *configuration_file, char **ar
 
 	if (ucl_parser_add_file(parser, configuration_file) == false) {
 		fprintf(stderr,
-			"load_configuration: %s\n",
+			"load_config: %s\n",
 			ucl_parser_get_error(parser));
 
 		exit(EXIT_FAILURE);
 	}
 
 	object = ucl_parser_get_object(parser);
+	it     = ucl_object_iterate_new(object);
 
-	while ((session->section == NULL) && (section = ucl_iterate_object(object, &it, true))) {
-		config_section = ucl_object_key(section);
+	while ((section = ucl_object_iterate_safe(it, true))) {
+		target = ucl_object_key(section);
+
+		if (strncmp(target, "defaults", 8) == 0) {
+			load_config_section(session, section);
+		} else {
+			/*
+			* Add the section to the list of known sections in case
+			* a valid section is not found.
+			*/
+
+			snprintf(temp, sizeof(temp), "\t* %s\n", target);
+			append(&sections, &sections_size, temp, strlen(temp));
+		}
 
 		/* Look for the section in the command line arguments. */
 
-		for (x = 0; x < argc; x++) {
-			if ((strlen(argv[x]) == 2) && (strncmp(argv[x], "-V", 2)) == 0) {
-				fprintf(stdout,
-					"gitup version %s\n",
-					GITUP_VERSION);
+		if (argument_index)
+			continue;
 
-				exit(EXIT_SUCCESS);
-			}
-
-			if ((strlen(argv[x]) == strlen(config_section)) && (strncmp(argv[x], config_section, strlen(config_section)) == 0)) {
-				session->section = strdup(argv[x]);
-				argument_index = x;
-			}
-		}
-
-		/*
-		 * Add the section to the list of known sections in case a
-		 * valid section is not found.
-		 */
-
-		if (strncmp(config_section, "defaults", 8) != 0) {
-			snprintf(temp, sizeof(temp),
-				"\t * %s\n",
-				config_section);
-
-			append(&sections, &sections_size, temp, strlen(temp));
-
-			if (argument_index == 0)
-				continue;
-		}
-
-		/* Iterate through the section's configuration parameters. */
-
-		while ((pair = ucl_iterate_object(section, &it_section, true))) {
-			key = ucl_object_key(pair);
-
-			if (strnstr(key, "branch", 6) != NULL)
-				session->branch = strdup(ucl_object_tostring(pair));
-
-			if (strnstr(key, "commit_history", 14) != NULL)
-				session->commit_history = ucl_object_toboolean(pair);
-
-			if (strnstr(key, "display_depth", 16) != NULL) {
-				if (ucl_object_type(pair) == UCL_INT)
-					session->display_depth = ucl_object_toint(pair);
-				else
-					session->display_depth = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
-			}
-
-			if (strnstr(key, "host", 4) != NULL) {
-				session->host = strdup(ucl_object_tostring(pair));
-
-				/* Add brackets to IPv6 addresses, if needed. */
-
-				length = strlen(session->host) + 3;
-
-				session->host_bracketed = (char *)realloc(
-					session->host_bracketed,
-					length);
-
-				if (session->host_bracketed == NULL)
-					err(EXIT_FAILURE,
-						"load_configuration: malloc");
-
-				if ((strchr(session->host, ':')) && (strchr(session->host, '[') == NULL))
-					snprintf(session->host_bracketed,
-						length,
-						"[%s]",
-						session->host);
-				else
-					snprintf(session->host_bracketed,
-						length,
-						"%s",
-						session->host);
-			}
-
-			if (((strnstr(key, "ignore", 6) != NULL) || (strnstr(key, "ignores", 7) != NULL)) && (ucl_object_type(pair) == UCL_ARRAY))
-				while ((ignore = ucl_iterate_object(pair, &it_ignores, true))) {
-					if ((session->ignore = (char **)realloc(session->ignore, (session->ignores + 1) * sizeof(char *))) == NULL)
-						err(EXIT_FAILURE, "set_configuration_parameters: malloc");
-
-					snprintf(temp, sizeof(temp), "%s", ucl_object_tostring(ignore));
-
-					if (temp[0] != '/')
-						snprintf(temp, sizeof(temp), "%s/%s", session->path_target, ucl_object_tostring(ignore));
-
-					session->ignore[session->ignores++] = strdup(temp);
+		for (x = 0; x < argc; x++)
+			if (strncmp(argv[x], target, strlen(target)) == 0)
+				if (strlen(argv[x]) == strlen(target)) {
+					argument_index   = x;
+					session->section = strdup(argv[x]);
+					load_config_section(session, section);
 				}
-
-			if (strnstr(key, "low_memory", 10) != NULL)
-				session->low_memory = ucl_object_toboolean(pair);
-
-			if (strnstr(key, "port", 4) != NULL) {
-				if (ucl_object_type(pair) == UCL_INT)
-					session->port = ucl_object_toint(pair);
-				else
-					session->port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
-			}
-
-			if (strnstr(key, "proxy_host", 10) != NULL)
-				session->proxy_host = strdup(ucl_object_tostring(pair));
-
-			if (strnstr(key, "proxy_port", 10) != NULL) {
-				if (ucl_object_type(pair) == UCL_INT)
-					session->proxy_port = ucl_object_toint(pair);
-				else
-					session->proxy_port = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
-			}
-
-			if (strnstr(key, "proxy_password", 14) != NULL)
-				session->proxy_password = strdup(ucl_object_tostring(pair));
-
-			if (strnstr(key, "proxy_username", 14) != NULL)
-				session->proxy_username = strdup(ucl_object_tostring(pair));
-
-			if ((strnstr(key, "repository_path", 15) != NULL) || (strnstr(key, "repository", 10) != NULL)) {
-				snprintf(temp, sizeof(temp), "%s", ucl_object_tostring(pair));
-
-				if (temp[0] != '/')
-					snprintf(temp, sizeof(temp), "/%s", ucl_object_tostring(pair));
-
-				session->repository_path = strdup(temp);
-			}
-
-			if (strnstr(key, "source_address", 14) != NULL)
-				session->source_address = strdup(ucl_object_tostring(pair));
-
-			if ((strnstr(key, "target_directory", 16) != NULL) || (strnstr(key, "target", 6) != NULL)) {
-				session->path_target = strdup(ucl_object_tostring(pair));
-
-				length = strlen(session->path_target) - 1;
-
-				if (*(session->path_target + length) == '/')
-					*(session->path_target + length) = '\0';
-			}
-
-			if (strnstr(key, "verbosity", 9) != NULL) {
-				if (ucl_object_type(pair) == UCL_INT)
-					session->verbosity = ucl_object_toint(pair);
-				else
-					session->verbosity = strtol(ucl_object_tostring(pair), (char **)NULL, 10);
-			}
-
-			if (strnstr(key, "work_directory", 14) != NULL)
-				session->path_work = strdup(ucl_object_tostring(pair));
-		}
 	}
 
+	ucl_object_iterate_free(it);
 	ucl_object_unref(object);
 	ucl_parser_free(parser);
 
@@ -3480,10 +3539,17 @@ main(int argc, char **argv)
 	if (argc < 2)
 		usage(configuration_file);
 
+	for (x = 0; x < argc; x++)
+		if (strlen(argv[x]) == 2)
+			if (strncmp(argv[x], "-V", 2) == 0) {
+				printf("gitup version %s\n", GITUP_VERSION);
+				exit(EXIT_SUCCESS);
+			}
+
 	/* Check to see if the configuration file path is being overridden. */
 
 	for (x = 0; x < argc; x++)
-		if ((strlen(argv[x]) > 1) && (strnstr(argv[x], "-C", 2) == argv[x])) {
+		if (strnstr(argv[x], "-C", 2) == argv[x]) {
 			if (strlen(argv[x]) > 2)
 				configuration_file = strdup(argv[x] + 2);
 			else if ((argc > x) && (argv[x + 1][0] != '-'))
@@ -3492,7 +3558,7 @@ main(int argc, char **argv)
 
 	/* Load the configuration file to learn what section is being requested. */
 
-	skip_optind = load_configuration(&session, configuration_file, argv, argc);
+	skip_optind = load_config(&session, configuration_file, argv, argc);
 
 	if (skip_optind == 1)
 		optind++;
