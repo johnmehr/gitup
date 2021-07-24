@@ -1765,11 +1765,12 @@ get_commit_details(connector *session)
 			session->host);
 
 	if ((strnstr(session->response, "filter", session->response_size) == NULL) && (session->commit_history)) {
+/*
 		fprintf(stderr,
 			"! %s does not support the filter feature and the "
 			"commit history is unavailable\n",
 			session->host);
-
+*/
 		session->commit_history = false;
 	}
 
