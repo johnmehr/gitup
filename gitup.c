@@ -53,7 +53,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.95"
+#define	GITUP_VERSION     "0.96"
 #define	BUFFER_UNIT_SMALL  4096
 #define	BUFFER_UNIT_LARGE  1048576
 
@@ -485,7 +485,7 @@ prune_tree(connector *session, char *base_path)
 			base_path,
 			entry->d_name);
 
-		if (stat(full_path, &sb) != 0)
+		if (lstat(full_path, &sb) != 0)
 			err(EXIT_FAILURE,
 				"prune_tree: cannot stat() %s",
 				full_path);
@@ -499,7 +499,10 @@ prune_tree(connector *session, char *base_path)
 
 			prune_tree(session, full_path);
 		} else {
-			remove(full_path);
+			if (remove(full_path) == -1)
+				err(EXIT_FAILURE,
+					"prune_tree: cannot remove %s",
+					full_path);
 		}
 	}
 
