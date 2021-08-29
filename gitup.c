@@ -367,16 +367,25 @@ illegible_hash(char *hash_buffer)
  */
 
 static bool
-ignore_file(connector *session, char *path)
+ignore_file(connector *connection, char *path)
 {
-	int x;
+	char *ignore = NULL;
+	int   x;
 
-	for (x = 0; x < session->ignores; x++)
-		if (strncmp(path, session->ignore[x], strlen(session->ignore[x])) == 0)
+	/* Files in the sys/arch/conf directories cannot be ignored. */
+
+	if ((strstr(path, "sys/") != NULL) && (strstr(path, "/conf") != NULL))
+		return (false);
+
+	for (x = 0; x < connection->ignores; x++) {
+		ignore = connection->ignore[x];
+
+		if (strncmp(path, ignore, strlen(ignore)) == 0)
 			return (true);
+	}
 
 	return (false);
- }
+}
 
 
 /*
