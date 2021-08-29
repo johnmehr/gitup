@@ -367,7 +367,7 @@ illegible_hash(char *hash_buffer)
  */
 
 static bool
-ignore_file(connector *connection, char *path)
+ignore_file(connector *session, char *path)
 {
 	char *ignore = NULL;
 	int   x;
@@ -377,8 +377,8 @@ ignore_file(connector *connection, char *path)
 	if ((strstr(path, "sys/") != NULL) && (strstr(path, "/conf") != NULL))
 		return (false);
 
-	for (x = 0; x < connection->ignores; x++) {
-		ignore = connection->ignore[x];
+	for (x = 0; x < session->ignores; x++) {
+		ignore = session->ignore[x];
 
 		if (strncmp(path, ignore, strlen(ignore)) == 0)
 			return (true);
@@ -3937,6 +3937,11 @@ main(int argc, char **argv)
 	RB_FOREACH_SAFE(file, Tree_Local_Path, &Local_Path, next_file) {
 		if ((file->keep == false) && ((current_repository == false) || (session.repair == true))) {
 			if (ignore_file(&session, file->path))
+				continue;
+
+			/* Skip files in the sys/arch/conf directories. */
+
+			if ((strstr(file->path, "sys/") != NULL) && (strstr(file->path, "/conf") != NULL))
 				continue;
 
 			if ((session.verbosity) && (session.display_depth == 0))
