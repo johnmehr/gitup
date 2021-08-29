@@ -1077,7 +1077,7 @@ load_object(connector *session, char *hash, char *path)
 
 	find = RB_FIND(Tree_Local_Hash, &Local_Hash, &lookup_file);
 
-	if (find == NULL)
+	if ((find == NULL) && (path != NULL))
 		find = RB_FIND(Tree_Local_Path, &Local_Path, &lookup_file);
 
 	if (find) {
