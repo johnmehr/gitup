@@ -53,9 +53,11 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define	GITUP_VERSION     "0.96"
-#define	BUFFER_UNIT_SMALL  4096
-#define	BUFFER_UNIT_LARGE  1048576
+#define GITUP_VERSION     "0.96"
+#define BUFFER_UNIT_SMALL  4096
+#define BUFFER_UNIT_LARGE  1048576
+#define IGNORE_READ        1
+#define IGNORE_DELETE      2
 
 #ifndef CONFIG_FILE_PATH
 #define CONFIG_FILE_PATH "./gitup.conf"
@@ -150,7 +152,7 @@ static int      file_node_compare_hash(const struct file_node *, const struct fi
 static int      file_node_compare_path(const struct file_node *, const struct file_node *);
 static void     file_node_free(struct file_node *);
 static void     get_commit_details(connector *);
-static bool     ignore_file(connector *, char *);
+static bool     ignore_file(connector *, char *, uint8_t);
 static char *   illegible_hash(char *);
 static char *   legible_hash(char *);
 static void     load_buffer(connector *, struct object_node *);
@@ -363,19 +365,20 @@ illegible_hash(char *hash_buffer)
 /*
  * ignore_file
  *
- * Return true if path is in the set of "ignores" for the session.
+ * Function that returns true if the path is in the set of "ignores".
  */
 
 static bool
-ignore_file(connector *session, char *path)
+ignore_file(connector *session, char *path, uint8_t flag)
 {
 	char *ignore = NULL;
 	int   x;
 
-	/* Files in the sys/arch/conf directories cannot be ignored. */
+	/* Files in the sys/arch/conf directories must be read. */
 
-	if ((strstr(path, "sys/") != NULL) && (strstr(path, "/conf") != NULL))
-		return (false);
+	if (flag == IGNORE_READ)
+		if ((strstr(path, "sys/")) && (strstr(path, "/conf")))
+			return (false);
 
 	for (x = 0; x < session->ignores; x++) {
 		ignore = session->ignore[x];
@@ -1034,7 +1037,7 @@ scan_local_repository(connector *session, char *base_path)
 					(strnstr(full_path, ".gituprevision", strlen(full_path)) != NULL ? true : false),
 					false);
 
-				if (ignore_file(session, full_path)) {
+				if (ignore_file(session, full_path, IGNORE_READ)) {
 					new_node->hash = (char *)malloc(20);
 
 					if (new_node->hash == NULL)
@@ -1693,7 +1696,7 @@ build_repair_command(connector *session)
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
 
-		if ((found == NULL) || ((strncmp(found->hash, find->hash, 40) != 0) && (!ignore_file(session, find->path)))) {
+		if ((found == NULL) || ((strncmp(found->hash, find->hash, 40) != 0) && (!ignore_file(session, find->path, IGNORE_READ)))) {
 			if (session->verbosity)
 				fprintf(stderr,
 					" ! %s %s\n",
@@ -3539,7 +3542,7 @@ main(int argc, char **argv)
 		.remote_history_file = NULL,
 		.ignore              = NULL,
 		.ignores             = 0,
-		.commit_history      = true,
+		.commit_history      = false,
 		.keep_pack_file      = false,
 		.use_pack_file       = false,
 		.verbosity           = 1,
@@ -3624,6 +3627,17 @@ main(int argc, char **argv)
 		if (optind == skip_optind)
 			optind++;
 	}
+
+	/* Warn if the configuration file is old. */
+
+	if (strstr(session.repository_path, ".git") == NULL)
+		fprintf(stderr,
+			"! The [%s] section in %s uses an outdated repository "
+			"path.\n! Please consider upgrading it with the latest "
+			"version at\n! https://github.com/johnmehr/gitup/"
+			"blob/main/gitup.conf\n",
+			session.section,
+			configuration_file);
 
 	/* Build the proxy credentials string. */
 
@@ -3820,11 +3834,11 @@ main(int argc, char **argv)
 			"# Target Directory: %s\n",
 			session.repository_path,
 			session.path_target);
-
+/*
 		fprintf(stderr,
 			"# Commit History: %s\n",
 			(session.commit_history ? "yes" : "no"));
-
+*/
 		if (session.use_pack_file == true)
 			fprintf(stderr,
 				"# Using pack file: %s\n",
@@ -3936,12 +3950,7 @@ main(int argc, char **argv)
 
 	RB_FOREACH_SAFE(file, Tree_Local_Path, &Local_Path, next_file) {
 		if ((file->keep == false) && ((current_repository == false) || (session.repair == true))) {
-			if (ignore_file(&session, file->path))
-				continue;
-
-			/* Skip files in the sys/arch/conf directories. */
-
-			if ((strstr(file->path, "sys/") != NULL) && (strstr(file->path, "/conf") != NULL))
+			if (ignore_file(&session, file->path, IGNORE_DELETE))
 				continue;
 
 			if ((session.verbosity) && (session.display_depth == 0))
