@@ -3897,7 +3897,9 @@ main(int argc, char **argv)
 	if ((session.repair) || (!session.clone)) {
 		command = build_repair_command(&session);
 
-		if (command != NULL) {
+		if (command == NULL) {
+			session.repair = false;
+		} else {
 			session.repair = true;
 
 			if (session.verbosity)
