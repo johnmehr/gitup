@@ -72,8 +72,8 @@ struct object_node {
 	char      *ref_delta_hash;
 	uint32_t   pack_offset;
 	char      *buffer;
-	uint32_t   buffer_size;
-	uint32_t   file_offset;
+	uint64_t   buffer_size;
+	int        file_offset;
 	bool       can_free;
 	char     **parent;
 	uint8_t    parents;
@@ -109,8 +109,8 @@ typedef struct {
 	char                *have;
 	char                *want;
 	char                *response;
-	int                  response_blocks;
-	uint32_t             response_size;
+	unsigned long        response_blocks;
+	uint64_t             response_size;
 	bool                 clone;
 	bool                 repair;
 	struct object_node **object;
@@ -122,25 +122,25 @@ typedef struct {
 	char                *remote_data_file;
 	char                *remote_history_file;
 	char               **ignore;
-	int                  ignores;
+	uint16_t             ignores;
 	bool                 keep_pack_file;
 	bool                 use_pack_file;
 	bool                 commit_history;
-	int                  verbosity;
+	uint8_t              verbosity;
 	uint8_t              display_depth;
 	char                *updating;
 	bool                 low_memory;
 	int                  back_store;
 } connector;
 
-static void     append(char **, unsigned int *, const char *, size_t);
+static void     append(char **, uint64_t *, const char *, size_t);
 static void     apply_deltas(connector *);
 static char *   build_clone_command(connector *);
 static char *   build_commit_command(connector *);
 static char *   build_pull_command(connector *);
 static char *   build_repair_command(connector *);
 static char *   calculate_file_hash(char *, int);
-static char *   calculate_object_hash(char *, uint32_t, int);
+static char *   calculate_object_hash(char *, uint64_t, int);
 static void     connect_server(connector *);
 static void     create_tunnel(connector *);
 static void     extend_updating_list(connector *, char *);
@@ -158,7 +158,7 @@ static char *   legible_hash(char *);
 static void     load_buffer(connector *, struct object_node *);
 static int      load_config(connector *, const char *, char **, int);
 static void     load_config_section(connector *, const ucl_object_t *);
-static void     load_file(const char *, char **, uint32_t *);
+static void     load_file(const char *, char **, uint64_t *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *, char *, bool);
 static void     load_remote_data(connector *);
@@ -172,17 +172,17 @@ static void     process_tree(connector *, int, char *, char *);
 static void     prune_tree(connector *, char *);
 static void     release_buffer(connector *, struct object_node *);
 static void     save_commit_history(connector *);
-static void     save_file(char *, int, char *, int, int, int);
+static void     save_file(char *, mode_t, char *, uint64_t, int, int);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
 static void     scan_local_repository(connector *, char *);
 static void     send_command(connector *, char *);
 static void     setup_ssl(connector *);
-static void     store_object(connector *, int, char *, int, int, int, char *);
+static void     store_object(connector *, uint8_t, char *, uint64_t, uint32_t, uint32_t, char *);
 static char *   trim_path(char *, int, bool *);
-static uint32_t unpack_delta_integer(char *, uint32_t *, int);
+static uint32_t unpack_delta_integer(char *, uint32_t *, uint8_t);
+static uint32_t unpack_integer(char *, uint32_t *);
 static void     unpack_objects(connector *);
-static uint32_t unpack_variable_length_integer(char *, uint32_t *);
 static void     usage(const char *);
 
 
@@ -288,7 +288,7 @@ static void release_buffer(connector *session, struct object_node *obj)
 
 static void load_buffer(connector *session, struct object_node *obj)
 {
-	int rd;
+	ssize_t rd;
 
 	if ((session->low_memory) && (!obj->buffer)) {
 		obj->buffer = malloc(obj->buffer_size);
@@ -304,7 +304,7 @@ static void load_buffer(connector *session, struct object_node *obj)
 
 		if (rd != (int)obj->buffer_size)
 			err(EXIT_FAILURE,
-				"load_buffer: read %d != %d",
+				"load_buffer: read %ld != %ld",
 				rd,
 				obj->buffer_size);
 	}
@@ -353,9 +353,9 @@ illegible_hash(char *hash_buffer)
 		err(EXIT_FAILURE, "illegible_hash: malloc");
 
 	for (x = 0; x < 20; x++)
-		hash[x] = 16 * ((uint8_t)hash_buffer[x * 2] -
+		hash[x] = 16 * (hash_buffer[x * 2] -
 			(hash_buffer[x * 2] > 58 ? 87 : 48)) +
-			(uint8_t)hash_buffer[x * 2 + 1] -
+			hash_buffer[x * 2 + 1] -
 			(hash_buffer[x * 2 + 1] > 58 ? 87 : 48);
 
 	return (hash);
@@ -472,10 +472,13 @@ prune_tree(connector *session, char *base_path)
 	struct dirent *entry = NULL;
 	struct stat    sb;
 	char           full_path[strlen(base_path) + 1 + MAXNAMLEN + 1];
+	size_t         length;
 
 	/* Sanity check the directory to prune. */
 
-	if (strnstr(base_path, session->path_target, strlen(session->path_target)) != base_path)
+	length = strlen(session->path_target);
+
+	if (strnstr(base_path, session->path_target, length) != base_path)
 		errc(EXIT_FAILURE, EACCES,
 			"prune_tree: %s is not located in the %s tree",
 			base_path,
@@ -550,7 +553,7 @@ path_exists(const char *path)
  */
 
 static void
-load_file(const char *path, char **buffer, uint32_t *buffer_size)
+load_file(const char *path, char **buffer, uint64_t *buffer_size)
 {
 	struct stat file;
 	int         fd;
@@ -559,17 +562,18 @@ load_file(const char *path, char **buffer, uint32_t *buffer_size)
 		err(EXIT_FAILURE, "load_file: cannot find %s", path);
 
 	if (file.st_size > 0) {
-		if (file.st_size > *buffer_size) {
-			*buffer_size = file.st_size;
+		if (file.st_size > (off_t)*buffer_size) {
+			*buffer_size = (uint64_t)file.st_size;
+			*buffer = (char *)realloc(*buffer, *buffer_size + 1);
 
-			if ((*buffer = (char *)realloc(*buffer, *buffer_size + 1)) == NULL)
+			if (buffer == NULL)
 				err(EXIT_FAILURE, "load_file: malloc");
 		}
 
 		if ((fd = open(path, O_RDONLY)) == -1)
 			err(EXIT_FAILURE, "load_file: cannot read %s", path);
 
-		if ((uint32_t)read(fd, *buffer, *buffer_size) != file.st_size)
+		if ((off_t)read(fd, *buffer, *buffer_size) != file.st_size)
 			errc(EXIT_FAILURE, EIO,
 				"load_file: problem reading %s",
 				path);
@@ -634,7 +638,7 @@ trim_path(char *path, int display_depth, bool *just_added)
  */
 
 static void
-save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, int display_depth)
+save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbosity, int display_depth)
 {
 	char temp_buffer[buffer_size + 1], *trim = NULL, *display_path = NULL;
 	int  fd;
@@ -709,11 +713,15 @@ save_file(char *path, int mode, char *buffer, int buffer_size, int verbosity, in
  */
 
 static char *
-calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
+calculate_object_hash(char *buffer, uint64_t buffer_size, int type)
 {
-	int         digits = buffer_size, header_width = 0;
+	uint64_t    digits = buffer_size;
+	size_t      header_width = 0;
 	char       *hash = NULL, *hash_buffer = NULL, *temp_buffer = NULL;
-	const char *types[8] = { "", "commit", "tree", "blob", "tag", "", "ofs-delta", "ref-delta" };
+	const char *types[8] = {
+		"", "commit", "tree", "blob", "tag",
+		"", "ofs-delta", "ref-delta"
+		};
 
 	if ((hash_buffer = (char *)malloc(20)) == NULL)
 		err(EXIT_FAILURE, "calculate_object_hash: malloc");
@@ -728,7 +736,7 @@ calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 	while ((digits /= 10) > 0)
 		header_width++;
 
-	snprintf(temp_buffer, header_width, "%s %u", types[type], buffer_size);
+	snprintf(temp_buffer, header_width, "%s %lu", types[type], buffer_size);
 
 	/* Then add the buffer. */
 
@@ -736,7 +744,9 @@ calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 
 	/* Calculate the SHA checksum. */
 
-	SHA1((uint8_t *)temp_buffer, buffer_size + header_width, (uint8_t *)hash_buffer);
+	SHA1((uint8_t *)temp_buffer,
+		buffer_size + header_width,
+		(uint8_t *)hash_buffer);
 
 	hash = legible_hash(hash_buffer);
 
@@ -757,7 +767,8 @@ static char *
 calculate_file_hash(char *path, int file_mode)
 {
 	char     *buffer = NULL, *hash = NULL, temp_path[BUFFER_UNIT_SMALL];
-	uint32_t  buffer_size = 0, bytes_read = 0;
+	uint64_t  buffer_size = 0;
+	ssize_t   bytes_read = 0;
 
 	if (S_ISLNK(file_mode)) {
 		bytes_read = readlink(path, temp_path, BUFFER_UNIT_SMALL);
@@ -781,7 +792,7 @@ calculate_file_hash(char *path, int file_mode)
  */
 
 static void
-append(char **buffer, unsigned int *buffer_size, const char *addendum, size_t addendum_size)
+append(char **buffer, uint64_t *buffer_size, const char *addendum, size_t addendum_size)
 {
 	*buffer = (char *)realloc(*buffer, *buffer_size + addendum_size + 1);
 
@@ -803,8 +814,8 @@ append(char **buffer, unsigned int *buffer_size, const char *addendum, size_t ad
 static void
 extend_updating_list(connector *session, char *path)
 {
-	unsigned int size;
-	char         temp[BUFFER_UNIT_SMALL];
+	uint64_t size;
+	char     temp[BUFFER_UNIT_SMALL];
 
 	size = (session->updating ? strlen(session->updating) : 0);
 
@@ -827,7 +838,9 @@ load_remote_data(connector *session)
 	char     *line = NULL, *raw = NULL, *path = NULL, *data = NULL;
 	char      temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL];
 	char      item[BUFFER_UNIT_SMALL];
-	uint32_t  count = 0, data_size = 0, buffer_size = 0, item_length = 0;
+	uint32_t  count = 0;
+	uint64_t  buffer_size = 0, data_size = 0;
+	size_t    item_length = 0;
 
 	load_file(session->remote_data_file, &data, &data_size);
 	raw = data;
@@ -887,7 +900,7 @@ load_remote_data(connector *session)
 
 		file = new_file_node(
 			NULL,
-			strtol(line, (char **)NULL, 8),
+			(mode_t)strtol(line, (char **)NULL, 8),
 			strdup(hash),
 			false,
 			false);
@@ -963,7 +976,7 @@ scan_local_repository(connector *session, char *base_path)
 	struct dirent    *entry = NULL;
 	struct file_node *new_node = NULL, find, *found = NULL;
 	char             *full_path = NULL, file_hash[20];
-	int               full_path_size = 0;
+	unsigned long     full_path_size = 0;
 
 	/* Make sure the base path exists in the remote data list. */
 
@@ -1072,7 +1085,7 @@ load_object(connector *session, char *hash, char *path)
 	struct object_node *object = NULL, lookup_object;
 	struct file_node   *find = NULL, lookup_file;
 	char               *buffer = NULL;
-	uint32_t            buffer_size = 0;
+	uint64_t            buffer_size = 0;
 
 	lookup_object.hash = hash;
 	lookup_file.hash   = hash;
@@ -1151,7 +1164,8 @@ connect_server(connector *session)
 {
 	struct addrinfo hints, *start = NULL, *tmp = NULL, *local = NULL;
 	struct timeval  timeout;
-	int             sd = 0, error = 0, option = 1, size = 0;
+	int             sd = 0, error = 0, option = 1;
+	socklen_t       size = 0;
 	char            type[10], *host = NULL;
 
 	/* Get addrinfo for local address. */
@@ -1279,34 +1293,34 @@ setup_ssl(connector *session)
 static void
 process_command(connector *session, char *command)
 {
-	char  read_buffer[BUFFER_UNIT_SMALL];
-	char *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
-	int   chunk_size = -1, bytes_expected = 0;
-	int   marker_offset = 0, data_start_offset = 0;
-	int   bytes_read = 0, total_bytes_read = 0, bytes_to_move = 0;
-	int   bytes_sent = 0, total_bytes_sent = 0, check_bytes = 0;
-	int   bytes_to_write = 0, response_code = 0, error = 0, outlen = 0;
-	bool  ok = false, chunked_transfer = true;
-	char *temp = NULL;
+	char     read_buffer[BUFFER_UNIT_SMALL], *temp = NULL;
+	char    *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
+	long     chunk_size = -1, response_code = 0;
+	ssize_t  marker_offset = 0, data_start_offset = 0;
+	ssize_t  bytes_read = 0, bytes_sent = 0, bytes_to_send = 0;
+	ssize_t  total_bytes_read = 0, total_bytes_sent = 0;
+	ssize_t  bytes_to_move = 0, bytes_expected = 0, check_bytes = 0;
+	int      error = 0, outlen = 0;
+	bool     ok = false, chunked_transfer = true;
 
-	bytes_to_write = strlen(command);
+	bytes_to_send = (ssize_t)strlen(command);
 
 	if (session->verbosity > 1)
 		fprintf(stderr, "%s\n\n", command);
 
 	/* Transmit the command to the server. */
 
-	while (total_bytes_sent < bytes_to_write) {
+	while (total_bytes_sent < bytes_to_send) {
 		if (session->ssl)
 			bytes_sent = SSL_write(
 				session->ssl,
 				command + total_bytes_sent,
-				bytes_to_write - total_bytes_sent);
+				(int)(bytes_to_send - total_bytes_sent));
 		else
 			bytes_sent = write(
 				session->socket_descriptor,
 				command + total_bytes_sent,
-				bytes_to_write - total_bytes_sent);
+				(size_t)(bytes_to_send - total_bytes_sent));
 
 		if (bytes_sent <= 0) {
 			if ((bytes_sent < 0) && ((errno == EINTR) || (errno == 0)))
@@ -1319,7 +1333,7 @@ process_command(connector *session, char *command)
 
 		if (session->verbosity > 1)
 			fprintf(stderr,
-				"\r==> bytes sent: %d",
+				"\r==> bytes sent: %ld",
 				total_bytes_sent);
 	}
 
@@ -1353,11 +1367,14 @@ process_command(connector *session, char *command)
 		 * data_start if the buffer moves.
 		 */
 
-		if (total_bytes_read + bytes_read + 1 > session->response_blocks * BUFFER_UNIT_LARGE) {
+		if ((unsigned long)(total_bytes_read + bytes_read + 1) > session->response_blocks * BUFFER_UNIT_LARGE) {
 			marker_offset     = marker_start - session->response;
 			data_start_offset = data_start   - session->response;
 
-			if ((session->response = (char *)realloc(session->response, ++session->response_blocks * BUFFER_UNIT_LARGE)) == NULL)
+			session->response = (char *)realloc(session->response,
+				++session->response_blocks * BUFFER_UNIT_LARGE);
+
+			if (session->response == NULL)
 				err(EXIT_FAILURE, "process_command: realloc");
 
 			marker_start = session->response + marker_offset;
@@ -1366,29 +1383,29 @@ process_command(connector *session, char *command)
 
 		/* Add the bytes received to the buffer. */
 
-		memcpy(session->response + total_bytes_read, read_buffer, bytes_read);
+		memcpy(session->response + total_bytes_read,
+			read_buffer,
+			(unsigned long)bytes_read);
+
 		total_bytes_read += bytes_read;
 		session->response[total_bytes_read] = '\0';
 
 		if (session->verbosity > 1)
 			fprintf(stderr, "\r==> "
-				"bytes read: %d\t"
-				"bytes_expected: %d\t"
-				"total_bytes_read: %d",
+				"bytes read: %zd\t"
+				"bytes_expected: %ld\t"
+				"total_bytes_read: %ld",
 				bytes_read,
 				bytes_expected,
 				total_bytes_read);
 
 		while ((session->verbosity == 1) && (isatty(STDERR_FILENO))) {
 			struct timespec now;
-			static struct timespec then;
-			char buf[80];
-			char htotalb[7];
-			char persec[8];
-			static int last_total;
-			static double sum;
-			double secs;
-			int64_t throughput;
+			static struct   timespec then;
+			char            buf[80], htotalb[7], persec[8];
+			static ssize_t  last_total;
+			static double   sum;
+			double          secs, throughput;
 
 			if (clock_gettime(CLOCK_MONOTONIC_FAST, &now) == -1)
 				err(EXIT_FAILURE,
@@ -1397,8 +1414,8 @@ process_command(connector *session, char *command)
 			if (then.tv_sec == 0)
 				then = now, secs = 1, sum = 1;
 			else {
-				secs = now.tv_sec - then.tv_sec +
-					(now.tv_nsec - then.tv_nsec) * 1e-9;
+				secs = (double)(now.tv_sec - then.tv_sec) +
+					(double)(now.tv_nsec - then.tv_nsec) * 1e-9;
 
 				if (1 > secs)
 					break;
@@ -1406,16 +1423,16 @@ process_command(connector *session, char *command)
 					sum += secs;
 			}
 
-			throughput = ((total_bytes_read - last_total) / secs);
+			throughput = ((double)(total_bytes_read - last_total) / secs);
 
 			humanize_number(htotalb, sizeof(htotalb),
-				(int64_t)total_bytes_read,
+				total_bytes_read,
 				"B",
 				HN_AUTOSCALE,
 				HN_DECIMAL | HN_DIVISOR_1000);
 
 			humanize_number(persec, sizeof(persec),
-				throughput,
+				(int64_t)throughput,
 				"B",
 				HN_AUTOSCALE,
 				HN_DECIMAL | HN_DIVISOR_1000);
@@ -1438,7 +1455,7 @@ process_command(connector *session, char *command)
 		/* Find the boundary between the header and the data. */
 
 		if (chunk_size == -1) {
-			if ((marker_start = strnstr(session->response, "\r\n\r\n", total_bytes_read)) == NULL) {
+			if ((marker_start = strnstr(session->response, "\r\n\r\n", (size_t)total_bytes_read)) == NULL) {
 				continue;
 			} else {
 				bytes_expected = marker_start - session->response + 4;
@@ -1448,7 +1465,9 @@ process_command(connector *session, char *command)
 				/* Check the response code. */
 
 				if (strstr(session->response, "HTTP/1.") == session->response) {
-					response_code = strtol(strchr(session->response, ' ') + 1, (char **)NULL, 10);
+					response_code = strtol(
+						strchr(session->response, ' ') + 1,
+						(char **)NULL, 10);
 
 					if (response_code == 200)
 						ok = true;
@@ -1460,7 +1479,10 @@ process_command(connector *session, char *command)
 				temp = strstr(session->response, "Content-Length: ");
 
 				if (temp != NULL) {
-					bytes_expected += strtol(temp + 16, (char **)NULL, 10);
+					bytes_expected += (uint64_t)strtol(
+						temp + 16,
+						(char **)NULL, 10);
+
 					chunk_size = -2;
 					chunked_transfer = false;
 				}
@@ -1478,12 +1500,12 @@ process_command(connector *session, char *command)
 		while ((chunked_transfer) && (total_bytes_read + chunk_size > bytes_expected)) {
 			/* Make sure the whole chunk marker has been read. */
 
-			check_bytes = total_bytes_read - (marker_start + 2 - session->response);
+			check_bytes = (ssize_t)(total_bytes_read - (marker_start + 2 - session->response));
 
 			if (check_bytes < 0)
 				break;
 
-			marker_end = strnstr(marker_start + 2, "\r\n", check_bytes);
+			marker_end = strnstr(marker_start + 2, "\r\n", (size_t)check_bytes);
 
 			if (marker_end == NULL)
 				break;
@@ -1491,19 +1513,19 @@ process_command(connector *session, char *command)
 			/* Remove the chunk length marker. */
 
 			chunk_size    = strtol(marker_start, (char **)NULL, 16);
-			bytes_to_move = total_bytes_read - (marker_end + 2 - session->response) + 1;
+			bytes_to_move = (ssize_t)(total_bytes_read - (marker_end + 2 - session->response) + 1);
 
 			if (bytes_to_move < 0)
 				break;
 
-			memmove(marker_start, marker_end + 2, bytes_to_move);
+			memmove(marker_start, marker_end + 2, (size_t)bytes_to_move);
 			total_bytes_read -= (marker_end + 2 - marker_start);
 
 			if (chunk_size == 0)
 				break;
 
-			marker_start += chunk_size;
-			bytes_expected += chunk_size;
+			marker_start   += (unsigned)chunk_size;
+			bytes_expected += (unsigned)chunk_size;
 		}
 	}
 
@@ -1517,7 +1539,7 @@ process_command(connector *session, char *command)
 
 	/* Remove the header. */
 
-	session->response_size = total_bytes_read - (data_start - session->response);
+	session->response_size = (uint64_t)(total_bytes_read - (data_start - session->response));
 	memmove(session->response, data_start, session->response_size);
 	session->response[session->response_size] = '\0';
 }
@@ -1691,7 +1713,7 @@ build_repair_command(connector *session)
 	struct file_node *find = NULL, *found = NULL;
 	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
 	const char       *message[2] = { "is missing.", "has been modified." };
-	uint32_t          want_size = 0;
+	uint64_t          want_size = 0;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
@@ -1750,7 +1772,7 @@ get_commit_details(connector *session)
 	time_t     current;
 	struct tm  now;
 	int        tries = 2, year = 0, quarter = 0;
-	uint16_t   length = 0;
+	unsigned long   length = 0;
 	bool       detached = (session->want != NULL ? true : false);
 
 	/* Send the initial info/refs command. */
@@ -1917,8 +1939,8 @@ get_commit_details(connector *session)
 static void
 load_pack(connector *session, char *file, bool history_file)
 {
-	char hash[20], *command = NULL;
-	int  pack_size = 0;
+	char   hash[20], *command = NULL;
+	size_t pack_size = 0;
 
 	if ((path_exists(file)) && (session->use_pack_file)) {
 		if (session->verbosity)
@@ -1987,8 +2009,9 @@ load_pack(connector *session, char *file, bool history_file)
 static void
 fetch_pack(connector *session, char *command)
 {
-	char *pack_start = NULL, hash[20];
-	int   chunk_size = 1, pack_size = 0, source = 0, target = 0;
+	char   *pack_start = NULL, hash[20];
+	long    chunk_size = 1, source = 0, target = 0;
+	size_t  pack_size = 0;
 
 	/* Request the pack data. */
 
@@ -2002,7 +2025,7 @@ fetch_pack(connector *session, char *command)
 			session->response);
 
 	pack_start -= 5;
-	session->response_size -= (pack_start - session->response + 11);
+	session->response_size -= (uint64_t)(pack_start - session->response + 11);
 	memmove(session->response, session->response + 8, 4);
 
 	/* Remove the chunk size markers from the pack data. */
@@ -2017,7 +2040,7 @@ fetch_pack(connector *session, char *command)
 
 		memmove(session->response + target,
 			session->response + source + 5,
-			chunk_size - 5);
+			(unsigned long)chunk_size - 5);
 
 		target += chunk_size - 5;
 		source += chunk_size;
@@ -2054,7 +2077,7 @@ fetch_pack(connector *session, char *command)
  */
 
 static void
-store_object(connector *session, int type, char *buffer, int buffer_size, int pack_offset, int index_delta, char *ref_delta_hash)
+store_object(connector *session, uint8_t type, char *buffer, uint64_t buffer_size, uint32_t pack_offset, uint32_t index_delta, char *ref_delta_hash)
 {
 	struct object_node *object = NULL, find;
 	char               *hash = NULL, *temp = NULL, parent[41];
@@ -2098,7 +2121,7 @@ store_object(connector *session, int type, char *buffer, int buffer_size, int pa
 
 		if (session->verbosity > 1)
 			fprintf(stdout,
-				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
+				"###### %05d-%d\t%d\t%lu\t%s\t%d\t%s\n",
 				object->index,
 				object->type,
 				object->pack_offset,
@@ -2112,7 +2135,7 @@ store_object(connector *session, int type, char *buffer, int buffer_size, int pa
 		if (type == 1) {
 			temp = buffer;
 
-			while ((temp + 47 - buffer < buffer_size) && ((temp = strstr(temp, "parent ")) != NULL)) {
+			while ((temp + 47 - buffer < (long)buffer_size) && ((temp = strstr(temp, "parent ")) != NULL)) {
 				ok    = true;
 				temp += 47;
 
@@ -2171,13 +2194,15 @@ store_object(connector *session, int type, char *buffer, int buffer_size, int pa
 static void
 unpack_objects(connector *session)
 {
-	int            buffer_size = 0, total_objects = 0, object_type = 0;
-	int            index_delta = 0, stream_code = 0, version = 0;
-	int            stream_bytes = 0, x = 0, tot_len = 0;
+	uint8_t        object_type = 0;
+	uint64_t       buffer_size = 0;
+	int            stream_code = 0, version = 0, tot_len = 0;
+	unsigned long  stream_bytes = 0, x = 0;
 	char          *buffer = NULL, *ref_delta_hash = NULL;
 	char           remote_files_tmp[BUFFER_UNIT_SMALL];
 	uint32_t       file_size = 0, file_bits = 0, pack_offset = 0;
-	uint32_t       lookup_offset = 0, position = 4, nobj_old = 0;
+	uint32_t       index_delta = 0, lookup_offset = 0;
+	uint32_t       position = 4, nobj_old = 0, total_objects = 0;
 	unsigned char  zlib_out[16384];
 
 	/* Setup the temporary object store file. */
@@ -2211,11 +2236,12 @@ unpack_objects(connector *session)
 	/* Determine the number of objects in the pack data. */
 
 	for (x = 0; x < 4; x++, position++)
-		total_objects = (total_objects << 8) + (uint8_t)session->response[position];
+		total_objects = (total_objects << 8)
+			+ (uint8_t)session->response[position];
 
 	if (session->verbosity > 1)
 		fprintf(stderr,
-			"\npack version: %d, total_objects: %d, pack_size: %d\n\n",
+			"\nversion: %d, total_objects: %d, pack_size: %ld\n\n",
 			version,
 			total_objects,
 			session->response_size);
@@ -2277,8 +2303,8 @@ unpack_objects(connector *session)
 			.zalloc   = Z_NULL,
 			.zfree    = Z_NULL,
 			.opaque   = Z_NULL,
-			.avail_in = session->response_size - position,
-			.next_in  = (unsigned char *)(session->response + position),
+			.avail_in = (uint32_t)session->response_size - position,
+			.next_in  = (uint8_t *)(session->response + position),
 			};
 
 		stream_code = inflateInit(&stream);
@@ -2293,7 +2319,11 @@ unpack_objects(connector *session)
 			stream_code      = inflate(&stream, Z_NO_FLUSH);
 			stream_bytes     = 16384 - stream.avail_out;
 
-			if ((buffer = (char *)realloc(buffer, buffer_size + stream_bytes)) == NULL)
+			buffer = (char *)realloc(
+				buffer,
+				buffer_size + stream_bytes);
+
+			if (buffer == NULL)
 				err(EXIT_FAILURE, "unpack_objects: realloc");
 
 			memcpy(buffer + buffer_size, zlib_out, stream_bytes);
@@ -2344,7 +2374,9 @@ unpack_objects(connector *session)
 				"unpack_objects: open tmp ro failure %s",
 				remote_files_tmp);
 
-		unlink(remote_files_tmp);   /* unlink now / dealocate when exit */
+		/* unlink now / dealocate when exit */
+
+		unlink(remote_files_tmp);
 	}
 }
 
@@ -2356,7 +2388,7 @@ unpack_objects(connector *session)
  */
 
 static uint32_t
-unpack_delta_integer(char *data, uint32_t *position, int bits)
+unpack_delta_integer(char *data, uint32_t *position, uint8_t bits)
 {
 	uint32_t result = 0, read_bytes = 0, temp = 0, mask = 8;
 
@@ -2376,7 +2408,7 @@ unpack_delta_integer(char *data, uint32_t *position, int bits)
 
 		do {
 			if (bits & (1 << mask))
-				result += ((uint8_t)data[*position + --temp] << (mask * 8));
+				result += (uint32_t)((uint8_t)data[*position + --temp] << (mask * 8));
 		}
 		while (mask-- > 0);
 
@@ -2388,17 +2420,17 @@ unpack_delta_integer(char *data, uint32_t *position, int bits)
 
 
 /*
- * unpack_variable_length_integer
+ * unpack_integer
  *
  * Function that reconstructs a variable length integer from the data stream.
  */
 
 static uint32_t
-unpack_variable_length_integer(char *data, uint32_t *position)
+unpack_integer(char *data, uint32_t *position)
 {
 	uint32_t result = 0, count = 0;
 
-	do result += (data[*position] & 0x7F) << (7 * count++);
+	do result += (uint32_t)((data[*position] & 0x7F) << (7 * count++));
 	while (data[(*position)++] & 0x80);
 
 	return (result);
@@ -2416,14 +2448,15 @@ static void
 apply_deltas(connector *session)
 {
 	struct object_node *delta, *base, lookup;
-	int       x = 0, instruction = 0, length_bits = 0, offset_bits = 0;
-	int       o = 0, delta_count = -1, deltas[BUFFER_UNIT_SMALL];
+	int       x = 0, o = 0, delta_count = -1;
 	char     *start, *merge_buffer = NULL, *layer_buffer = NULL;
-	uint32_t  offset = 0, position = 0, length = 0;
-	uint32_t  layer_buffer_size = 0, merge_buffer_size = 0;
+	uint8_t   length_bits = 0, offset_bits = 0;
+	uint32_t  deltas[BUFFER_UNIT_SMALL], instruction = 0;
+	uint32_t  offset = 0, position = 0, length = 0, layer_buffer_size = 0;
 	uint32_t  old_file_size = 0, new_file_size = 0, new_position = 0;
+	uint64_t  merge_buffer_size = 0;
 
-	for (o = session->objects - 1; o >= 0; o--) {
+	for (o = (int)session->objects - 1; o >= 0; o--) {
 		merge_buffer = NULL;
 		delta        = session->object[o];
 		delta_count  = 0;
@@ -2473,16 +2506,21 @@ apply_deltas(connector *session)
 
 			position      = 0;
 			new_position  = 0;
-			old_file_size = unpack_variable_length_integer(delta->buffer, &position);
-			new_file_size = unpack_variable_length_integer(delta->buffer, &position);
+			old_file_size = unpack_integer(delta->buffer, &position);
+			new_file_size = unpack_integer(delta->buffer, &position);
 
 			/* Make sure the layer buffer is large enough. */
 
 			if (new_file_size > layer_buffer_size) {
 				layer_buffer_size = new_file_size;
 
-				if ((layer_buffer = (char *)realloc(layer_buffer, layer_buffer_size)) == NULL)
-					err(EXIT_FAILURE, "apply_deltas: realloc");
+				layer_buffer = (char *)realloc(
+					layer_buffer,
+					layer_buffer_size);
+
+				if (layer_buffer == NULL)
+					err(EXIT_FAILURE,
+						"apply_deltas: realloc");
 			}
 
 			/*
@@ -2497,9 +2535,17 @@ apply_deltas(connector *session)
 					length_bits = (instruction & 0x70) >> 4;
 					offset_bits = (instruction & 0x0F);
 
-					offset = unpack_delta_integer(delta->buffer, &position, offset_bits);
-					start  = merge_buffer + offset;
-					length = unpack_delta_integer(delta->buffer, &position, length_bits);
+					offset = unpack_delta_integer(
+						delta->buffer,
+						&position,
+						offset_bits);
+
+					start = merge_buffer + offset;
+
+					length = unpack_delta_integer(
+						delta->buffer,
+						&position,
+						length_bits);
 
 					if (length == 0)
 						length = 65536;
@@ -2512,12 +2558,16 @@ apply_deltas(connector *session)
 
 				if (new_position + length > new_file_size)
 					errc(EXIT_FAILURE, ERANGE,
-						"apply_deltas: position overflow -- %u + %u > %u",
+						"apply_deltas: position"
+						" overflow -- %u + %u > %u",
 						new_position,
 						length,
 						new_file_size);
 
-				memcpy(layer_buffer + new_position, start, length);
+				memcpy(layer_buffer + new_position,
+					start,
+					length);
+
 				new_position += length;
 			}
 
@@ -2525,7 +2575,10 @@ apply_deltas(connector *session)
 
 			if (new_file_size > merge_buffer_size) {
 				merge_buffer_size = new_file_size;
-				merge_buffer = (char *)realloc(merge_buffer, merge_buffer_size);
+
+				merge_buffer = (char *)realloc(
+					merge_buffer,
+					merge_buffer_size);
 
 				if (merge_buffer == NULL)
 					err(EXIT_FAILURE,
@@ -2566,11 +2619,12 @@ apply_deltas(connector *session)
 static void
 extract_tree_item(struct file_node *file, char **position)
 {
-	int x = 0, path_size = 0;
+	int x = 0;
+	size_t path_size = 0;
 
 	/* Extract the file mode. */
 
-	file->mode = strtol(*position, (char **)NULL, 8);
+	file->mode = (mode_t)strtol(*position, (char **)NULL, 8);
 	*position  = strchr(*position, ' ') + 1;
 
 	/* Extract the file path. */
@@ -2605,7 +2659,7 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 	struct file_node   *new_node = NULL, *remote_file = NULL;
 	char                full_path[BUFFER_UNIT_SMALL], *buffer = NULL;
 	char                line[BUFFER_UNIT_SMALL], *position = NULL;
-	unsigned int        buffer_size = 0;
+	uint64_t            buffer_size = 0;
 
 	object.hash = hash;
 
@@ -3067,7 +3121,7 @@ extract_proxy_data(connector *session, const char *data)
 
 	free(session->proxy_host);
 	session->proxy_host = strdup(server);
-	session->proxy_port = strtol(port + 1, (char **)NULL, 10);
+	session->proxy_port = (uint16_t)strtol(port + 1, (char **)NULL, 10);
 
 	free(copy);
 }
@@ -3086,7 +3140,8 @@ load_config_section(connector *session, const ucl_object_t *section)
 	ucl_object_iter_t   its = NULL, iti = NULL;
 	const char         *key = NULL, *string = NULL;
 	char                temp[BUFFER_UNIT_SMALL];
-	int                 integer, length = 0;
+	long                integer;
+	size_t              length = 0;
 	bool                boolean, target, path, ignores;
 
 	its = ucl_object_iterate_new(section);
@@ -3112,7 +3167,7 @@ load_config_section(connector *session, const ucl_object_t *section)
 			session->commit_history = boolean;
 
 		if (strnstr(key, "display_depth", 16) != NULL)
-			session->display_depth = integer;
+			session->display_depth = (uint8_t)integer;
 
 		if (strnstr(key, "host", 4) != NULL) {
 			free(session->host);
@@ -3184,7 +3239,7 @@ load_config_section(connector *session, const ucl_object_t *section)
 			session->low_memory = boolean;
 
 		if (strnstr(key, "port", 4) != NULL)
-			session->port = integer;
+			session->port = (uint16_t)integer;
 
 		if (strnstr(key, "proxy_host", 10) != NULL) {
 			free(session->proxy_host);
@@ -3192,7 +3247,7 @@ load_config_section(connector *session, const ucl_object_t *section)
 		}
 
 		if (strnstr(key, "proxy_port", 10) != NULL)
-			session->proxy_port = integer;
+			session->proxy_port = (uint16_t)integer;
 
 		if (strnstr(key, "proxy_password", 14) != NULL) {
 			free(session->proxy_password);
@@ -3244,7 +3299,7 @@ load_config_section(connector *session, const ucl_object_t *section)
 		}
 
 		if (strnstr(key, "verbosity", 9) != NULL)
-			session->verbosity = integer;
+			session->verbosity = (uint8_t)integer;
 
 		if (strnstr(key, "work_directory", 14) != NULL) {
 			free(session->path_work);
@@ -3271,7 +3326,7 @@ load_config(connector *session, const char *configuration_file, char **argv, int
 	ucl_object_iter_t   it = NULL;
 	const char         *target = NULL;
 	char               *sections = NULL, temp[BUFFER_UNIT_SMALL];
-	unsigned int        sections_size = 0;
+	uint64_t            sections_size = 0;
 	uint8_t             argument_index = 0, x = 0;
 	struct stat         check_file;
 
@@ -3394,8 +3449,8 @@ load_config(connector *session, const char *configuration_file, char **argv, int
 static void
 extract_command_line_want(connector *session, char *option)
 {
-	char *extension = NULL, *temp = NULL, *want = NULL, *start = NULL;
-	int   length = 0;
+	char   *extension = NULL, *temp = NULL, *want = NULL, *start = NULL;
+	size_t  length = 0;
 
 	if (!path_exists(option))
 		err(EXIT_FAILURE,
@@ -3426,7 +3481,8 @@ extract_command_line_want(connector *session, char *option)
 	while ((temp = strchr(start, '/')) != NULL)
 		start = temp + 1;
 
-	want = strnstr(start, session->section, length - (start - option));
+	length -= (size_t)(start - option);
+	want    = strnstr(start, session->section, length);
 
 	if (want == NULL)
 		return;
@@ -3494,8 +3550,9 @@ main(int argc, char **argv)
 	char      section[BUFFER_UNIT_SMALL];
 	char      gitup_revision[BUFFER_UNIT_SMALL];
 	char      gitup_revision_path[BUFFER_UNIT_SMALL];
-	int       x = 0, option = 0, length = 0;
-	int       base64_credentials_length = 0, skip_optind = 0;
+	int       option = 0;
+	size_t    length = 0;
+	int       x = 0, base64_credentials_length = 0, skip_optind = 0;
 	uint32_t  o = 0;
 	bool      encoded = false, just_added = false;
 	bool      current_repository = false, path_target_exists = false;
@@ -3593,7 +3650,7 @@ main(int argc, char **argv)
 				session.clone = true;
 				break;
 			case 'd':
-				session.display_depth = strtol(optarg, (char **)NULL, 10);
+				session.display_depth = (uint8_t)strtol(optarg, (char **)NULL, 10);
 				break;
 			case 'h':
 				session.have = strdup(optarg);
@@ -3617,7 +3674,7 @@ main(int argc, char **argv)
 				extract_command_line_want(&session, optarg);
 				break;
 			case 'v':
-				session.verbosity = strtol(optarg, (char **)NULL, 10);
+				session.verbosity = (uint8_t)strtol(optarg, (char **)NULL, 10);
 				break;
 			case 'w':
 				session.want = strdup(optarg);
@@ -3654,7 +3711,7 @@ main(int argc, char **argv)
 			(unsigned char *)base64_credentials,
 			&base64_credentials_length,
 			(unsigned char *)credentials,
-			strlen(credentials));
+			(int)strlen(credentials));
 
 		EVP_EncodeFinal(&evp_ctx,
 			(unsigned char *)base64_credentials,
@@ -3738,19 +3795,19 @@ main(int argc, char **argv)
 	temp   = strdup(session.remote_data_file);
 	length = strlen(session.section);
 
-	for (x = 0; x < length - 1; x++)
-		if ((!isalpha(session.section[x])) && (!isdigit(session.section[x]))) {
+	for (o = 0; o < length - 1; o++)
+		if ((!isalpha(session.section[o])) && (!isdigit(session.section[o]))) {
 			if ((session.section = (char *)realloc(session.section, length + 2)) == NULL)
 				err(EXIT_FAILURE, "main: realloc");
 
-			memcpy(section, session.section + x + 1, length - x);
-			snprintf(session.section + x, length - x + 3,
+			memcpy(section, session.section + o + 1, length - o);
+			snprintf(session.section + o, length - o + 3,
 				"%%%X%s",
-				session.section[x],
+				session.section[o],
 				section);
 
 			length += 2;
-			x += 2;
+			o += 2;
 			encoded = true;
 		}
 
@@ -3940,7 +3997,7 @@ main(int argc, char **argv)
 		save_file(gitup_revision_path,
 			0644,
 			gitup_revision,
-			strlen(gitup_revision),
+			(uint32_t)strlen(gitup_revision),
 			0,
 			0);
 	}
@@ -3995,7 +4052,7 @@ main(int argc, char **argv)
 	for (o = 0; o < session.objects; o++) {
 		if (session.verbosity > 1)
 			fprintf(stdout,
-				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
+				"###### %05d-%d\t%d\t%lu\t%s\t%d\t%s\n",
 				session.object[o]->index,
 				session.object[o]->type,
 				session.object[o]->pack_offset,
