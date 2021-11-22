@@ -53,7 +53,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "0.96"
+#define GITUP_VERSION     "0.97"
 #define BUFFER_UNIT_SMALL  4096
 #define BUFFER_UNIT_LARGE  1048576
 #define IGNORE_READ        1
@@ -73,7 +73,7 @@ struct object_node {
 	uint32_t   pack_offset;
 	char      *buffer;
 	uint64_t   buffer_size;
-	int        file_offset;
+	off_t      file_offset;
 	bool       can_free;
 	char     **parent;
 	uint8_t    parents;
@@ -139,7 +139,7 @@ static char *   build_clone_command(connector *);
 static char *   build_commit_command(connector *);
 static char *   build_pull_command(connector *);
 static char *   build_repair_command(connector *);
-static char *   calculate_file_hash(char *, int);
+static char *   calculate_file_hash(char *, mode_t);
 static char *   calculate_object_hash(char *, uint64_t, int);
 static void     connect_server(connector *);
 static void     create_tunnel(connector *);
@@ -291,22 +291,23 @@ static void load_buffer(connector *session, struct object_node *obj)
 	ssize_t rd;
 
 	if ((session->low_memory) && (!obj->buffer)) {
-		obj->buffer = malloc(obj->buffer_size);
+		obj->buffer = (char *)malloc(obj->buffer_size);
 
-		if (!obj->buffer)
+		if (obj->buffer == NULL)
 			err(EXIT_FAILURE, "load_buffer: malloc");
 
 		lseek(session->back_store, obj->file_offset, SEEK_SET);
 
 		rd = read(session->back_store,
 			obj->buffer,
-			obj->buffer_size);
+			(size_t)obj->buffer_size);
 
-		if (rd != (int)obj->buffer_size)
+		if (rd != (ssize_t)obj->buffer_size)
 			err(EXIT_FAILURE,
-				"load_buffer: read %ld != %ld",
+				"load_buffer: read %ld != %ld - %d",
 				rd,
-				obj->buffer_size);
+				obj->buffer_size,
+				session->back_store);
 	}
 }
 
@@ -353,10 +354,10 @@ illegible_hash(char *hash_buffer)
 		err(EXIT_FAILURE, "illegible_hash: malloc");
 
 	for (x = 0; x < 20; x++)
-		hash[x] = 16 * (hash_buffer[x * 2] -
+		hash[x] = (char)(16 * (hash_buffer[x * 2] -
 			(hash_buffer[x * 2] > 58 ? 87 : 48)) +
 			hash_buffer[x * 2 + 1] -
-			(hash_buffer[x * 2 + 1] > 58 ? 87 : 48);
+			(hash_buffer[x * 2 + 1] > 58 ? 87 : 48));
 
 	return (hash);
 }
@@ -764,7 +765,7 @@ calculate_object_hash(char *buffer, uint64_t buffer_size, int type)
  */
 
 static char *
-calculate_file_hash(char *path, int file_mode)
+calculate_file_hash(char *path, mode_t file_mode)
 {
 	char     *buffer = NULL, *hash = NULL, temp_path[BUFFER_UNIT_SMALL];
 	uint64_t  buffer_size = 0;
@@ -1479,7 +1480,7 @@ process_command(connector *session, char *command)
 				temp = strstr(session->response, "Content-Length: ");
 
 				if (temp != NULL) {
-					bytes_expected += (uint64_t)strtol(
+					bytes_expected += (ssize_t)strtol(
 						temp + 16,
 						(char **)NULL, 10);
 
@@ -2147,7 +2148,7 @@ store_object(connector *session, uint8_t type, char *buffer, uint64_t buffer_siz
 				memcpy(parent, temp - 40, 40);
 
 				for (int x = 0; x < 40; x++)
-					if (!isxdigit(parent[x]))
+					if (!isxdigit((uint8_t)parent[x]))
 						ok = false;
 
 				if (!ok)
@@ -2194,13 +2195,14 @@ store_object(connector *session, uint8_t type, char *buffer, uint64_t buffer_siz
 static void
 unpack_objects(connector *session)
 {
-	uint8_t        object_type = 0;
+	uint8_t        object_type = 0, file_bits = 0;
 	uint64_t       buffer_size = 0;
-	int            stream_code = 0, version = 0, tot_len = 0;
+	int            stream_code = 0, version = 0;
+	off_t          cache_length = 0;
 	unsigned long  stream_bytes = 0, x = 0;
 	char          *buffer = NULL, *ref_delta_hash = NULL;
 	char           remote_files_tmp[BUFFER_UNIT_SMALL];
-	uint32_t       file_size = 0, file_bits = 0, pack_offset = 0;
+	uint32_t       file_size = 0, pack_offset = 0;
 	uint32_t       index_delta = 0, lookup_offset = 0;
 	uint32_t       position = 4, nobj_old = 0, total_objects = 0;
 	unsigned char  zlib_out[16384];
@@ -2259,8 +2261,8 @@ unpack_objects(connector *session)
 		/* Extract the file size. */
 
 		do {
-			file_bits  = session->response[position] & (stream_bytes == 0 ? 0x0F : 0x7F);
-			file_size += (stream_bytes == 0 ? file_bits : file_bits << (4 + 7 * (stream_bytes - 1)));
+			file_bits  = (uint8_t)(session->response[position] & (stream_bytes == 0 ? 0x0F : 0x7F));
+			file_size += (stream_bytes == 0 ? file_bits : (uint32_t)(file_bits << (4 + 7 * (stream_bytes - 1))));
 			stream_bytes++;
 		}
 		while (session->response[position++] & 0x80);
@@ -2332,10 +2334,10 @@ unpack_objects(connector *session)
 		while (stream.avail_out == 0);
 
 		inflateEnd(&stream);
-		position += stream.total_in;
+		position += (uint32_t)stream.total_in;
 
 		if (session->low_memory) {
-			write(session->back_store, buffer, buffer_size);
+			write(session->back_store, buffer, (size_t)buffer_size);
 			nobj_old = session->objects;
 		}
 
@@ -2351,10 +2353,10 @@ unpack_objects(connector *session)
 			if (nobj_old != session->objects) {
 				session->object[nobj_old]->buffer      = NULL;
 				session->object[nobj_old]->can_free    = false;
-				session->object[nobj_old]->file_offset = tot_len;
+				session->object[nobj_old]->file_offset = cache_length;
 			}
 
-			tot_len += buffer_size;
+			cache_length += buffer_size;
 
 			free(buffer);
 		}
@@ -2453,7 +2455,7 @@ apply_deltas(connector *session)
 	uint8_t   length_bits = 0, offset_bits = 0;
 	uint32_t  deltas[BUFFER_UNIT_SMALL], instruction = 0;
 	uint32_t  offset = 0, position = 0, length = 0, layer_buffer_size = 0;
-	uint32_t  old_file_size = 0, new_file_size = 0, new_position = 0;
+	uint32_t  old_file_size, new_file_size, new_position = 0;
 	uint64_t  merge_buffer_size = 0;
 
 	for (o = (int)session->objects - 1; o >= 0; o--) {
@@ -3557,7 +3559,7 @@ main(int argc, char **argv)
 	bool      encoded = false, just_added = false;
 	bool      current_repository = false, path_target_exists = false;
 	bool      remote_data_exists = false, remote_history_exists = false;
-	bool      pack_data_exists = false, pack_history_exists = false;
+	bool      pack_data_exists = false, pack_history_exists;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	EVP_ENCODE_CTX      evp_ctx;
@@ -3725,7 +3727,7 @@ main(int argc, char **argv)
 			(unsigned char *)base64_credentials,
 			&base64_credentials_length,
 			(unsigned char *)credentials,
-			strlen(credentials));
+			(int)strlen(credentials));
 
 		EVP_EncodeFinal(evp_ctx,
 			(unsigned char *)base64_credentials,
@@ -3796,7 +3798,7 @@ main(int argc, char **argv)
 	length = strlen(session.section);
 
 	for (o = 0; o < length - 1; o++)
-		if ((!isalpha(session.section[o])) && (!isdigit(session.section[o]))) {
+		if ((!isalpha((uint8_t)session.section[o])) && (!isdigit((uint8_t)session.section[o]))) {
 			if ((session.section = (char *)realloc(session.section, length + 2)) == NULL)
 				err(EXIT_FAILURE, "main: realloc");
 
