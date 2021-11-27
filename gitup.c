@@ -72,7 +72,7 @@ struct object_node {
 	char      *ref_delta_hash;
 	uint32_t   pack_offset;
 	char      *buffer;
-	uint64_t   buffer_size;
+	uint32_t   buffer_size;
 	off_t      file_offset;
 	bool       can_free;
 	char     **parent;
@@ -110,7 +110,7 @@ typedef struct {
 	char                *want;
 	char                *response;
 	unsigned long        response_blocks;
-	uint64_t             response_size;
+	uint32_t             response_size;
 	bool                 clone;
 	bool                 repair;
 	struct object_node **object;
@@ -133,14 +133,14 @@ typedef struct {
 	int                  back_store;
 } connector;
 
-static void     append(char **, uint64_t *, const char *, size_t);
+static void     append(char **, uint32_t *, const char *, size_t);
 static void     apply_deltas(connector *);
 static char *   build_clone_command(connector *);
 static char *   build_commit_command(connector *);
 static char *   build_pull_command(connector *);
 static char *   build_repair_command(connector *);
 static char *   calculate_file_hash(char *, mode_t);
-static char *   calculate_object_hash(char *, uint64_t, int);
+static char *   calculate_object_hash(char *, uint32_t, int);
 static void     connect_server(connector *);
 static void     create_tunnel(connector *);
 static void     extend_updating_list(connector *, char *);
@@ -158,7 +158,7 @@ static char *   legible_hash(char *);
 static void     load_buffer(connector *, struct object_node *);
 static int      load_config(connector *, const char *, char **, int);
 static void     load_config_section(connector *, const ucl_object_t *);
-static void     load_file(const char *, char **, uint64_t *);
+static void     load_file(const char *, char **, uint32_t *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *, char *, bool);
 static void     load_remote_data(connector *);
@@ -178,7 +178,7 @@ static void     save_repairs(connector *);
 static void     scan_local_repository(connector *, char *);
 static void     send_command(connector *, char *);
 static void     setup_ssl(connector *);
-static void     store_object(connector *, uint8_t, char *, uint64_t, uint32_t, uint32_t, char *);
+static void     store_object(connector *, uint8_t, char *, uint32_t, uint32_t, uint32_t, char *);
 static char *   trim_path(char *, int, bool *);
 static uint32_t unpack_delta_integer(char *, uint32_t *, uint8_t);
 static uint32_t unpack_integer(char *, uint32_t *);
@@ -304,10 +304,9 @@ static void load_buffer(connector *session, struct object_node *obj)
 
 		if (rd != (ssize_t)obj->buffer_size)
 			err(EXIT_FAILURE,
-				"load_buffer: read %ld != %ld - %d",
+				"load_buffer: read %ld != %d",
 				rd,
-				obj->buffer_size,
-				session->back_store);
+				obj->buffer_size);
 	}
 }
 
@@ -554,7 +553,7 @@ path_exists(const char *path)
  */
 
 static void
-load_file(const char *path, char **buffer, uint64_t *buffer_size)
+load_file(const char *path, char **buffer, uint32_t *buffer_size)
 {
 	struct stat file;
 	int         fd;
@@ -564,7 +563,7 @@ load_file(const char *path, char **buffer, uint64_t *buffer_size)
 
 	if (file.st_size > 0) {
 		if (file.st_size > (off_t)*buffer_size) {
-			*buffer_size = (uint64_t)file.st_size;
+			*buffer_size = (uint32_t)file.st_size;
 			*buffer = (char *)realloc(*buffer, *buffer_size + 1);
 
 			if (buffer == NULL)
@@ -714,7 +713,7 @@ save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbo
  */
 
 static char *
-calculate_object_hash(char *buffer, uint64_t buffer_size, int type)
+calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 {
 	uint64_t    digits = buffer_size;
 	size_t      header_width = 0;
@@ -737,7 +736,7 @@ calculate_object_hash(char *buffer, uint64_t buffer_size, int type)
 	while ((digits /= 10) > 0)
 		header_width++;
 
-	snprintf(temp_buffer, header_width, "%s %lu", types[type], buffer_size);
+	snprintf(temp_buffer, header_width, "%s %u", types[type], buffer_size);
 
 	/* Then add the buffer. */
 
@@ -768,14 +767,17 @@ static char *
 calculate_file_hash(char *path, mode_t file_mode)
 {
 	char     *buffer = NULL, *hash = NULL, temp_path[BUFFER_UNIT_SMALL];
-	uint64_t  buffer_size = 0;
+	uint32_t  buffer_size = 0;
 	ssize_t   bytes_read = 0;
 
 	if (S_ISLNK(file_mode)) {
 		bytes_read = readlink(path, temp_path, BUFFER_UNIT_SMALL);
 		temp_path[bytes_read] = '\0';
 
-		hash = calculate_object_hash(temp_path, strlen(temp_path), 3);
+		hash = calculate_object_hash(
+			temp_path,
+			(uint32_t)strlen(temp_path),
+			3);
 	} else {
 		load_file(path, &buffer, &buffer_size);
 		hash = calculate_object_hash(buffer, buffer_size, 3);
@@ -793,7 +795,7 @@ calculate_file_hash(char *path, mode_t file_mode)
  */
 
 static void
-append(char **buffer, uint64_t *buffer_size, const char *addendum, size_t addendum_size)
+append(char **buffer, uint32_t *buffer_size, const char *addendum, size_t addendum_size)
 {
 	*buffer = (char *)realloc(*buffer, *buffer_size + addendum_size + 1);
 
@@ -815,10 +817,10 @@ append(char **buffer, uint64_t *buffer_size, const char *addendum, size_t addend
 static void
 extend_updating_list(connector *session, char *path)
 {
-	uint64_t size;
+	uint32_t size;
 	char     temp[BUFFER_UNIT_SMALL];
 
-	size = (session->updating ? strlen(session->updating) : 0);
+	size = (session->updating ? (uint32_t)strlen(session->updating) : 0);
 
 	snprintf(temp, sizeof(temp), "#\t%s\n", path);
 	append(&session->updating, &size, temp, strlen(temp));
@@ -839,8 +841,7 @@ load_remote_data(connector *session)
 	char     *line = NULL, *raw = NULL, *path = NULL, *data = NULL;
 	char      temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL];
 	char      item[BUFFER_UNIT_SMALL];
-	uint32_t  count = 0;
-	uint64_t  buffer_size = 0, data_size = 0;
+	uint32_t  count = 0, buffer_size = 0, data_size = 0;
 	size_t    item_length = 0;
 
 	load_file(session->remote_data_file, &data, &data_size);
@@ -1086,7 +1087,7 @@ load_object(connector *session, char *hash, char *path)
 	struct object_node *object = NULL, lookup_object;
 	struct file_node   *find = NULL, lookup_file;
 	char               *buffer = NULL;
-	uint64_t            buffer_size = 0;
+	uint32_t            buffer_size = 0;
 
 	lookup_object.hash = hash;
 	lookup_file.hash   = hash;
@@ -1540,7 +1541,7 @@ process_command(connector *session, char *command)
 
 	/* Remove the header. */
 
-	session->response_size = (uint64_t)(total_bytes_read - (data_start - session->response));
+	session->response_size = (uint32_t)(total_bytes_read - (data_start - session->response));
 	memmove(session->response, data_start, session->response_size);
 	session->response[session->response_size] = '\0';
 }
@@ -1714,7 +1715,7 @@ build_repair_command(connector *session)
 	struct file_node *find = NULL, *found = NULL;
 	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
 	const char       *message[2] = { "is missing.", "has been modified." };
-	uint64_t          want_size = 0;
+	uint32_t          want_size = 0;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
@@ -2078,7 +2079,7 @@ fetch_pack(connector *session, char *command)
  */
 
 static void
-store_object(connector *session, uint8_t type, char *buffer, uint64_t buffer_size, uint32_t pack_offset, uint32_t index_delta, char *ref_delta_hash)
+store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_size, uint32_t pack_offset, uint32_t index_delta, char *ref_delta_hash)
 {
 	struct object_node *object = NULL, find;
 	char               *hash = NULL, *temp = NULL, parent[41];
@@ -2122,7 +2123,7 @@ store_object(connector *session, uint8_t type, char *buffer, uint64_t buffer_siz
 
 		if (session->verbosity > 1)
 			fprintf(stdout,
-				"###### %05d-%d\t%d\t%lu\t%s\t%d\t%s\n",
+				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
 				object->index,
 				object->type,
 				object->pack_offset,
@@ -2163,7 +2164,9 @@ store_object(connector *session, uint8_t type, char *buffer, uint64_t buffer_siz
 
 				object->parent[object->parents++] = strdup(parent);
 			}
-/*
+		}
+
+
 			char path[1024];
 			int fd;
 
@@ -2175,8 +2178,6 @@ store_object(connector *session, uint8_t type, char *buffer, uint64_t buffer_siz
 			chmod(path, 0644);
 			write(fd, object->buffer, object->buffer_size);
 			close(fd);
-*/
-		}
 
 		if (type < 6)
 			RB_INSERT(Tree_Objects, &Objects, object);
@@ -2195,17 +2196,15 @@ store_object(connector *session, uint8_t type, char *buffer, uint64_t buffer_siz
 static void
 unpack_objects(connector *session)
 {
-	uint8_t        object_type = 0, file_bits = 0;
-	uint64_t       buffer_size = 0;
-	int            stream_code = 0, version = 0;
-	off_t          cache_length = 0;
 	unsigned long  stream_bytes = 0, x = 0;
-	char          *buffer = NULL, *ref_delta_hash = NULL;
-	char           remote_files_tmp[BUFFER_UNIT_SMALL];
-	uint32_t       file_size = 0, pack_offset = 0;
+	uint32_t       buffer_size = 0, size = 0, pack_offset = 0;
 	uint32_t       index_delta = 0, lookup_offset = 0;
 	uint32_t       position = 4, nobj_old = 0, total_objects = 0;
-	unsigned char  zlib_out[16384];
+	uint8_t        object_type = 0, bits = 0, mask = 0, zlib_out[16384];
+	off_t          cache_length = 0;
+	int            stream_code = 0, version = 0;
+	char          *buffer = NULL, *ref_delta_hash = NULL;
+	char           remote_files_tmp[BUFFER_UNIT_SMALL];
 
 	/* Setup the temporary object store file. */
 
@@ -2243,7 +2242,7 @@ unpack_objects(connector *session)
 
 	if (session->verbosity > 1)
 		fprintf(stderr,
-			"\nversion: %d, total_objects: %d, pack_size: %ld\n\n",
+			"\nversion: %d, total_objects: %d, pack_size: %d\n\n",
 			version,
 			total_objects,
 			session->response_size);
@@ -2254,15 +2253,16 @@ unpack_objects(connector *session)
 		object_type    = (uint8_t)session->response[position] >> 4 & 0x07;
 		pack_offset    = position;
 		index_delta    = 0;
-		file_size      = 0;
+		size           = 0;
 		stream_bytes   = 0;
 		ref_delta_hash = NULL;
 
 		/* Extract the file size. */
 
 		do {
-			file_bits  = (uint8_t)(session->response[position] & (stream_bytes == 0 ? 0x0F : 0x7F));
-			file_size += (stream_bytes == 0 ? file_bits : (uint32_t)(file_bits << (4 + 7 * (stream_bytes - 1))));
+			mask = (stream_bytes == 0 ? 0x0F : 0x7F);
+			bits = (uint8_t)(session->response[position] & mask);
+			size = (size << 7) + bits;
 			stream_bytes++;
 		}
 		while (session->response[position++] & 0x80);
@@ -2356,7 +2356,7 @@ unpack_objects(connector *session)
 				session->object[nobj_old]->file_offset = cache_length;
 			}
 
-			cache_length += buffer_size;
+			cache_length += (off_t)buffer_size;
 
 			free(buffer);
 		}
@@ -2661,7 +2661,7 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 	struct file_node   *new_node = NULL, *remote_file = NULL;
 	char                full_path[BUFFER_UNIT_SMALL], *buffer = NULL;
 	char                line[BUFFER_UNIT_SMALL], *position = NULL;
-	uint64_t            buffer_size = 0;
+	uint32_t            buffer_size = 0;
 
 	object.hash = hash;
 
@@ -3328,7 +3328,7 @@ load_config(connector *session, const char *configuration_file, char **argv, int
 	ucl_object_iter_t   it = NULL;
 	const char         *target = NULL;
 	char               *sections = NULL, temp[BUFFER_UNIT_SMALL];
-	uint64_t            sections_size = 0;
+	uint32_t            sections_size = 0;
 	uint8_t             argument_index = 0, x = 0;
 	struct stat         check_file;
 
@@ -4054,7 +4054,7 @@ main(int argc, char **argv)
 	for (o = 0; o < session.objects; o++) {
 		if (session.verbosity > 1)
 			fprintf(stdout,
-				"###### %05d-%d\t%d\t%lu\t%s\t%d\t%s\n",
+				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
 				session.object[o]->index,
 				session.object[o]->type,
 				session.object[o]->pack_offset,
