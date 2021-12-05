@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd June 25, 2021
+.Dd December 5, 2021
 .Dt GITUP.CONF(5)
 .Os
 .Sh NAME
@@ -79,7 +79,7 @@ The local directory to store your copy of the repository.
 .It Cm ignores
 An array of directories in the local tree that should be ignored only when
 deleting files.  Any changes to upstream files in these directories will be
-pulled down and merged.
+pulled down and merged.  Regular expressions are supported.
 .It Cm low_memory
 Low memory mode reduces memory usage by storing temporary object data to disk.
 .It Cm verbosity

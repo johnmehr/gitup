@@ -46,6 +46,7 @@
 #include <fcntl.h>
 #include <libutil.h>
 #include <netdb.h>
+#include <regex.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -121,7 +122,7 @@ typedef struct {
 	char                *path_work;
 	char                *remote_data_file;
 	char                *remote_history_file;
-	char               **ignore;
+	regex_t            **ignore;
 	uint16_t             ignores;
 	bool                 keep_pack_file;
 	bool                 use_pack_file;
@@ -133,6 +134,7 @@ typedef struct {
 	int                  back_store;
 } connector;
 
+static void     add_ignore(connector *, const char *);
 static void     append(char **, uint32_t *, const char *, size_t);
 static void     apply_deltas(connector *);
 static char *   build_clone_command(connector *);
@@ -371,8 +373,8 @@ illegible_hash(char *hash_buffer)
 static bool
 ignore_file(connector *session, char *path, uint8_t flag)
 {
-	char *ignore = NULL;
-	int   x;
+	int  x, code;
+	bool match = false;
 
 	/* Files in the sys/arch/conf directories must be read. */
 
@@ -381,13 +383,17 @@ ignore_file(connector *session, char *path, uint8_t flag)
 			return (false);
 
 	for (x = 0; x < session->ignores; x++) {
-		ignore = session->ignore[x];
+		code = regexec(session->ignore[x], path, 0, NULL, 0);
 
-		if (strncmp(path, ignore, strlen(ignore)) == 0)
-			return (true);
-	}
+		if (code == 0)
+			match = true;
+		else if (code != REG_NOMATCH)
+			warnx("! ignore_file error: %s (error code %d)\n",
+			path,
+			code);
+		}
 
-	return (false);
+	return (match);
 }
 
 
@@ -514,10 +520,11 @@ prune_tree(connector *session, char *base_path)
 
 			prune_tree(session, full_path);
 		} else {
-			if (remove(full_path) == -1)
-				err(EXIT_FAILURE,
-					"prune_tree: cannot remove %s",
-					full_path);
+			if (!ignore_file(session, full_path, IGNORE_DELETE))
+				if (remove(full_path) == -1)
+					err(EXIT_FAILURE,
+						"prune_tree: cannot remove %s",
+						full_path);
 		}
 	}
 
@@ -2165,20 +2172,17 @@ store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_siz
 				object->parent[object->parents++] = strdup(parent);
 			}
 		}
-
-
+/*
 			char path[1024];
 			int fd;
 
 			snprintf(path, sizeof(path), "./temp/b%04d-%d-%s.out", object->index, object->type, object->hash);
 
-			if ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)) == -1)
-				err(EXIT_FAILURE, "save_objects: write file failure %s", path);
-
+			fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
 			chmod(path, 0644);
 			write(fd, object->buffer, object->buffer_size);
 			close(fd);
-
+*/
 		if (type < 6)
 			RB_INSERT(Tree_Objects, &Objects, object);
 
@@ -3130,6 +3134,42 @@ extract_proxy_data(connector *session, const char *data)
 
 
 /*
+ * add_ignore
+ *
+ * Procedure that adds a directory to be ignored when updating the local tree.
+ */
+
+static void
+add_ignore(connector *session, const char *string)
+{
+	regex_t reg_temp;
+	int     ret_temp;
+
+	ret_temp = regcomp(&reg_temp, string, REG_EXTENDED | REG_NOSUB);
+
+	if (ret_temp) {
+		warnx("! warning: can't compile %s, ignoring\n", string);
+	} else {
+		session->ignore = (regex_t **)realloc(
+			session->ignore,
+			(session->ignores + 1) * sizeof(regex_t *));
+
+		if (session->ignore == NULL)
+			err(EXIT_FAILURE, "add_ignore: malloc");
+
+		session->ignore[session->ignores] = malloc(sizeof(regex_t));
+
+		if (!session->ignore[session->ignores])
+			err(EXIT_FAILURE, "add_ignore: malloc2");
+
+		memcpy(session->ignore[session->ignores++],
+			&reg_temp,
+			sizeof(regex_t));
+	}
+}
+
+
+/*
  * load_config_section
  *
  * Procedure that stores the configuration options from a gitup.conf section.
@@ -3145,7 +3185,6 @@ load_config_section(connector *session, const ucl_object_t *section)
 	long                integer;
 	size_t              length = 0;
 	bool                boolean, target, path, ignores;
-
 	its = ucl_object_iterate_new(section);
 
 	while ((pair = ucl_object_iterate_safe(its, true))) {
@@ -3211,27 +3250,7 @@ load_config_section(connector *session, const ucl_object_t *section)
 
 			while ((ignore = ucl_object_iterate_safe(iti, true))) {
 				string = ucl_object_tostring(ignore);
-
-				session->ignore = (char **)realloc(
-					session->ignore,
-					(session->ignores + 1)*sizeof(char *));
-
-				if (session->ignore == NULL)
-					err(EXIT_FAILURE,
-						"load_config_section: malloc");
-
-				snprintf(temp, sizeof(temp),
-					"%s",
-					string);
-
-				if (temp[0] != '/')
-					snprintf(temp, sizeof(temp),
-						"%s/%s",
-						session->path_target,
-						string);
-
-				length = session->ignores++;
-				session->ignore[length] = strdup(temp);
+				add_ignore(session, string);
 			}
 
 			ucl_object_iterate_free(iti);
@@ -3640,7 +3659,7 @@ main(int argc, char **argv)
 
 	/* Process the command line parameters. */
 
-	while ((option = getopt(argc, argv, "C:cd:h:klrS:t:u:v:w:")) != -1) {
+	while ((option = getopt(argc, argv, "C:cd:h:I:klrS:t:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
 				if (session.verbosity)
@@ -3656,6 +3675,9 @@ main(int argc, char **argv)
 				break;
 			case 'h':
 				session.have = strdup(optarg);
+				break;
+			case 'I':
+				add_ignore(&session, optarg);
 				break;
 			case 'k':
 				session.keep_pack_file = true;
@@ -4073,7 +4095,7 @@ main(int argc, char **argv)
 			session.updating);
 
 	for (x = 0; x < session.ignores; x++)
-		free(session.ignore[x]);
+		regfree(session.ignore[x]);
 
 	free(session.ignore);
 	free(session.response);
