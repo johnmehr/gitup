@@ -511,6 +511,9 @@ prune_tree(connector *session, char *base_path)
 				"prune_tree: cannot stat() %s",
 				full_path);
 
+		if (ignore_file(session, full_path, IGNORE_DELETE))
+			continue;
+
 		if (S_ISDIR(sb.st_mode) != 0) {
 			if ((entry->d_namlen == 1) && (strcmp(entry->d_name, "." ) == 0))
 				continue;
@@ -520,20 +523,17 @@ prune_tree(connector *session, char *base_path)
 
 			prune_tree(session, full_path);
 		} else {
-			if (!ignore_file(session, full_path, IGNORE_DELETE))
-				if (remove(full_path) == -1)
-					err(EXIT_FAILURE,
-						"prune_tree: cannot remove %s",
-						full_path);
+			if (remove(full_path) == -1)
+				err(EXIT_FAILURE,
+					"prune_tree: cannot remove %s",
+					full_path);
 		}
 	}
 
 	closedir(directory);
 
 	if (rmdir(base_path) != 0)
-		fprintf(stderr,
-			" ! cannot remove %s\n",
-			base_path);
+		fprintf(stderr, " ! cannot remove %s\n", base_path);
 }
 
 
