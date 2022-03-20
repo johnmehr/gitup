@@ -4138,5 +4138,5 @@ main(int argc, char **argv)
 
 	sync();
 
-	return (0);
+	return (session.repair ? 2 : 0);
 }
