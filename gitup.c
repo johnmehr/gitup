@@ -687,7 +687,8 @@ save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbo
 		memcpy(temp_buffer, buffer, buffer_size);
 		temp_buffer[buffer_size] = '\0';
 
-		if (symlink(temp_buffer, path) == -1)
+		if (symlink(temp_buffer, path) == -1 &&
+		    (unlink(path), symlink(temp_buffer, path) == -1))
 			err(EXIT_FAILURE,
 				"save_file: symlink failure %s -> %s",
 				path,
@@ -2836,6 +2837,7 @@ save_repairs(connector *session)
 {
 	struct object_node  find_object, *found_object;
 	struct file_node   *local_file, *remote_file, *found_file;
+	struct stat         st;
 	char               *check_hash = NULL, *buffer_hash = NULL;
 	bool                missing = false, update = false;
 
@@ -2860,7 +2862,7 @@ save_repairs(connector *session)
 					"save_repairs: cannot create %s",
 					found_file->path);
 		} else {
-			missing = !path_exists(found_file->path);
+			missing = stat(found_file->path, &st) != 0;
 			update  = true;
 
 			/*
@@ -2873,7 +2875,7 @@ save_repairs(connector *session)
 
 				check_hash = calculate_file_hash(
 					found_file->path,
-					found_file->mode);
+					st.st_mode);
 
 				buffer_hash = calculate_object_hash(
 					found_object->buffer,
