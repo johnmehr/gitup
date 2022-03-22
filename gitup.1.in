@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd Marcg 21, 2022
+.Dd March 21, 2022
 .Dt GITUP(1)
 .Os
 .Sh NAME
