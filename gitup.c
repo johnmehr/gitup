@@ -91,6 +91,11 @@ struct file_node {
 };
 
 typedef struct {
+	regex_t *pattern;
+	bool     negate;
+} ignore_node;
+
+typedef struct {
 	SSL                 *ssl;
 	SSL_CTX             *ctx;
 	int                  socket_descriptor;
@@ -122,7 +127,7 @@ typedef struct {
 	char                *path_work;
 	char                *remote_data_file;
 	char                *remote_history_file;
-	regex_t            **ignore;
+	ignore_node        **ignore;
 	uint16_t             ignores;
 	bool                 keep_pack_file;
 	bool                 use_pack_file;
@@ -161,6 +166,7 @@ static void     load_buffer(connector *, struct object_node *);
 static int      load_config(connector *, const char *, char **, int);
 static void     load_config_section(connector *, const ucl_object_t *);
 static void     load_file(const char *, char **, uint32_t *);
+static void     load_gitignore(connector *);
 static void     load_object(connector *, char *, char *);
 static void     load_pack(connector *, char *, bool);
 static void     load_remote_data(connector *);
@@ -374,7 +380,7 @@ static bool
 ignore_file(connector *session, char *path, uint8_t flag)
 {
 	int  x, code;
-	bool match = false;
+	bool ignore = false;
 
 	/* Files in the sys/arch/conf directories must be read. */
 
@@ -383,17 +389,20 @@ ignore_file(connector *session, char *path, uint8_t flag)
 			return (false);
 
 	for (x = 0; x < session->ignores; x++) {
-		code = regexec(session->ignore[x], path, 0, NULL, 0);
+		code = regexec(session->ignore[x]->pattern, path, 0, NULL, 0);
 
-		if (code == 0)
-			match = true;
-		else if (code != REG_NOMATCH)
+		if (code == 0) {
+			ignore = (session->ignore[x]->negate ? false : true);
+		} else if (code != REG_NOMATCH)
 			warnx("! ignore_file error: %s (error code %d)\n",
 			path,
 			code);
-		}
+	}
 
-	return (match);
+	if ((ignore) && (session->verbosity))
+		fprintf(stderr, " | Ignoring %s\n", path);
+
+	return (ignore);
 }
 
 
@@ -3138,35 +3147,41 @@ extract_proxy_data(connector *session, const char *data)
 /*
  * add_ignore
  *
- * Procedure that adds a directory to be ignored when updating the local tree.
+ * Procedure that adds a file/directory to be list of ignored paths.
  */
 
 static void
 add_ignore(connector *session, const char *string)
 {
-	regex_t reg_temp;
-	int     ret_temp;
+	regex_t      reg_temp;
+	int          ret_temp;
+	bool         negate = (string[0] == '!' ? true : false);
+	ignore_node *node = NULL;
 
-	ret_temp = regcomp(&reg_temp, string, REG_EXTENDED | REG_NOSUB);
+	ret_temp = regcomp(&reg_temp,
+		string + (negate ? 1 : 0),
+		REG_EXTENDED | REG_NOSUB);
 
 	if (ret_temp) {
 		warnx("! warning: can't compile %s, ignoring\n", string);
 	} else {
-		session->ignore = (regex_t **)realloc(
+		session->ignore = (ignore_node **)realloc(
 			session->ignore,
-			(session->ignores + 1) * sizeof(regex_t *));
+			(session->ignores + 1) * sizeof(ignore_node *));
 
 		if (session->ignore == NULL)
 			err(EXIT_FAILURE, "add_ignore: malloc");
 
-		session->ignore[session->ignores] = malloc(sizeof(regex_t));
+		if ((node = malloc(sizeof(ignore_node))) == NULL)
+			err(EXIT_FAILURE, "add_ignore: malloc 2");
 
-		if (!session->ignore[session->ignores])
-			err(EXIT_FAILURE, "add_ignore: malloc2");
+		if ((node->pattern = malloc(sizeof(regex_t))) == NULL)
+			err(EXIT_FAILURE, "add_ignore: malloc 3");
 
-		memcpy(session->ignore[session->ignores++],
-			&reg_temp,
-			sizeof(regex_t));
+		memcpy(node->pattern, &reg_temp, sizeof(regex_t));
+		node->negate = negate;
+
+		session->ignore[session->ignores++] = node;
 	}
 }
 
@@ -3458,9 +3473,170 @@ load_config(connector *session, const char *configuration_file, char **argv, int
 
 	free(sections);
 
+	load_gitignore(session);
+
 	return (argument_index);
 }
 
+
+/*
+ * load_gitignore
+ *
+ * Function that loads the repository's .gitignore file, converts the
+ * entries to regular expressions and adds them to the ignores list.
+ */
+
+static void
+load_gitignore(connector *session)
+{
+	struct stat  file;
+	char         path[BUFFER_UNIT_SMALL], *buffer = NULL;
+	char         source[BUFFER_UNIT_SMALL], target[BUFFER_UNIT_SMALL];
+	char        *line_start = NULL, *line_end = NULL, *trim = NULL;
+	char        *cursor = NULL, *ignore = NULL, c;
+	bool         in_bracket = false, separator_exists = false;
+	bool         directory_only = false, negate_pattern = false;
+	uint32_t     buffer_size = 0;
+	uint32_t     source_position = 0, target_position = 0;
+	size_t       source_length = 0;
+
+	snprintf(path, BUFFER_UNIT_SMALL,
+		"%s/.gitignore",
+		session->path_target);
+
+	if (stat(path, &file) == -1)
+		return;
+
+	load_file(path, &buffer, &buffer_size);
+
+	line_start = buffer;
+
+	while (line_start < buffer + buffer_size) {
+		line_end         = strchr(line_start, '\n');
+		*line_end        = '\0';
+		trim             = line_end - 1;
+		cursor           = line_start;
+		source_position  = 0;
+		target_position  = 0;
+		directory_only   = false;
+		in_bracket       = false;
+		separator_exists = false;
+
+		bzero(source, BUFFER_UNIT_SMALL);
+		bzero(target, BUFFER_UNIT_SMALL);
+
+		// Skip comments and blank lines.
+
+		if ((*line_start == '#') || (line_start == line_end)) {
+			line_start = line_end + 1;
+			continue;
+		}
+
+		// Adjust negated patterns.
+
+		if (*line_start == '!') {
+			target[target_position++] = '!';
+			line_start++;
+		}
+
+		/*
+		 * Remove unescaped trailing spaces and check if the pattern
+		 * should only apply to directories.
+		 */
+
+		while ((trim > line_start)
+			&& (*trim == ' ')
+			&& (*(trim - 1) != '\\'))
+				*trim-- = '\0';
+
+		if (*trim == '/')
+			directory_only = true;
+
+		/*
+		 * Scan the line for separators (ignoring the last character)
+		 * and prepend the target path if one is found.
+		 */
+
+		source_length = strlen(line_start);
+
+		while (cursor < line_end - 1)
+			if (*cursor++ == '/') {
+				snprintf(source, BUFFER_UNIT_SMALL,
+					"%s/%s",
+					session->path_target,
+					line_start
+						+ (*line_start == '/' ? 1 : 0));
+
+				source_length    = strlen(source);
+				separator_exists = true;
+				break;
+			}
+
+		if (!separator_exists)
+			snprintf(source, BUFFER_UNIT_SMALL, "%s", line_start);
+
+		// Prepend a '/' for entries that are just filenames.
+
+		if (!separator_exists)
+			target[target_position++] = '/';
+
+		// Convert each line into a regular expression pattern.
+
+		while (source_position < source_length) {
+			if (source[source_position] == '\r') {
+				source_position++;
+				continue;
+			}
+
+			c = source[source_position++];
+
+			if (c == '?') {
+				snprintf(target + target_position, 5, "[^/]");
+				target_position += 4;
+			} else if (c == '*') {
+				snprintf(target + target_position, 6, "[^/]+");
+				target_position += 5;
+			} else if (c == '[') {
+				in_bracket = true;
+				target[target_position++] = c;
+			} else if (c == ']') {
+				in_bracket = false;
+				target[target_position++] = c;
+			} else if (c == '.') {
+				target[target_position++] = '\\';
+				target[target_position++] = c;
+			} else if ((c == '-') && (!in_bracket)) {
+				target[target_position++] = '\\';
+				target[target_position++] = c;
+			} else {
+				target[target_position++] = c;
+			}
+
+			if (target_position > BUFFER_UNIT_SMALL - 8)
+				errc(EXIT_FAILURE, EOVERFLOW,
+					"load_gitignore: "
+					"Malformed .gitignore line \"%s\"",
+					source);
+		}
+
+		// Complete the pattern(s).
+
+		if (directory_only) {
+			snprintf(target + target_position, 4, ".*$");
+			add_ignore(session, strdup(target));
+		} else {
+			snprintf(target + target_position, 5, "/.*$");
+			add_ignore(session, strdup(target));
+
+			snprintf(target + target_position, 2, "$");
+			add_ignore(session, strdup(target));
+		}
+
+		line_start = line_end + 1;
+	}
+
+	free(buffer);
+}
 
 /*
  * extract_command_line_want
@@ -3879,12 +4055,9 @@ main(int argc, char **argv)
 
 	if (path_target_exists == true) {
 		if (session.verbosity)
-			fprintf(stderr, "# Scanning local repository...");
+			fprintf(stderr, "# Scanning local repository...\n");
 
 		scan_local_repository(&session, session.path_target);
-
-		if (session.verbosity)
-			fprintf(stderr, "\n");
 	} else {
 		session.clone = true;
 	}
@@ -4096,8 +4269,10 @@ main(int argc, char **argv)
 			"important changes.\n%s#\n",
 			session.updating);
 
-	for (x = 0; x < session.ignores; x++)
-		regfree(session.ignore[x]);
+	for (x = 0; x < session.ignores; x++) {
+		regfree(session.ignore[x]->pattern);
+		free(session.ignore[x]);
+	}
 
 	free(session.ignore);
 	free(session.response);

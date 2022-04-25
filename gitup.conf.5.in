@@ -77,9 +77,10 @@ The repository branch to use.
 .It Cm target_directory
 The local directory to store your copy of the repository.
 .It Cm ignores
-An array of directories in the local tree that should be ignored only when
-deleting files.  Any changes to upstream files in these directories will be
-pulled down and merged.  Regular expressions are supported.
+An array of files and/or directories in the local tree (augmenting the contents
+of the repository's .gitignore file) which are ignored only when deleting files.
+Any changes to upstream files in these directories will be pulled down and
+merged.  Regular expressions are supported.
 .It Cm low_memory
 Low memory mode reduces memory usage by storing temporary object data to disk.
 .It Cm verbosity
@@ -118,9 +119,9 @@ With the following configuration options defined in
 .br
         "ignores"          : [
 .br
-            "distfiles",
+            "/distfiles",
 .br
-            "packages",
+            "/packages",
 .br
         ],
 .br
