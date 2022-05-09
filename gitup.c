@@ -3493,11 +3493,10 @@ load_gitignore(connector *session)
 	char         path[BUFFER_UNIT_SMALL], *buffer = NULL;
 	char         source[BUFFER_UNIT_SMALL], target[BUFFER_UNIT_SMALL];
 	char        *line_start = NULL, *line_end = NULL, *trim = NULL;
-	char        *cursor = NULL, *ignore = NULL, c;
+	char        *cursor = NULL, c;
 	bool         in_bracket = false, separator_exists = false;
-	bool         directory_only = false, negate_pattern = false;
-	uint32_t     buffer_size = 0;
-	uint32_t     source_position = 0, target_position = 0;
+	bool         directory_only = false;
+	uint32_t     buffer_size = 0, source_offset = 0, target_offset = 0;
 	size_t       source_length = 0;
 
 	snprintf(path, BUFFER_UNIT_SMALL,
@@ -3516,8 +3515,8 @@ load_gitignore(connector *session)
 		*line_end        = '\0';
 		trim             = line_end - 1;
 		cursor           = line_start;
-		source_position  = 0;
-		target_position  = 0;
+		source_offset    = 0;
+		target_offset    = 0;
 		directory_only   = false;
 		in_bracket       = false;
 		separator_exists = false;
@@ -3525,17 +3524,17 @@ load_gitignore(connector *session)
 		bzero(source, BUFFER_UNIT_SMALL);
 		bzero(target, BUFFER_UNIT_SMALL);
 
-		// Skip comments and blank lines.
+		/* Skip comments and blank lines. */
 
 		if ((*line_start == '#') || (line_start == line_end)) {
 			line_start = line_end + 1;
 			continue;
 		}
 
-		// Adjust negated patterns.
+		/* Adjust negated patterns. */
 
 		if (*line_start == '!') {
-			target[target_position++] = '!';
+			target[target_offset++] = '!';
 			line_start++;
 		}
 
@@ -3559,6 +3558,12 @@ load_gitignore(connector *session)
 
 		source_length = strlen(line_start);
 
+		if (source_length + 1 > BUFFER_UNIT_SMALL)
+			errc(EXIT_FAILURE, EOVERFLOW,
+				"load_gitignore: "
+				"Malformed .gitignore line \"%s\"",
+				line_start);
+
 		while (cursor < line_end - 1)
 			if (*cursor++ == '/') {
 				snprintf(source, BUFFER_UNIT_SMALL,
@@ -3575,62 +3580,68 @@ load_gitignore(connector *session)
 		if (!separator_exists)
 			snprintf(source, BUFFER_UNIT_SMALL, "%s", line_start);
 
-		// Prepend a '/' for entries that are just filenames.
+		/* Prepend a '/' for entries that are just filenames. */
 
 		if (!separator_exists)
-			target[target_position++] = '/';
+			target[target_offset++] = '/';
 
-		// Convert each line into a regular expression pattern.
+		/* Convert each line into a regular expression pattern. */
 
-		while (source_position < source_length) {
-			if (source[source_position] == '\r') {
-				source_position++;
+		while (source_offset < source_length) {
+			c = source[source_offset++];
+
+			if (c == '\r') {
 				continue;
-			}
-
-			c = source[source_position++];
-
-			if (c == '?') {
-				snprintf(target + target_position, 5, "[^/]");
-				target_position += 4;
-			} else if (c == '*') {
-				snprintf(target + target_position, 6, "[^/]+");
-				target_position += 5;
+			} else if (c == '?') {
+				snprintf(target + target_offset, 5, "[^/]");
+				target_offset += 4;
 			} else if (c == '[') {
 				in_bracket = true;
-				target[target_position++] = c;
+				target[target_offset++] = c;
 			} else if (c == ']') {
 				in_bracket = false;
-				target[target_position++] = c;
+				target[target_offset++] = c;
 			} else if (c == '.') {
-				target[target_position++] = '\\';
-				target[target_position++] = c;
+				target[target_offset++] = '\\';
+				target[target_offset++] = c;
 			} else if ((c == '-') && (!in_bracket)) {
-				target[target_position++] = '\\';
-				target[target_position++] = c;
+				target[target_offset++] = '\\';
+				target[target_offset++] = c;
+			} else if (c == '*' && source[source_offset] == '*') {
+				snprintf(target + target_offset, 3, ".*");
+				source_offset += 1;
+				target_offset += 2;
+			} else if (c == '*') {
+				snprintf(target + target_offset, 6, "[^/]+");
+				target_offset += 5;
 			} else {
-				target[target_position++] = c;
+				target[target_offset++] = c;
 			}
 
-			if (target_position > BUFFER_UNIT_SMALL - 8)
+			if (target_offset > BUFFER_UNIT_SMALL - 8)
 				errc(EXIT_FAILURE, EOVERFLOW,
 					"load_gitignore: "
 					"Malformed .gitignore line \"%s\"",
 					source);
 		}
 
-		// Complete the pattern(s).
+		/* Complete and retain the pattern(s). */
 
 		if (directory_only) {
-			snprintf(target + target_position, 4, ".*$");
+			snprintf(target + target_offset, 4, ".*$");
 			add_ignore(session, strdup(target));
 		} else {
-			snprintf(target + target_position, 5, "/.*$");
+			snprintf(target + target_offset, 5, "/.*$");
 			add_ignore(session, strdup(target));
 
-			snprintf(target + target_position, 2, "$");
+			snprintf(target + target_offset, 2, "$");
 			add_ignore(session, strdup(target));
 		}
+
+		if (session->verbosity > 1)
+			fprintf(stderr, "# .gitignore: %-51s ==> %s\n",
+				source,
+				target);
 
 		line_start = line_end + 1;
 	}
