@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2012-2021, John Mehr <jmehr@umn.edu>
+ * Copyright (c) 2012-2022, John Mehr <jmehr@umn.edu>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -57,8 +57,8 @@
 #define GITUP_VERSION     "0.97"
 #define BUFFER_UNIT_SMALL  4096
 #define BUFFER_UNIT_LARGE  1048576
-#define IGNORE_READ        1
-#define IGNORE_DELETE      2
+#define IGNORE_FORCE_READ  1
+#define IGNORE_SKIP_DELETE 2
 
 #ifndef CONFIG_FILE_PATH
 #define CONFIG_FILE_PATH "./gitup.conf"
@@ -384,8 +384,8 @@ ignore_file(connector *session, char *path, uint8_t flag)
 
 	/* Files in the sys/arch/conf directories must be read. */
 
-	if (flag == IGNORE_READ)
-		if ((strstr(path, "sys/")) && (strstr(path, "/conf")))
+	if (flag == IGNORE_FORCE_READ)
+		if ((strstr(path, "/sys/")) && (strstr(path, "/conf/")))
 			return (false);
 
 	for (x = 0; x < session->ignores; x++) {
@@ -399,7 +399,7 @@ ignore_file(connector *session, char *path, uint8_t flag)
 			code);
 	}
 
-	if ((ignore) && (session->verbosity))
+	if ((ignore) && (session->verbosity > 1))
 		fprintf(stderr, " | Ignoring %s\n", path);
 
 	return (ignore);
@@ -454,10 +454,12 @@ make_path(char *path, mode_t mode)
 			if (temp != path) {
 				*temp = '\0';
 
-				if (!path_exists(path))
-					if ((mkdir(path, mode) == -1) && (errno != EEXIST))
+				if ((!path_exists(path))
+					&& (mkdir(path, mode) == -1)
+					&& (errno != EEXIST))
 						err(EXIT_FAILURE,
-							"make_path: cannot create %s",
+							"make_path: "
+							"cannot create %s",
 							path);
 
 				*temp = '/';
@@ -520,7 +522,7 @@ prune_tree(connector *session, char *base_path)
 				"prune_tree: cannot stat() %s",
 				full_path);
 
-		if (ignore_file(session, full_path, IGNORE_DELETE))
+		if (ignore_file(session, full_path, IGNORE_SKIP_DELETE))
 			continue;
 
 		if (S_ISDIR(sb.st_mode) != 0) {
@@ -994,8 +996,8 @@ scan_local_repository(connector *session, char *base_path)
 	struct stat       file;
 	struct dirent    *entry = NULL;
 	struct file_node *new_node = NULL, find, *found = NULL;
-	char             *full_path = NULL, file_hash[20];
-	unsigned long     full_path_size = 0;
+	char             *path = NULL, file_hash[20], *keep = NULL;
+	unsigned long     path_length = 0;
 
 	/* Make sure the base path exists in the remote data list. */
 
@@ -1008,7 +1010,7 @@ scan_local_repository(connector *session, char *base_path)
 		strdup(base_path),
 		(found ? found->mode : 040000),
 		(found ? strdup(found->hash) : NULL),
-		(strlen(base_path) == strlen(session->path_target) ? true : false),
+		(strlen(base_path) == strlen(session->path_target)),
 		false);
 
 	RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
@@ -1018,76 +1020,80 @@ scan_local_repository(connector *session, char *base_path)
 
 	/* Process the directory's contents. */
 
-	if ((stat(base_path, &file) != -1) && ((directory = opendir(base_path)) != NULL)) {
-		while ((entry = readdir(directory)) != NULL) {
-			if ((entry->d_namlen == 1) && (strcmp(entry->d_name, "." ) == 0))
-				continue;
+	if (stat(base_path, &file) == -1)
+		return;
 
-			if ((entry->d_namlen == 2) && (strcmp(entry->d_name, "..") == 0))
-				continue;
+	if ((directory = opendir(base_path)) == NULL)
+		return;
 
-			if ((entry->d_namlen == 4) && (strcmp(entry->d_name, ".git") == 0)) {
-				fprintf(stderr,
-					" ! A .git directory was found -- "
-					"gitup does not update this directory "
-					"which will cause problems for the "
-					"official Git client.\n ! If you wish "
-					"to use gitup, please remove %s/%s and "
-					"rerun gitup.\n",
-					base_path,
-					entry->d_name);
+	while ((entry = readdir(directory)) != NULL) {
+		if ((entry->d_namlen == 1) && (!strcmp(entry->d_name, "." )))
+			continue;
 
-				exit(EXIT_FAILURE);
-				}
+		if ((entry->d_namlen == 2) && (!strcmp(entry->d_name, "..")))
+			continue;
 
-			full_path_size = strlen(base_path) + entry->d_namlen + 2;
-			full_path      = (char *)malloc(full_path_size + 1);
-
-			if (full_path == NULL)
-				err(EXIT_FAILURE,
-					"scan_local_repository: malloc");
-
-			snprintf(full_path,
-				full_path_size,
-				"%s/%s",
+		if ((entry->d_namlen == 4) && (!strcmp(entry->d_name, ".git")))
+			errc(EXIT_FAILURE, EEXIST,
+				"A .git directory was found -- gitup does not "
+				"update this directory which will cause "
+				"problems for the official Git client.  If you "
+				"wish to use gitup, please remove %s/%s and "
+				"rerun gitup.",
 				base_path,
 				entry->d_name);
 
-			if (lstat(full_path, &file) == -1)
-				err(EXIT_FAILURE,
-					"scan_local_repository: cannot read %s",
-					full_path);
+		path_length = strlen(base_path) + entry->d_namlen + 2;
+		path        = (char *)malloc(path_length + 1);
 
-			if (S_ISDIR(file.st_mode)) {
-				scan_local_repository(session, full_path);
-				free(full_path);
-			} else {
-				new_node = new_file_node(
-					full_path,
-					file.st_mode,
-					NULL,
-					(strnstr(full_path, ".gituprevision", strlen(full_path)) != NULL ? true : false),
-					false);
+		if (path == NULL)
+			err(EXIT_FAILURE,
+				"scan_local_repository: malloc");
 
-				if (ignore_file(session, full_path, IGNORE_READ)) {
-					new_node->hash = (char *)malloc(20);
+		snprintf(path, path_length, "%s/%s", base_path, entry->d_name);
 
-					if (new_node->hash == NULL)
-						err(EXIT_FAILURE,
-							"scan_local_repository: malloc");
+		if (lstat(path, &file) == -1)
+			err(EXIT_FAILURE,
+				"scan_local_repository: cannot read %s",
+				path);
 
-					SHA1((uint8_t *)full_path, strlen(full_path), (uint8_t *)file_hash);
-					memcpy(new_node->hash, file_hash, 20);
-				} else
-					new_node->hash = calculate_file_hash(full_path, file.st_mode);
+		if (S_ISDIR(file.st_mode)) {
+			scan_local_repository(session, path);
+			free(path);
+		} else {
+			keep = strnstr(path, ".gituprevision", path_length);
 
-				RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
-				RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
-			}
+			new_node = new_file_node(
+				path,
+				file.st_mode,
+				NULL,
+				(keep != NULL ? true : false),
+				false);
+
+			if (ignore_file(session, path, IGNORE_FORCE_READ)) {
+				new_node->hash = (char *)malloc(20);
+
+				if (new_node->hash == NULL)
+					err(EXIT_FAILURE,
+						"scan_local_repository: "
+						"malloc");
+
+				SHA1((uint8_t *)path,
+					path_length,
+					(uint8_t *)file_hash);
+
+				memcpy(new_node->hash, file_hash, 20);
+			} else
+				new_node->hash = calculate_file_hash(
+					path,
+					file.st_mode);
+
+			RB_INSERT(Tree_Local_Hash, &Local_Hash, new_node);
+			RB_INSERT(Tree_Local_Path, &Local_Path, new_node);
 		}
-
-		closedir(directory);
 	}
+
+	closedir(directory);
 }
 
 
@@ -1156,8 +1162,7 @@ create_tunnel(connector *session)
 {
 	char command[BUFFER_UNIT_SMALL];
 
-	snprintf(command,
-		BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_UNIT_SMALL,
 		"CONNECT %s:%d HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
 		"%s"
@@ -1324,7 +1329,7 @@ process_command(connector *session, char *command)
 
 	bytes_to_send = (ssize_t)strlen(command);
 
-	if (session->verbosity > 1)
+	if (session->verbosity > 2)
 		fprintf(stderr, "%s\n\n", command);
 
 	/* Transmit the command to the server. */
@@ -1350,13 +1355,13 @@ process_command(connector *session, char *command)
 
 		total_bytes_sent += bytes_sent;
 
-		if (session->verbosity > 1)
+		if (session->verbosity > 2)
 			fprintf(stderr,
 				"\r==> bytes sent: %ld",
 				total_bytes_sent);
 	}
 
-	if (session->verbosity > 1)
+	if (session->verbosity > 2)
 		fprintf(stderr, "\n");
 
 	/* Process the response. */
@@ -1409,7 +1414,7 @@ process_command(connector *session, char *command)
 		total_bytes_read += bytes_read;
 		session->response[total_bytes_read] = '\0';
 
-		if (session->verbosity > 1)
+		if (session->verbosity > 2)
 			fprintf(stderr, "\r==> "
 				"bytes read: %zd\t"
 				"bytes_expected: %ld\t"
@@ -1418,7 +1423,7 @@ process_command(connector *session, char *command)
 				bytes_expected,
 				total_bytes_read);
 
-		while ((session->verbosity == 1) && (isatty(STDERR_FILENO))) {
+		while ((session->verbosity) && (isatty(STDERR_FILENO))) {
 			struct timespec now;
 			static struct   timespec then;
 			char            buf[80], htotalb[7], persec[8];
@@ -1581,8 +1586,7 @@ send_command(connector *session, char *want)
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
 		err(EXIT_FAILURE, "send_command: malloc");
 
-	snprintf(command,
-		BUFFER_UNIT_SMALL + want_size,
+	snprintf(command, BUFFER_UNIT_SMALL + want_size,
 		"POST %s/git-upload-pack HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
 		"User-Agent: gitup/%s\r\n"
@@ -1621,8 +1625,7 @@ build_clone_command(connector *session)
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
 		err(EXIT_FAILURE, "build_clone_command: malloc");
 
-	snprintf(command,
-		BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_UNIT_SMALL,
 		"0011command=fetch0001"
 		"000fno-progress"
 		"000dofs-delta"
@@ -1666,8 +1669,7 @@ build_commit_command(connector *session)
 	else
 		snprintf(temp, sizeof(temp), "0032have %s\n", session->have);
 
-	snprintf(command,
-		BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_UNIT_SMALL,
 		"0011command=fetch0001"
 		"000dthin-pack"
 		"000fno-progress"
@@ -1698,8 +1700,7 @@ build_pull_command(connector *session)
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
 		err(EXIT_FAILURE, "build_pull_command: malloc");
 
-	snprintf(command,
-		BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_UNIT_SMALL,
 		"0011command=fetch0001"
 		"000dthin-pack"
 		"000fno-progress"
@@ -1737,7 +1738,7 @@ build_repair_command(connector *session)
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
 
-		if ((found == NULL) || ((strncmp(found->hash, find->hash, 40) != 0) && (!ignore_file(session, find->path, IGNORE_READ)))) {
+		if ((found == NULL) || ((strncmp(found->hash, find->hash, 40) != 0) && (!ignore_file(session, find->path, IGNORE_FORCE_READ)))) {
 			if (session->verbosity)
 				fprintf(stderr,
 					" ! %s %s\n",
@@ -1763,8 +1764,7 @@ build_repair_command(connector *session)
 	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
 		err(EXIT_FAILURE, "build_repair_command: malloc");
 
-	snprintf(command,
-		BUFFER_UNIT_SMALL + want_size,
+	snprintf(command, BUFFER_UNIT_SMALL + want_size,
 		"0011command=fetch0001"
 		"000dthin-pack"
 		"000fno-progress"
@@ -1796,8 +1796,7 @@ get_commit_details(connector *session)
 
 	/* Send the initial info/refs command. */
 
-	snprintf(command,
-		BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_UNIT_SMALL,
 		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
 		"User-Agent: gitup/%s\r\n"
@@ -1810,7 +1809,7 @@ get_commit_details(connector *session)
 
 	process_command(session, command);
 
-	if (session->verbosity > 1)
+	if (session->verbosity > 2)
 		printf("%s\n", session->response);
 
 	/* Make sure the server supports the version 2 protocol. */
@@ -1832,8 +1831,7 @@ get_commit_details(connector *session)
 
 	/* Fetch the list of refs. */
 
-	snprintf(command,
-		BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_UNIT_SMALL,
 		"0014command=ls-refs\n"
 		"0016object-format=sha1"
 		"0001"
@@ -1846,7 +1844,7 @@ get_commit_details(connector *session)
 
 	send_command(session, command);
 
-	if (session->verbosity > 1)
+	if (session->verbosity > 2)
 		printf("%s\n", session->response);
 
 	/* Extract the "want" checksum. */
@@ -2138,7 +2136,7 @@ store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_siz
 		object->can_free       = true;
 		object->file_offset    = -1;
 
-		if (session->verbosity > 1)
+		if (session->verbosity > 2)
 			fprintf(stdout,
 				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
 				object->index,
@@ -2254,7 +2252,7 @@ unpack_objects(connector *session)
 		total_objects = (total_objects << 8)
 			+ (uint8_t)session->response[position];
 
-	if (session->verbosity > 1)
+	if (session->verbosity > 2)
 		fprintf(stderr,
 			"\nversion: %d, total_objects: %d, pack_size: %d\n\n",
 			version,
@@ -2652,8 +2650,7 @@ extract_tree_item(struct file_node *file, char **position)
 	/* Extract the file SHA checksum. */
 
 	for (x = 0; x < 20; x++)
-		snprintf(&file->hash[x * 2],
-			3,
+		snprintf(&file->hash[x * 2], 3,
 			"%02x",
 			(uint8_t)*(*position)++);
 
@@ -4219,7 +4216,7 @@ main(int argc, char **argv)
 
 	RB_FOREACH_SAFE(file, Tree_Local_Path, &Local_Path, next_file) {
 		if ((file->keep == false) && ((current_repository == false) || (session.repair == true))) {
-			if (ignore_file(&session, file->path, IGNORE_DELETE))
+			if (ignore_file(&session, file->path, IGNORE_SKIP_DELETE))
 				continue;
 
 			if ((session.verbosity) && (session.display_depth == 0))
@@ -4260,7 +4257,7 @@ main(int argc, char **argv)
 		RB_REMOVE(Tree_Objects, &Objects, object);
 
 	for (o = 0; o < session.objects; o++) {
-		if (session.verbosity > 1)
+		if (session.verbosity > 2)
 			fprintf(stdout,
 				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
 				session.object[o]->index,
