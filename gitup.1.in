@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd March 21, 2022
+.Dd May 16, 2022
 .Dt GITUP(1)
 .Os
 .Sh NAME
@@ -92,8 +92,8 @@ Fetch the commit referenced by the specified tag.
 Skip the download of the pack data and use the specified file instead.
 .It Fl v
 How verbose the output should be (0 = no output, 1 = show only names of the
-updated files, 2 = also show commands sent to the server and additional
-debugging information).
+updated files, 2 = also show all files that are being ignored, 3 = also show
+commands sent to the server and additional debugging information).
 .It Fl V
 Display the version number and exit.
 .It Fl w

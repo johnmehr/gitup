@@ -379,14 +379,25 @@ illegible_hash(char *hash_buffer)
 static bool
 ignore_file(connector *session, char *path, uint8_t flag)
 {
-	int  x, code;
-	bool ignore = false;
+	int              x, code;
+	bool             ignore = false;
+	struct file_node find;
 
-	/* Files in the sys/arch/conf directories must be read. */
+	if (flag == IGNORE_FORCE_READ) {
+		/* Files currently in the repository cannot be ignored. */
 
-	if (flag == IGNORE_FORCE_READ)
+		find.path = path;
+
+		if (RB_FIND(Tree_Remote_Path, &Remote_Path, &find))
+			return (false);
+
+		/* Files in the sys/arch/conf directories must be read. */
+
 		if ((strstr(path, "/sys/")) && (strstr(path, "/conf/")))
 			return (false);
+	}
+
+	/* Check the list of ignores. */
 
 	for (x = 0; x < session->ignores; x++) {
 		code = regexec(session->ignore[x]->pattern, path, 0, NULL, 0);
