@@ -313,7 +313,7 @@ static void load_buffer(connector *session, struct object_node *obj)
 		if (rd != (ssize_t)obj->buffer_size)
 			err(EXIT_FAILURE,
 				"load_buffer: read %ld != %d",
-				rd,
+				(long)rd,
 				obj->buffer_size);
 	}
 }
@@ -1369,7 +1369,7 @@ process_command(connector *session, char *command)
 		if (session->verbosity > 2)
 			fprintf(stderr,
 				"\r==> bytes sent: %ld",
-				total_bytes_sent);
+				(long)total_bytes_sent);
 	}
 
 	if (session->verbosity > 2)
@@ -1431,8 +1431,8 @@ process_command(connector *session, char *command)
 				"bytes_expected: %ld\t"
 				"total_bytes_read: %ld",
 				bytes_read,
-				bytes_expected,
-				total_bytes_read);
+				(long)bytes_expected,
+				(long)total_bytes_read);
 
 		while ((session->verbosity) && (isatty(STDERR_FILENO))) {
 			struct timespec now;
