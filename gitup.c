@@ -4074,9 +4074,12 @@ main(int argc, char **argv)
 	 * perform a clone.
 	 */
 
-	if ((directory = opendir(session.path_target)) != NULL)
+	if ((directory = opendir(session.path_target)) != NULL) {
 		while ((entry = readdir(directory)) != NULL)
 			local_file_count++;
+
+		closedir(directory);
+	}
 
 	if (local_file_count <= 2)
 		path_target_exists = false;
