@@ -3760,6 +3760,7 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL, *next_object = NULL;
 	struct file_node   *file   = NULL, *next_file   = NULL;
+	struct dirent      *entry  = NULL;
 	const char         *configuration_file = CONFIG_FILE_PATH;
 
 	char     *command = NULL, *display_path = NULL, *temp = NULL;
@@ -3771,11 +3772,12 @@ main(int argc, char **argv)
 	int       option = 0;
 	size_t    length = 0;
 	int       x = 0, base64_credentials_length = 0, skip_optind = 0;
-	uint32_t  o = 0;
+	uint32_t  o = 0, local_file_count = 0;
 	bool      encoded = false, just_added = false;
 	bool      current_repository = false, path_target_exists = false;
 	bool      remote_data_exists = false, remote_history_exists = false;
 	bool      pack_data_exists = false, pack_history_exists;
+	DIR      *directory = NULL;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	EVP_ENCODE_CTX      evp_ctx;
@@ -4066,6 +4068,20 @@ main(int argc, char **argv)
 	pack_history_exists   = path_exists(session.pack_history_file);
 	remote_data_exists    = path_exists(session.remote_data_file);
 	remote_history_exists = path_exists(session.remote_history_file);
+
+	/*
+	 * If path_target exists and is empty, do not load local data and
+	 * perform a clone.
+	 */
+
+	if ((directory = opendir(session.path_target)) != NULL)
+		while ((entry = readdir(directory)) != NULL)
+			local_file_count++;
+
+	if (local_file_count <= 2)
+		path_target_exists = false;
+
+	/* If path_target and remote_data exist, load the known repo data. */
 
 	if ((path_target_exists == true) && (remote_data_exists == true))
 		load_remote_data(&session);
