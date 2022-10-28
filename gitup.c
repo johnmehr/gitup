@@ -177,7 +177,7 @@ static void     object_node_free(struct object_node *);
 static bool     path_exists(const char *);
 static void     process_command(connector *, char *);
 static void     process_tree(connector *, int, char *, char *);
-static void     prune_tree(connector *, char *);
+static bool     prune_tree(connector *, char *);
 static void     release_buffer(connector *, struct object_node *);
 static void     save_commit_history(connector *);
 static void     save_file(char *, mode_t, char *, uint64_t, int, int);
@@ -493,7 +493,7 @@ make_path(char *path, mode_t mode)
  * Procedure that recursively removes a directory.
  */
 
-static void
+static bool
 prune_tree(connector *session, char *base_path)
 {
 	DIR           *directory = NULL;
@@ -501,6 +501,7 @@ prune_tree(connector *session, char *base_path)
 	struct stat    sb;
 	char           full_path[strlen(base_path) + 1 + MAXNAMLEN + 1];
 	size_t         length;
+	bool           pruned = true;
 
 	/* Sanity check the directory to prune. */
 
@@ -520,7 +521,7 @@ prune_tree(connector *session, char *base_path)
 	/* Remove the directory contents. */
 
 	if ((directory = opendir(base_path)) == NULL)
-		return;
+		return pruned;
 
 	while ((entry = readdir(directory)) != NULL) {
 		snprintf(full_path, sizeof(full_path),
@@ -533,8 +534,10 @@ prune_tree(connector *session, char *base_path)
 				"prune_tree: cannot stat() %s",
 				full_path);
 
-		if (ignore_file(session, full_path, IGNORE_SKIP_DELETE))
+		if (ignore_file(session, full_path, IGNORE_SKIP_DELETE)) {
+			pruned = false;
 			continue;
+		}
 
 		if (S_ISDIR(sb.st_mode) != 0) {
 			if ((entry->d_namlen == 1) && (strcmp(entry->d_name, "." ) == 0))
@@ -543,7 +546,8 @@ prune_tree(connector *session, char *base_path)
 			if ((entry->d_namlen == 2) && (strcmp(entry->d_name, "..") == 0))
 				continue;
 
-			prune_tree(session, full_path);
+			if (!prune_tree(session, full_path))
+				pruned = false;
 		} else {
 			if (remove(full_path) == -1)
 				err(EXIT_FAILURE,
@@ -554,8 +558,9 @@ prune_tree(connector *session, char *base_path)
 
 	closedir(directory);
 
-	if (rmdir(base_path) != 0)
+	if (pruned && rmdir(base_path) != 0)
 		fprintf(stderr, " ! cannot remove %s\n", base_path);
+	return pruned;
 }
 
 
@@ -3646,7 +3651,7 @@ load_gitignore(connector *session)
 			add_ignore(session, strdup(target));
 		}
 
-		if (session->verbosity > 1)
+		if (session->verbosity > 2)
 			fprintf(stderr, "# .gitignore: %-51s ==> %s\n",
 				source,
 				target);
@@ -3778,6 +3783,8 @@ main(int argc, char **argv)
 	bool      remote_data_exists = false, remote_history_exists = false;
 	bool      pack_data_exists = false, pack_history_exists;
 	DIR      *directory = NULL;
+	bool      pruned;
+	uint8_t   save_verbosity;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	EVP_ENCODE_CTX      evp_ctx;
@@ -4249,8 +4256,7 @@ main(int argc, char **argv)
 			if (ignore_file(&session, file->path, IGNORE_SKIP_DELETE))
 				continue;
 
-			if ((session.verbosity) && (session.display_depth == 0))
-				printf(" - %s\n", file->path);
+			pruned = true;
 
 			if (S_ISDIR(file->mode)) {
 				display_path = trim_path(file->path,
@@ -4260,13 +4266,19 @@ main(int argc, char **argv)
 				if ((session.verbosity) && (session.display_depth > 0) && (just_added) && (strlen(display_path) == strlen(file->path)))
 					printf(" - %s\n", display_path);
 
-				prune_tree(&session, file->path);
+				save_verbosity = session.verbosity;
+				session.verbosity = 0;
+				pruned = prune_tree(&session, file->path);
+				session.verbosity = save_verbosity;
 				free(display_path);
 			} else if ((remove(file->path)) && (errno != ENOENT)) {
 				fprintf(stderr,
 					" ! cannot remove %s\n",
 					file->path);
 			}
+
+			if (pruned && session.verbosity && session.display_depth == 0)
+				printf(" - %s\n", file->path);
 		}
 
 		RB_REMOVE(Tree_Local_Path, &Local_Path, file);
