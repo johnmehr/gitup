@@ -180,7 +180,7 @@ static void     process_tree(connector *, int, char *, char *);
 static bool     prune_tree(connector *, char *);
 static void     release_buffer(connector *, struct object_node *);
 static void     save_commit_history(connector *);
-static void     save_file(char *, mode_t, char *, uint64_t, int, int);
+static void     save_file(connector *, char *, mode_t, char *, uint64_t, int, int);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
 static void     scan_local_repository(connector *, char *);
@@ -672,8 +672,10 @@ trim_path(char *path, int display_depth, bool *just_added)
  */
 
 static void
-save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbosity, int display_depth)
+save_file(connector *session, char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbosity, int display_depth)
 {
+	struct stat check;
+
 	char temp_buffer[buffer_size + 1], *trim = NULL, *display_path = NULL;
 	int  fd;
 	bool exists = false, just_added = false;
@@ -721,9 +723,19 @@ save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbo
 				path,
 				temp_buffer);
 	} else {
-		/* If the file exists, make sure the permissions are intact. */
+		exists = (stat(path, &check) == 0 ? true : false);
 
-		if (path_exists(path))
+		/*
+		 * If the path was a directory in a previous commit and no
+		 * longer is, remove the directory contents.
+		 */
+
+		if ((exists) && (S_ISDIR(check.st_mode)) && (!S_ISDIR(mode)))
+			prune_tree(session, path);
+
+		/* If the path exists, make sure the permissions are intact. */
+
+		if (exists)
 			chmod(path, mode);
 
 		fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
@@ -2014,7 +2026,8 @@ load_pack(connector *session, char *file, bool history_file)
 		if (session->verbosity)
 			fprintf(stderr, "# Saving pack file: %s\n", file);
 
-		save_file(file,
+		save_file(session,
+			file,
 			0644,
 			session->response,
 			session->response_size,
@@ -2913,7 +2926,8 @@ save_repairs(connector *session)
 			if (update == true) {
 				load_buffer(session, found_object);
 
-				save_file(found_file->path,
+				save_file(session,
+					found_file->path,
 					found_file->mode,
 					found_object->buffer,
 					found_object->buffer_size,
@@ -3072,7 +3086,8 @@ save_objects(connector *session)
 
 		load_buffer(session, found_object);
 
-		save_file(found_file->path,
+		save_file(session,
+			found_file->path,
 			found_file->mode,
 			found_object->buffer,
 			found_object->buffer_size,
@@ -4238,7 +4253,8 @@ main(int argc, char **argv)
 			(session.tag ? session.tag : session.branch),
 			session.want);
 
-		save_file(gitup_revision_path,
+		save_file(&session,
+			gitup_revision_path,
 			0644,
 			gitup_revision,
 			(uint32_t)strlen(gitup_revision),
