@@ -54,7 +54,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "0.97"
+#define GITUP_VERSION     "0.98"
 #define BUFFER_UNIT_SMALL  4096
 #define BUFFER_UNIT_LARGE  1048576
 #define IGNORE_FORCE_READ  1
@@ -71,11 +71,10 @@ struct object_node {
 	uint32_t   index;
 	uint32_t   index_delta;
 	char      *ref_delta_hash;
-	uint32_t   pack_offset;
+	uint32_t   offset_pack;
+	off_t      offset_cache;
 	char      *buffer;
 	uint32_t   buffer_size;
-	off_t      file_offset;
-	bool       can_free;
 	char     **parent;
 	uint8_t    parents;
 };
@@ -136,7 +135,8 @@ typedef struct {
 	uint8_t              display_depth;
 	char                *updating;
 	bool                 low_memory;
-	int                  back_store;
+	int                  cache;
+	off_t                cache_length;
 } connector;
 
 static void     add_ignore(connector *, const char *);
@@ -279,9 +279,7 @@ RB_GENERATE(Tree_Trim_Path,  file_node, link_path, file_node_compare_path)
 
 static void release_buffer(connector *session, struct object_node *obj)
 {
-	/* Do not release non file backed objects. */
-
-	if ((session->low_memory) && (!obj->can_free)) {
+	if (session->low_memory) {
 		free(obj->buffer);
 		obj->buffer = NULL;
 	}
@@ -294,27 +292,27 @@ static void release_buffer(connector *session, struct object_node *obj)
  * Function that loads an object buffer from disk.
  */
 
-static void load_buffer(connector *session, struct object_node *obj)
+static void load_buffer(connector *session, struct object_node *object)
 {
-	ssize_t rd;
+	ssize_t bytes_read = 0;
 
-	if ((session->low_memory) && (!obj->buffer)) {
-		obj->buffer = (char *)malloc(obj->buffer_size);
+	if ((session->low_memory) && (!object->buffer)) {
+		object->buffer = (char *)malloc(object->buffer_size);
 
-		if (obj->buffer == NULL)
+		if (object->buffer == NULL)
 			err(EXIT_FAILURE, "load_buffer: malloc");
 
-		lseek(session->back_store, obj->file_offset, SEEK_SET);
+		lseek(session->cache, object->offset_cache, SEEK_SET);
 
-		rd = read(session->back_store,
-			obj->buffer,
-			(size_t)obj->buffer_size);
+		bytes_read = read(session->cache,
+			object->buffer,
+			(size_t)object->buffer_size);
 
-		if (rd != (ssize_t)obj->buffer_size)
+		if (bytes_read != (ssize_t)object->buffer_size)
 			err(EXIT_FAILURE,
 				"load_buffer: read %ld != %d",
-				(long)rd,
-				obj->buffer_size);
+				(long)bytes_read,
+				object->buffer_size);
 	}
 }
 
@@ -560,6 +558,7 @@ prune_tree(connector *session, char *base_path)
 
 	if (pruned && rmdir(base_path) != 0)
 		fprintf(stderr, " ! cannot remove %s\n", base_path);
+
 	return pruned;
 }
 
@@ -1355,6 +1354,7 @@ process_command(connector *session, char *command)
 	int      error = 0, outlen = 0;
 	bool     ok = false, chunked_transfer = true;
 
+
 	bytes_to_send = (ssize_t)strlen(command);
 
 	if (session->verbosity > 2)
@@ -1375,7 +1375,7 @@ process_command(connector *session, char *command)
 				(size_t)(bytes_to_send - total_bytes_sent));
 
 		if (bytes_sent <= 0) {
-			if ((bytes_sent < 0) && ((errno == EINTR) || (errno == 0)))
+			if (bytes_sent < 0 && (errno == EINTR || errno == 0))
 				continue;
 			else
 				err(EXIT_FAILURE, "process_command: send");
@@ -2123,7 +2123,7 @@ fetch_pack(connector *session, char *command)
  */
 
 static void
-store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_size, uint32_t pack_offset, uint32_t index_delta, char *ref_delta_hash)
+store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_size, uint32_t offset_pack, uint32_t index_delta, char *ref_delta_hash)
 {
 	struct object_node *object = NULL, find;
 	char               *hash = NULL, *temp = NULL, parent[41];
@@ -2155,22 +2155,21 @@ store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_siz
 		object->index          = session->objects;
 		object->type           = type;
 		object->hash           = hash;
-		object->pack_offset    = pack_offset;
+		object->offset_pack    = offset_pack;
 		object->index_delta    = index_delta;
 		object->ref_delta_hash = (ref_delta_hash ? legible_hash(ref_delta_hash) : NULL);
 		object->parent         = NULL;
 		object->parents        = 0;
 		object->buffer         = buffer;
 		object->buffer_size    = buffer_size;
-		object->can_free       = true;
-		object->file_offset    = -1;
+		object->offset_cache   = -1;
 
 		if (session->verbosity > 2)
 			fprintf(stdout,
 				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
 				object->index,
 				object->type,
-				object->pack_offset,
+				object->offset_pack,
 				object->buffer_size,
 				object->hash,
 				object->index_delta,
@@ -2223,6 +2222,17 @@ store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_siz
 		if (type < 6)
 			RB_INSERT(Tree_Objects, &Objects, object);
 
+		if (session->low_memory) {
+			lseek(session->cache, session->cache_length, SEEK_SET);
+			write(session->cache, buffer, (size_t)buffer_size);
+
+			object->buffer         = NULL;
+			object->offset_cache   = session->cache_length;
+			session->cache_length += (off_t)buffer_size;
+
+			free(buffer);
+		}
+
 		session->object[session->objects++] = object;
 	}
 }
@@ -2238,32 +2248,12 @@ static void
 unpack_objects(connector *session)
 {
 	unsigned long  stream_bytes = 0, x = 0;
-	uint32_t       buffer_size = 0, size = 0, pack_offset = 0;
+	uint32_t       buffer_size = 0, size = 0, offset_pack = 0;
 	uint32_t       index_delta = 0, lookup_offset = 0;
-	uint32_t       position = 4, nobj_old = 0, total_objects = 0;
+	uint32_t       position = 4, total_objects = 0;
 	uint8_t        object_type = 0, bits = 0, mask = 0, zlib_out[16384];
-	off_t          cache_length = 0;
 	int            stream_code = 0, version = 0;
 	char          *buffer = NULL, *ref_delta_hash = NULL;
-	char           remote_files_tmp[BUFFER_UNIT_SMALL];
-
-	/* Setup the temporary object store file. */
-
-	if (session->low_memory) {
-		snprintf(remote_files_tmp, BUFFER_UNIT_SMALL,
-			"%s.tmp",
-			session->remote_data_file);
-
-		session->back_store = open(remote_files_tmp,
-			O_WRONLY | O_CREAT | O_TRUNC);
-
-		if (session->back_store == -1)
-			err(EXIT_FAILURE,
-				"unpack_objects: object file write failure %s",
-				remote_files_tmp);
-
-		chmod(remote_files_tmp, 0644);
-	}
 
 	/* Check the pack version number. */
 
@@ -2292,7 +2282,7 @@ unpack_objects(connector *session)
 
 	while ((position < session->response_size) && (total_objects-- > 0)) {
 		object_type    = (uint8_t)session->response[position] >> 4 & 0x07;
-		pack_offset    = position;
+		offset_pack    = position;
 		index_delta    = 0;
 		size           = 0;
 		stream_bytes   = 0;
@@ -2318,7 +2308,7 @@ unpack_objects(connector *session)
 			while (session->response[position++] & 0x80);
 
 			while (--index_delta > 0)
-				if (pack_offset - lookup_offset + 1 == session->object[index_delta]->pack_offset)
+				if (offset_pack - lookup_offset + 1 == session->object[index_delta]->offset_pack)
 					break;
 
 			if (index_delta == 0)
@@ -2377,49 +2367,15 @@ unpack_objects(connector *session)
 		inflateEnd(&stream);
 		position += (uint32_t)stream.total_in;
 
-		if (session->low_memory) {
-			write(session->back_store, buffer, (size_t)buffer_size);
-			nobj_old = session->objects;
-		}
-
 		store_object(session,
 			object_type,
 			buffer,
 			buffer_size,
-			pack_offset,
+			offset_pack,
 			index_delta,
 			ref_delta_hash);
 
-		if (session->low_memory) {
-			if (nobj_old != session->objects) {
-				session->object[nobj_old]->buffer      = NULL;
-				session->object[nobj_old]->can_free    = false;
-				session->object[nobj_old]->file_offset = cache_length;
-			}
-
-			cache_length += (off_t)buffer_size;
-
-			free(buffer);
-		}
-
 		free(ref_delta_hash);
-	}
-
-	if (session->low_memory) {
-		close(session->back_store);
-
-		/* Reopen the temporary object store file for reading. */
-
-		session->back_store = open(remote_files_tmp, O_RDONLY);
-
-		if (session->back_store == -1)
-			err(EXIT_FAILURE,
-				"unpack_objects: open tmp ro failure %s",
-				remote_files_tmp);
-
-		/* unlink now / dealocate when exit */
-
-		unlink(remote_files_tmp);
 	}
 }
 
@@ -3789,17 +3745,18 @@ main(int argc, char **argv)
 	char      section[BUFFER_UNIT_SMALL];
 	char      gitup_revision[BUFFER_UNIT_SMALL];
 	char      gitup_revision_path[BUFFER_UNIT_SMALL];
+	char      cache_path[BUFFER_UNIT_SMALL];
 	int       option = 0;
 	size_t    length = 0;
 	int       x = 0, base64_credentials_length = 0, skip_optind = 0;
 	uint32_t  o = 0, local_file_count = 0;
+	uint8_t   save_verbosity = 0;
 	bool      encoded = false, just_added = false;
 	bool      current_repository = false, path_target_exists = false;
 	bool      remote_data_exists = false, remote_history_exists = false;
 	bool      pack_data_exists = false, pack_history_exists;
+	bool      pruned = false;
 	DIR      *directory = NULL;
-	bool      pruned;
-	uint8_t   save_verbosity;
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	EVP_ENCODE_CTX      evp_ctx;
@@ -3847,8 +3804,9 @@ main(int argc, char **argv)
 		.verbosity           = 1,
 		.display_depth       = 0,
 		.updating            = NULL,
-		.back_store          = -1,
 		.low_memory          = false,
+		.cache               = -1,
+		.cache_length        = 0,
 		};
 
 	if (argc < 2)
@@ -4091,6 +4049,24 @@ main(int argc, char **argv)
 	remote_data_exists    = path_exists(session.remote_data_file);
 	remote_history_exists = path_exists(session.remote_history_file);
 
+	/* Setup the temporary object cache file. */
+
+	if (session.low_memory) {
+		snprintf(cache_path, BUFFER_UNIT_SMALL,
+			"%s.cache",
+			session.remote_data_file);
+
+		session.cache = open(cache_path, O_RDWR | O_CREAT | O_TRUNC);
+
+		if (session.cache == -1)
+			err(EXIT_FAILURE,
+				"unpack_objects: object file write failure %s",
+				cache_path);
+
+		chmod(cache_path, 0644);
+		unlink(cache_path);
+	}
+
 	/*
 	 * If path_target exists and is empty, do not load local data and
 	 * perform a clone.
@@ -4264,6 +4240,9 @@ main(int argc, char **argv)
 
 	/* Wrap it all up. */
 
+	if (session.cache != -1)
+		close(session.cache);
+
 	RB_FOREACH_SAFE(file, Tree_Local_Hash, &Local_Hash, next_file)
 		RB_REMOVE(Tree_Local_Hash, &Local_Hash, file);
 
@@ -4295,6 +4274,7 @@ main(int argc, char **argv)
 
 			if (pruned && session.verbosity && session.display_depth == 0)
 				printf(" - %s\n", file->path);
+
 		}
 
 		RB_REMOVE(Tree_Local_Path, &Local_Path, file);
@@ -4320,7 +4300,7 @@ main(int argc, char **argv)
 				"###### %05d-%d\t%d\t%u\t%s\t%d\t%s\n",
 				session.object[o]->index,
 				session.object[o]->type,
-				session.object[o]->pack_offset,
+				session.object[o]->offset_pack,
 				session.object[o]->buffer_size,
 				session.object[o]->hash,
 				session.object[o]->index_delta,
