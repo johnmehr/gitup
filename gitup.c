@@ -180,7 +180,7 @@ static void     process_tree(connector *, int, char *, char *);
 static bool     prune_tree(connector *, char *);
 static void     release_buffer(connector *, struct object_node *);
 static void     save_commit_history(connector *);
-static void     save_file(connector *, char *, mode_t, char *, uint64_t, int, int);
+static void     save_file(char *, mode_t, char *, uint64_t, int, int);
 static void     save_objects(connector *);
 static void     save_repairs(connector *);
 static void     scan_local_repository(connector *, char *);
@@ -671,7 +671,7 @@ trim_path(char *path, int display_depth, bool *just_added)
  */
 
 static void
-save_file(connector *session, char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbosity, int display_depth)
+save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbosity, int display_depth)
 {
 	struct stat check;
 
@@ -723,14 +723,6 @@ save_file(connector *session, char *path, mode_t mode, char *buffer, uint64_t bu
 				temp_buffer);
 	} else {
 		exists = (stat(path, &check) == 0 ? true : false);
-
-		/*
-		 * If the path was a directory in a previous commit and no
-		 * longer is, remove the directory contents.
-		 */
-
-		if ((exists) && (S_ISDIR(check.st_mode)) && (!S_ISDIR(mode)))
-			prune_tree(session, path);
 
 		/* If the path exists, make sure the permissions are intact. */
 
@@ -2016,8 +2008,7 @@ load_pack(connector *session, char *file, bool history_file)
 		if (session->verbosity)
 			fprintf(stderr, "# Saving pack file: %s\n", file);
 
-		save_file(session,
-			file,
+		save_file(file,
 			0644,
 			session->response,
 			session->response_size,
@@ -2645,9 +2636,11 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 	struct object_node  object, *found_object = NULL, *tree = NULL;
 	struct file_node    file, *found_file = NULL;
 	struct file_node   *new_node = NULL, *remote_file = NULL;
+	struct stat         check;
 	char                full_path[BUFFER_UNIT_SMALL], *buffer = NULL;
 	char                line[BUFFER_UNIT_SMALL], *position = NULL;
-	uint32_t            buffer_size = 0;
+	uint32_t            buffer_size = 0, new_is_dir, old_is_dir;
+	mode_t              temp_mode;
 
 	object.hash = hash;
 
@@ -2704,6 +2697,46 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 			file.path);
 
 		append(&buffer, &buffer_size, line, strlen(line));
+
+		/* Check for permission and file type changes. */
+
+		if ((!session->clone) && (lstat(full_path, &check) == 0)) {
+			temp_mode = file.mode;
+
+			if (temp_mode == 040000)
+				temp_mode = 040755;
+
+			if (temp_mode == 0120000)
+				temp_mode = 0120755;
+
+			if (check.st_mode != temp_mode) {
+				old_is_dir = S_ISDIR(check.st_mode);
+				new_is_dir = S_ISDIR(temp_mode);
+
+				if ((!old_is_dir) && (new_is_dir)) {
+					unlink(full_path);
+
+					if ((session->verbosity)
+						&& (session->display_depth > 0))
+						printf(" - %s\n", full_path);
+				} else if ((old_is_dir) && (!new_is_dir)) {
+					prune_tree(session, full_path);
+
+					if ((session->verbosity)
+						&& (session->display_depth > 0))
+						printf(" - %s\n", full_path);
+				} else {
+					chmod(full_path, temp_mode);
+
+					if ((session->verbosity)
+						&& (session->display_depth > 0))
+						printf(" * %s (%o -> %o)\n",
+							full_path,
+							check.st_mode,
+							temp_mode);
+				}
+			}
+		}
 
 		/* Recursively walk the trees and process the files/links. */
 
@@ -2872,8 +2905,7 @@ save_repairs(connector *session)
 			if (update == true) {
 				load_buffer(session, found_object);
 
-				save_file(session,
-					found_file->path,
+				save_file(found_file->path,
 					found_file->mode,
 					found_object->buffer,
 					found_object->buffer_size,
@@ -3032,8 +3064,7 @@ save_objects(connector *session)
 
 		load_buffer(session, found_object);
 
-		save_file(session,
-			found_file->path,
+		save_file(found_file->path,
 			found_file->mode,
 			found_object->buffer,
 			found_object->buffer_size,
@@ -4232,8 +4263,7 @@ main(int argc, char **argv)
 			(session.tag ? session.tag : session.branch),
 			session.want);
 
-		save_file(&session,
-			gitup_revision_path,
+		save_file(gitup_revision_path,
 			0644,
 			gitup_revision,
 			(uint32_t)strlen(gitup_revision),
