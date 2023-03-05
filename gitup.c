@@ -1060,16 +1060,6 @@ scan_local_repository(connector *session, char *base_path)
 		if ((entry->d_namlen == 2) && (!strcmp(entry->d_name, "..")))
 			continue;
 
-		if ((entry->d_namlen == 4) && (!strcmp(entry->d_name, ".git")))
-			errc(EXIT_FAILURE, EEXIST,
-				"A .git directory was found -- gitup does not "
-				"update this directory which will cause "
-				"problems for the official Git client.  If you "
-				"wish to use gitup, please remove %s/%s and "
-				"rerun gitup.",
-				base_path,
-				entry->d_name);
-
 		path_length = strlen(base_path) + entry->d_namlen + 2;
 		path        = (char *)malloc(path_length + 1);
 
@@ -3745,7 +3735,7 @@ main(int argc, char **argv)
 	char      section[BUFFER_UNIT_SMALL];
 	char      gitup_revision[BUFFER_UNIT_SMALL];
 	char      gitup_revision_path[BUFFER_UNIT_SMALL];
-	char      cache_path[BUFFER_UNIT_SMALL];
+	char      cache_path[BUFFER_UNIT_SMALL], git_check[BUFFER_UNIT_SMALL];
 	int       option = 0;
 	size_t    length = 0;
 	int       x = 0, base64_credentials_length = 0, skip_optind = 0;
@@ -4092,6 +4082,19 @@ main(int argc, char **argv)
 	if (path_target_exists == true) {
 		if (session.verbosity)
 			fprintf(stderr, "# Scanning local repository...\n");
+
+		snprintf(git_check, BUFFER_UNIT_SMALL,
+			"%s/.git",
+			session.path_target);
+
+		if (path_exists(git_check))
+			errc(EXIT_FAILURE, EEXIST,
+				"A .git directory was found -- gitup does not "
+				"update this directory which will cause "
+				"problems for the official Git client.  If you "
+				"wish to use gitup, please remove %s and "
+				"rerun gitup.",
+				git_check);
 
 		scan_local_repository(&session, session.path_target);
 	} else {
