@@ -689,7 +689,13 @@ save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbo
 	if ((trim = strrchr(path, '/')) != NULL) {
 		*trim = '\0';
 
-		if (!path_exists(path))
+		exists = (stat(path, &check) == 0 ? true : false);
+
+		if (exists && !S_ISDIR(check.st_mode))
+			if (unlink(path) == 0)
+				exists = false;
+
+		if (!exists)
 			make_path(path, 0755);
 
 		*trim = '/';
