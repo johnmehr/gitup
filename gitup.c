@@ -2645,7 +2645,8 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 	struct stat         check;
 	char                full_path[BUFFER_UNIT_SMALL], *buffer = NULL;
 	char                line[BUFFER_UNIT_SMALL], *position = NULL;
-	uint32_t            buffer_size = 0, new_is_dir, old_is_dir;
+	uint32_t            buffer_size = 0;
+	uint32_t            new_is_dir, old_is_dir, new_is_link, old_is_link;
 	mode_t              temp_mode;
 
 	object.hash = hash;
@@ -2703,46 +2704,6 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 			file.path);
 
 		append(&buffer, &buffer_size, line, strlen(line));
-
-		/* Check for permission and file type changes. */
-
-		if ((!session->clone) && (lstat(full_path, &check) == 0)) {
-			temp_mode = file.mode;
-
-			if (temp_mode == 040000)
-				temp_mode = 040755;
-
-			if (temp_mode == 0120000)
-				temp_mode = 0120755;
-
-			if (check.st_mode != temp_mode) {
-				old_is_dir = S_ISDIR(check.st_mode);
-				new_is_dir = S_ISDIR(temp_mode);
-
-				if ((!old_is_dir) && (new_is_dir)) {
-					unlink(full_path);
-
-					if ((session->verbosity)
-						&& (session->display_depth > 0))
-						printf(" - %s\n", full_path);
-				} else if ((old_is_dir) && (!new_is_dir)) {
-					prune_tree(session, full_path);
-
-					if ((session->verbosity)
-						&& (session->display_depth > 0))
-						printf(" - %s\n", full_path);
-				} else {
-					chmod(full_path, temp_mode);
-
-					if ((session->verbosity)
-						&& (session->display_depth > 0))
-						printf(" * %s (%o -> %o)\n",
-							full_path,
-							check.st_mode,
-							temp_mode);
-				}
-			}
-		}
 
 		/* Recursively walk the trees and process the files/links. */
 
@@ -2831,6 +2792,50 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 			remote_file->hash = strdup(found_object->hash);
 			remote_file->keep = true;
 			remote_file->save = true;
+		}
+
+		/* Check for permission and file type changes. */
+
+		if ((!session->clone) && (lstat(full_path, &check) == 0)) {
+			temp_mode = file.mode;
+
+			if (temp_mode == 040000)
+				temp_mode = 040755;
+
+			if (temp_mode == 0120000)
+				temp_mode = 0120755;
+
+			if (check.st_mode != temp_mode) {
+				old_is_dir  = S_ISDIR(check.st_mode);
+				new_is_dir  = S_ISDIR(temp_mode);
+				old_is_link = S_ISLNK(check.st_mode);
+				new_is_link = S_ISLNK(temp_mode);
+
+				if (old_is_link && !new_is_link) {
+					unlink(full_path);
+				} else if (!old_is_dir && new_is_dir) {
+					unlink(full_path);
+
+					if ((session->verbosity)
+						&& (session->display_depth > 0))
+						printf(" - %s\n", full_path);
+				} else if (old_is_dir && !new_is_dir) {
+					prune_tree(session, full_path);
+
+					if ((session->verbosity)
+						&& (session->display_depth > 0))
+						printf(" - %s\n", full_path);
+				} else {
+					chmod(full_path, temp_mode);
+
+					if ((session->verbosity)
+						&& (session->display_depth > 0))
+						printf(" * %s (%o -> %o)\n",
+							full_path,
+							check.st_mode,
+							temp_mode);
+				}
+			}
 		}
 	}
 
