@@ -1,0 +1,6 @@
+freebsd_13_task:
+  freebsd_instance:
+    image: freebsd-13-2-release-amd64
+
+  script:
+  - make
