@@ -2439,7 +2439,7 @@ apply_deltas(connector *session)
 	uint8_t   length_bits = 0, offset_bits = 0;
 	uint32_t  deltas[BUFFER_UNIT_SMALL], instruction = 0;
 	uint32_t  offset = 0, position = 0, length = 0, layer_buffer_size = 0;
-	uint32_t  old_file_size, new_file_size, new_position = 0;
+	uint32_t  new_file_size = 0, new_position = 0;
 	uint64_t  merge_buffer_size = 0;
 
 	for (o = (int)session->objects - 1; o >= 0; o--) {
@@ -2492,7 +2492,13 @@ apply_deltas(connector *session)
 
 			position      = 0;
 			new_position  = 0;
-			old_file_size = unpack_integer(delta->buffer, &position);
+
+			/*
+			 * The first new_file_size is really the unused old file
+			 * size.
+			 */
+
+			new_file_size = unpack_integer(delta->buffer, &position);
 			new_file_size = unpack_integer(delta->buffer, &position);
 
 			/* Make sure the layer buffer is large enough. */
@@ -3786,7 +3792,7 @@ main(int argc, char **argv)
 	bool      encoded = false, just_added = false;
 	bool      current_repository = false, path_target_exists = false;
 	bool      remote_data_exists = false, remote_history_exists = false;
-	bool      pack_data_exists = false, pack_history_exists;
+	bool      pack_data_exists = false;
 	bool      pruned = false;
 	DIR      *directory = NULL;
 
@@ -4077,7 +4083,7 @@ main(int argc, char **argv)
 
 	path_target_exists    = path_exists(session.path_target);
 	pack_data_exists      = path_exists(session.pack_data_file);
-	pack_history_exists   = path_exists(session.pack_history_file);
+/*	pack_history_exists   = path_exists(session.pack_history_file); */
 	remote_data_exists    = path_exists(session.remote_data_file);
 	remote_history_exists = path_exists(session.remote_history_file);
 
