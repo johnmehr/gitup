@@ -203,21 +203,21 @@ static void     usage(const char *);
 static int
 file_node_compare_path(const struct file_node *a, const struct file_node *b)
 {
-	return (strcmp(a->path, b->path));
+	return (strcmp((a ? a->path : ""), (b ? b->path : "")));
 }
 
 
 static int
 file_node_compare_hash(const struct file_node *a, const struct file_node *b)
 {
-	return (strcmp(a->hash, b->hash));
+	return (strcmp((a && a->hash ? a->hash : ""), (b && b->hash ? b->hash : "")));
 }
 
 
 static int
 object_node_compare(const struct object_node *a, const struct object_node *b)
 {
-	return (strcmp(a->hash, b->hash));
+	return (strcmp((a && a->hash ? a->hash : ""), (b && b->hash ? b->hash : "")));
 }
 
 
@@ -704,7 +704,7 @@ save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbo
 	/* Print the file or trimmed path. */
 
 	if (verbosity > 0) {
-		exists |= path_exists(path);
+		exists = path_exists(path);
 
 		if ((display_depth == 0) || (just_added))
 			printf(" %c %s\n", (exists ? '*' : '+'), display_path);
@@ -1122,7 +1122,7 @@ scan_local_repository(connector *session, char *base_path)
 static void
 load_object(connector *session, char *hash, char *path)
 {
-	struct object_node *object = NULL, lookup_object;
+	struct object_node  lookup_object;
 	struct file_node   *find = NULL, lookup_file;
 	char               *buffer = NULL;
 	uint32_t            buffer_size = 0;
@@ -1137,7 +1137,7 @@ load_object(connector *session, char *hash, char *path)
 	 * and store it.
 	 */
 
-	if ((object = RB_FIND(Tree_Objects, &Objects, &lookup_object)) != NULL)
+	if (RB_FIND(Tree_Objects, &Objects, &lookup_object) != NULL)
 		return;
 
 	find = RB_FIND(Tree_Local_Hash, &Local_Hash, &lookup_file);
@@ -1790,6 +1790,8 @@ build_repair_command(connector *session)
 		"0009done\n0000",
 		want);
 
+	free(want);
+
 	return (command);
 }
 
@@ -2339,6 +2341,10 @@ unpack_objects(connector *session)
 			stream_code      = inflate(&stream, Z_NO_FLUSH);
 			stream_bytes     = 16384 - stream.avail_out;
 
+			if (stream_code == Z_DATA_ERROR)
+				errc(EXIT_FAILURE, EILSEQ,
+					"unpack_objects: zlib data stream failure");
+
 			buffer = (char *)realloc(
 				buffer,
 				buffer_size + stream_bytes);
@@ -2494,16 +2500,16 @@ apply_deltas(connector *session)
 			new_position  = 0;
 
 			/*
-			 * The first new_file_size is really the unused old file
+			 * The first unpack_integer is for the unused old file
 			 * size.
 			 */
 
-			new_file_size = unpack_integer(delta->buffer, &position);
+			unpack_integer(delta->buffer, &position);
 			new_file_size = unpack_integer(delta->buffer, &position);
 
 			/* Make sure the layer buffer is large enough. */
 
-			if (new_file_size > layer_buffer_size) {
+			if (new_file_size > layer_buffer_size || layer_buffer_size == 0) {
 				layer_buffer_size = new_file_size;
 
 				layer_buffer = (char *)realloc(
@@ -3694,7 +3700,6 @@ extract_command_line_want(connector *session, char *option)
 
 	length    = strlen(option);
 	start     = option;
-	temp      = option;
 	extension = strnstr(option, ".pack", length);
 
 	/* Build the pack commit history file name. */
@@ -3774,10 +3779,9 @@ main(int argc, char **argv)
 {
 	struct object_node *object = NULL, *next_object = NULL;
 	struct file_node   *file   = NULL, *next_file   = NULL;
-	struct dirent      *entry  = NULL;
-	const char         *configuration_file = CONFIG_FILE_PATH;
 
 	char     *command = NULL, *display_path = NULL, *temp = NULL;
+	char     *configuration_file = NULL;
 	char      base64_credentials[BUFFER_UNIT_SMALL];
 	char      credentials[BUFFER_UNIT_SMALL];
 	char      section[BUFFER_UNIT_SMALL];
@@ -3847,6 +3851,8 @@ main(int argc, char **argv)
 		.cache_length        = 0,
 		};
 
+	configuration_file = strdup(CONFIG_FILE_PATH);
+
 	if (argc < 2)
 		usage(configuration_file);
 
@@ -3861,10 +3867,17 @@ main(int argc, char **argv)
 
 	for (x = 0; x < argc; x++)
 		if (strnstr(argv[x], "-C", 2) == argv[x]) {
-			if (strlen(argv[x]) > 2)
+			if (strlen(argv[x]) > 2) {
+				if (configuration_file)
+					free(configuration_file);
+
 				configuration_file = strdup(argv[x] + 2);
-			else if ((argc > x) && (argv[x + 1][0] != '-'))
+			} else if ((argc > x) && (argv[x + 1][0] != '-')) {
+				if (configuration_file)
+					free(configuration_file);
+
 				configuration_file = strdup(argv[x + 1]);
+			}
 		}
 
 	/* Load the configuration file to learn what section is being requested. */
@@ -4111,7 +4124,7 @@ main(int argc, char **argv)
 	 */
 
 	if ((directory = opendir(session.path_target)) != NULL) {
-		while ((entry = readdir(directory)) != NULL)
+		while (readdir(directory) != NULL)
 			local_file_count++;
 
 		closedir(directory);
@@ -4370,6 +4383,7 @@ main(int argc, char **argv)
 		free(session.ignore[x]);
 	}
 
+	free(configuration_file);
 	free(session.ignore);
 	free(session.response);
 	free(session.object);
