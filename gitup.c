@@ -681,9 +681,6 @@ save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbo
 
 	display_path = trim_path(path, display_depth, &just_added);
 
-	if (display_depth > 0)
-		exists |= path_exists(display_path);
-
 	/* Create the directory, if needed. */
 
 	if ((trim = strrchr(path, '/')) != NULL) {
@@ -3443,7 +3440,11 @@ load_config(connector *session, const char *configuration_file, char **argv, int
 		for (x = 0; x < argc; x++)
 			if (strncmp(argv[x], target, strlen(target)) == 0)
 				if (strlen(argv[x]) == strlen(target)) {
-					argument_index   = x;
+					argument_index = x;
+
+					if (session->section)
+						free(session->section);
+
 					session->section = strdup(argv[x]);
 					load_config_section(session, section);
 				}
@@ -3657,13 +3658,13 @@ load_gitignore(connector *session)
 
 		if (directory_only) {
 			snprintf(target + target_offset, 4, ".*$");
-			add_ignore(session, strdup(target));
+			add_ignore(session, target);
 		} else {
 			snprintf(target + target_offset, 5, "/.*$");
-			add_ignore(session, strdup(target));
+			add_ignore(session, target);
 
 			snprintf(target + target_offset, 2, "$");
-			add_ignore(session, strdup(target));
+			add_ignore(session, target);
 		}
 
 		if (session->verbosity > 2)
