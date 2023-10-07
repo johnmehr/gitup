@@ -123,6 +123,7 @@ typedef struct {
 	char                *pack_data_file;
 	char                *pack_history_file;
 	char                *path_target;
+	bool                 path_target_custom;
 	char                *path_work;
 	char                *remote_data_file;
 	char                *remote_history_file;
@@ -139,6 +140,7 @@ typedef struct {
 	off_t                cache_length;
 } connector;
 
+static char *   absolute_path(char *);
 static void     add_ignore(connector *, const char *);
 static void     append(char **, uint32_t *, const char *, size_t);
 static void     apply_deltas(connector *);
@@ -482,6 +484,63 @@ make_path(char *path, mode_t mode)
 	if ((mkdir(path, mode) == -1) && (errno != EEXIST))
 		err(EXIT_FAILURE, "make_path: cannot create %s", path);
 	}
+}
+
+
+/*
+ * absolute_path
+ *
+ * Procedure that ensures the new path is an absolute path.
+ */
+
+static char *
+absolute_path(char *new_path)
+{
+	char   path[BUFFER_UNIT_SMALL], *current_path = NULL;
+	size_t path_length = 0;
+
+	current_path = getwd(NULL);
+	path[0]      = '\0';
+	path_length  = strlen(new_path);
+
+	/* If the new path is absolute, use it. */
+
+	if (path_length && new_path[0] == '/')
+		snprintf(path, BUFFER_UNIT_SMALL, "%s", new_path);
+
+	/* If the new path is relative, append it to the current path. */
+
+	if (path_length > 1 && new_path[0] == '.' && new_path[1] == '/')
+		snprintf(path, BUFFER_UNIT_SMALL,
+			"%s%s",
+			current_path,
+			new_path + 1);
+
+	if (path_length && new_path[0] != '/' && new_path[0] != '.')
+		snprintf(path, BUFFER_UNIT_SMALL,
+			"%s/%s",
+			current_path,
+			new_path);
+
+	/* Reject paths that traverse. */
+
+	if (path_length > 2 && strnstr(new_path, "../", path_length) != NULL)
+		errc(EXIT_FAILURE, EACCES,
+			"absolute_path: illegal path traverse in %s",
+			new_path);
+
+	/* Remove any trailing slashes. */
+
+	path_length = strlen(path);
+
+	while (path_length && path[path_length - 1] == '/')
+		path[--path_length] = '\0';
+
+	/* Return the new path. */
+
+	free(current_path);
+
+	return (strdup(path));
 }
 
 
@@ -3781,8 +3840,8 @@ main(int argc, char **argv)
 	struct object_node *object = NULL, *next_object = NULL;
 	struct file_node   *file   = NULL, *next_file   = NULL;
 
-	char     *command = NULL, *display_path = NULL, *temp = NULL;
-	char     *configuration_file = NULL;
+	char     *command = NULL, *display_path = NULL, *temp = NULL, hash[20];
+	char     *configuration_file = NULL, *remote_data_file_hash = NULL;
 	char      base64_credentials[BUFFER_UNIT_SMALL];
 	char      credentials[BUFFER_UNIT_SMALL];
 	char      section[BUFFER_UNIT_SMALL];
@@ -3836,6 +3895,7 @@ main(int argc, char **argv)
 		.pack_data_file      = NULL,
 		.pack_history_file   = NULL,
 		.path_target         = NULL,
+		.path_target_custom  = false,
 		.path_work           = NULL,
 		.remote_data_file    = NULL,
 		.remote_history_file = NULL,
@@ -3890,7 +3950,7 @@ main(int argc, char **argv)
 
 	/* Process the command line parameters. */
 
-	while ((option = getopt(argc, argv, "C:cd:h:I:klrS:t:u:v:w:")) != -1) {
+	while ((option = getopt(argc, argv, "C:cd:h:I:klrp:S:t:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
 				if (session.verbosity)
@@ -3915,6 +3975,11 @@ main(int argc, char **argv)
 				break;
 			case 'l':
 				session.low_memory = true;
+				break;
+			case 'p':
+				session.path_target_custom = true;
+				free(session.path_target);
+				session.path_target = absolute_path(optarg);
 				break;
 			case 'r':
 				session.repair = true;
@@ -4023,17 +4088,27 @@ main(int argc, char **argv)
 
 	make_path(session.path_work, 0755);
 
-	length = strlen(session.path_work) + strlen(session.section) + 1;
+	length = strlen(session.path_work) + strlen(session.section) + 22;
 
 	session.remote_data_file = (char *)malloc(length + 1);
 
 	if (session.remote_data_file == NULL)
 		err(EXIT_FAILURE, "main: malloc");
 
+	SHA1((uint8_t *)session.path_target,
+		strlen(session.path_target),
+		(uint8_t *)hash);
+
+	remote_data_file_hash = legible_hash(hash);
+
 	snprintf(session.remote_data_file, length + 1,
-		"%s/%s",
+		"%s/%s%s%s",
 		session.path_work,
-		session.section);
+		session.section,
+		(session.path_target_custom ? "-" : ""),
+		(session.path_target_custom ? remote_data_file_hash : ""));
+
+	free(remote_data_file_hash);
 
 	session.remote_history_file = (char *)malloc(length + 9);
 

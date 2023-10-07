@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd May 16, 2022
+.Dd October 7, 2023
 .Dt GITUP(1)
 .Os
 .Sh NAME
@@ -38,6 +38,7 @@
 .Op Fl d Ar display depth
 .Op Fl h Ar commit checksum
 .Op Fl I Ar ignore paths that contain this string
+.Op Fl p Ar target path
 .Op Fl t Ar tag
 .Op Fl u Ar pack file
 .Op Fl v Ar verbosity
@@ -81,6 +82,11 @@ Save a copy of the pack data.
 .It Fl l
 Low memory mode -- temporarily stores uncompressed object data to disk instead
 of memory.
+.It Fl p
+Path to an alternative local repository (override the `target_directory` that is
+specified in gitup.conf(5)).  The SHA1 checksum of the new absolute target path
+is appended to the known paths filename in /var/db/gitup allowing multiple
+independent copies of the repository to exist.
 .It Fl r
 Repair the local repository, replacing any files that are missing or have been
 modified.
