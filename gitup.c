@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2012-2022, John Mehr <jmehr@umn.edu>
+ * Copyright (c) 2012-2023, John Mehr <jmehr@umn.edu>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -54,7 +54,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "0.98"
+#define GITUP_VERSION     "0.99"
 #define BUFFER_UNIT_SMALL  4096
 #define BUFFER_UNIT_LARGE  1048576
 #define IGNORE_FORCE_READ  1
@@ -4211,15 +4211,7 @@ main(int argc, char **argv)
 
 	/* If path_target and remote_data exist, load the known repo data. */
 
-	if ((path_target_exists == true) && (remote_data_exists == true))
-		load_remote_data(&session);
-	else
-		session.clone = true;
-
-	if (path_target_exists == true) {
-		if (session.verbosity)
-			fprintf(stderr, "# Scanning local repository...\n");
-
+	if (path_target_exists) {
 		snprintf(git_check, BUFFER_UNIT_SMALL,
 			"%s/.git",
 			session.path_target);
@@ -4233,7 +4225,27 @@ main(int argc, char **argv)
 				"rerun gitup.",
 				git_check);
 
-		scan_local_repository(&session, session.path_target);
+		if (remote_data_exists)
+			load_remote_data(&session);
+
+		if (session.clone) {
+			if (path_target_exists)
+				errc(EXIT_FAILURE, EEXIST,
+					"The target directory %s contains "
+					"files. Cloning over an existing "
+					"repository will leave old files "
+					"behind, potentially causing problems. "
+					"Please remove the contents of %s and "
+					"rerun gitup.",
+					session.path_target,
+					session.path_target);
+		} else {
+			if (session.verbosity)
+				fprintf(stderr,
+					"# Scanning local repository...\n");
+
+			scan_local_repository(&session, session.path_target);
+		}
 	} else {
 		session.clone = true;
 	}
