@@ -26,9 +26,6 @@
  * $FreeBSD$
  */
 
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/tree.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <openssl/evp.h>
@@ -38,6 +35,9 @@
 #include <openssl/ssl3.h>
 #include <openssl/err.h>
 #include <private/ucl/ucl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/tree.h>
 
 #include <ctype.h>
 #include <dirent.h>
@@ -55,8 +55,8 @@
 #include <zlib.h>
 
 #define GITUP_VERSION     "0.99"
-#define BUFFER_UNIT_SMALL  4096
-#define BUFFER_UNIT_LARGE  1048576
+#define BUFFER_4K          4096
+#define BUFFER_1M          1048576
 #define IGNORE_FORCE_READ  1
 #define IGNORE_SKIP_DELETE 2
 
@@ -157,8 +157,10 @@ static void     extract_command_line_want(connector *, char *);
 static void     extract_proxy_data(connector *, const char *);
 static void     extract_tree_item(struct file_node *, char **);
 static void     fetch_pack(connector *, char *);
-static int      file_node_compare_hash(const struct file_node *, const struct file_node *);
-static int      file_node_compare_path(const struct file_node *, const struct file_node *);
+static int      file_node_compare_hash(const struct file_node *,
+                                       const struct file_node *);
+static int      file_node_compare_path(const struct file_node *,
+                                       const struct file_node *);
 static void     file_node_free(struct file_node *);
 static void     get_commit_details(connector *);
 static bool     ignore_file(connector *, char *, uint8_t);
@@ -174,7 +176,8 @@ static void     load_pack(connector *, char *, bool);
 static void     load_remote_data(connector *);
 static void     make_path(char *, mode_t);
 static struct file_node * new_file_node(char *, mode_t, char *, bool, bool);
-static int      object_node_compare(const struct object_node *, const struct object_node *);
+static int      object_node_compare(const struct object_node *,
+                                    const struct object_node *);
 static void     object_node_free(struct object_node *);
 static bool     path_exists(const char *);
 static void     process_command(connector *, char *);
@@ -188,7 +191,8 @@ static void     save_repairs(connector *);
 static void     scan_local_repository(connector *, char *);
 static void     send_command(connector *, char *);
 static void     setup_ssl(connector *);
-static void     store_object(connector *, uint8_t, char *, uint32_t, uint32_t, uint32_t, char *);
+static void     store_object(connector *, uint8_t, char *, uint32_t, uint32_t,
+                             uint32_t, char *);
 static char *   trim_path(char *, int, bool *);
 static uint32_t unpack_delta_integer(char *, uint32_t *, uint8_t);
 static uint32_t unpack_integer(char *, uint32_t *);
@@ -212,14 +216,18 @@ file_node_compare_path(const struct file_node *a, const struct file_node *b)
 static int
 file_node_compare_hash(const struct file_node *a, const struct file_node *b)
 {
-	return (strcmp((a && a->hash ? a->hash : ""), (b && b->hash ? b->hash : "")));
+	return (strcmp(
+		(a && a->hash ? a->hash : ""),
+		(b && b->hash ? b->hash : "")));
 }
 
 
 static int
 object_node_compare(const struct object_node *a, const struct object_node *b)
 {
-	return (strcmp((a && a->hash ? a->hash : ""), (b && b->hash ? b->hash : "")));
+	return (strcmp(
+		(a && a->hash ? a->hash : ""),
+		(b && b->hash ? b->hash : "")));
 }
 
 
@@ -252,23 +260,33 @@ object_node_free(struct object_node *node)
 }
 
 
-static RB_HEAD(Tree_Remote_Path, file_node) Remote_Path = RB_INITIALIZER(&Remote_Path);
+static RB_HEAD(Tree_Remote_Path, file_node)
+	Remote_Path = RB_INITIALIZER(&Remote_Path);
+
 RB_PROTOTYPE(Tree_Remote_Path, file_node, link_path, file_node_compare_path)
 RB_GENERATE(Tree_Remote_Path,  file_node, link_path, file_node_compare_path)
 
-static RB_HEAD(Tree_Local_Path, file_node) Local_Path = RB_INITIALIZER(&Local_Path);
+static RB_HEAD(Tree_Local_Path, file_node)
+	Local_Path = RB_INITIALIZER(&Local_Path);
+
 RB_PROTOTYPE(Tree_Local_Path, file_node, link_path, file_node_compare_path)
 RB_GENERATE(Tree_Local_Path,  file_node, link_path, file_node_compare_path)
 
-static RB_HEAD(Tree_Local_Hash, file_node) Local_Hash = RB_INITIALIZER(&Local_Hash);
+static RB_HEAD(Tree_Local_Hash, file_node)
+	Local_Hash = RB_INITIALIZER(&Local_Hash);
+
 RB_PROTOTYPE(Tree_Local_Hash, file_node, link_hash, file_node_compare_hash)
 RB_GENERATE(Tree_Local_Hash,  file_node, link_hash, file_node_compare_hash)
 
-static RB_HEAD(Tree_Objects, object_node) Objects = RB_INITIALIZER(&Objects);
+static RB_HEAD(Tree_Objects, object_node)
+	Objects = RB_INITIALIZER(&Objects);
+
 RB_PROTOTYPE(Tree_Objects, object_node, link, object_node_compare)
 RB_GENERATE(Tree_Objects,  object_node, link, object_node_compare)
 
-static RB_HEAD(Tree_Trim_Path, file_node) Trim_Path = RB_INITIALIZER(&Trim_Path);
+static RB_HEAD(Tree_Trim_Path, file_node)
+	Trim_Path = RB_INITIALIZER(&Trim_Path);
+
 RB_PROTOTYPE(Tree_Trim_Path, file_node, link_path, file_node_compare_path)
 RB_GENERATE(Tree_Trim_Path,  file_node, link_path, file_node_compare_path)
 
@@ -496,7 +514,7 @@ make_path(char *path, mode_t mode)
 static char *
 absolute_path(char *new_path)
 {
-	char   path[BUFFER_UNIT_SMALL], *current_path = NULL;
+	char   path[BUFFER_4K], *current_path = NULL;
 	size_t path_length = 0;
 
 	current_path = getwd(NULL);
@@ -506,21 +524,15 @@ absolute_path(char *new_path)
 	/* If the new path is absolute, use it. */
 
 	if (path_length && new_path[0] == '/')
-		snprintf(path, BUFFER_UNIT_SMALL, "%s", new_path);
+		snprintf(path, BUFFER_4K, "%s", new_path);
 
 	/* If the new path is relative, append it to the current path. */
 
 	if (path_length > 1 && new_path[0] == '.' && new_path[1] == '/')
-		snprintf(path, BUFFER_UNIT_SMALL,
-			"%s%s",
-			current_path,
-			new_path + 1);
+		snprintf(path, BUFFER_4K, "%s%s", current_path, new_path + 1);
 
 	if (path_length && new_path[0] != '/' && new_path[0] != '.')
-		snprintf(path, BUFFER_UNIT_SMALL,
-			"%s/%s",
-			current_path,
-			new_path);
+		snprintf(path, BUFFER_4K, "%s/%s", current_path, new_path);
 
 	/* Reject paths that traverse. */
 
@@ -597,11 +609,13 @@ prune_tree(connector *session, char *base_path)
 		}
 
 		if (S_ISDIR(sb.st_mode) != 0) {
-			if ((entry->d_namlen == 1) && (strcmp(entry->d_name, "." ) == 0))
-				continue;
+			if (entry->d_namlen == 1)
+				if (strcmp(entry->d_name, "." ) == 0)
+					continue;
 
-			if ((entry->d_namlen == 2) && (strcmp(entry->d_name, "..") == 0))
-				continue;
+			if (entry->d_namlen == 2)
+				if (strcmp(entry->d_name, "..") == 0)
+					continue;
 
 			if (!prune_tree(session, full_path))
 				pruned = false;
@@ -730,7 +744,8 @@ trim_path(char *path, int display_depth, bool *just_added)
  */
 
 static void
-save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size, int verbosity, int display_depth)
+save_file(char *path, mode_t mode, char *buffer, uint64_t buffer_size,
+          int verbosity, int display_depth)
 {
 	struct stat check;
 
@@ -866,12 +881,12 @@ calculate_object_hash(char *buffer, uint32_t buffer_size, int type)
 static char *
 calculate_file_hash(char *path, mode_t file_mode)
 {
-	char     *buffer = NULL, *hash = NULL, temp_path[BUFFER_UNIT_SMALL];
+	char     *buffer = NULL, *hash = NULL, temp_path[BUFFER_4K];
 	uint32_t  buffer_size = 0;
 	ssize_t   bytes_read = 0;
 
 	if (S_ISLNK(file_mode)) {
-		bytes_read = readlink(path, temp_path, BUFFER_UNIT_SMALL);
+		bytes_read = readlink(path, temp_path, BUFFER_4K);
 		temp_path[bytes_read] = '\0';
 
 		hash = calculate_object_hash(
@@ -895,7 +910,8 @@ calculate_file_hash(char *path, mode_t file_mode)
  */
 
 static void
-append(char **buffer, uint32_t *buffer_size, const char *addendum, size_t addendum_size)
+append(char **buffer, uint32_t *buffer_size, const char *addendum,
+       size_t addendum_size)
 {
 	*buffer = (char *)realloc(*buffer, *buffer_size + addendum_size + 1);
 
@@ -918,7 +934,7 @@ static void
 extend_updating_list(connector *session, char *path)
 {
 	uint32_t size;
-	char     temp[BUFFER_UNIT_SMALL];
+	char     temp[BUFFER_4K];
 
 	size = (session->updating ? (uint32_t)strlen(session->updating) : 0);
 
@@ -939,8 +955,7 @@ load_remote_data(connector *session)
 	struct file_node *file = NULL;
 	char     *buffer = NULL, *hash = NULL, *temp_hash = NULL;
 	char     *line = NULL, *raw = NULL, *path = NULL, *data = NULL;
-	char      temp[BUFFER_UNIT_SMALL], base_path[BUFFER_UNIT_SMALL];
-	char      item[BUFFER_UNIT_SMALL];
+	char      temp[BUFFER_4K], base_path[BUFFER_4K], item[BUFFER_4K];
 	uint32_t  count = 0, buffer_size = 0, data_size = 0;
 	size_t    item_length = 0;
 
@@ -1055,7 +1070,7 @@ load_remote_data(connector *session)
 			*hash = '\0';
 			*(hash + 41) = '\0';
 
-//			insert_commit_node(strdup(hash), line);
+/*			insert_commit_node(strdup(hash), line); */
 		}
 	}
 
@@ -1188,7 +1203,7 @@ load_object(connector *session, char *hash, char *path)
 	lookup_file.path   = path;
 
 	/*
-	 * If the object doesn't exist, look for it first by hash, then by path
+	 * If the object does not exist, look for it first by hash, then by path
 	 * and if it is found and the SHA checksum references a file, load it
 	 * and store it.
 	 */
@@ -1231,9 +1246,9 @@ load_object(connector *session, char *hash, char *path)
 static void
 create_tunnel(connector *session)
 {
-	char command[BUFFER_UNIT_SMALL];
+	char command[BUFFER_4K];
 
-	snprintf(command, BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_4K,
 		"CONNECT %s:%d HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
 		"%s"
@@ -1328,7 +1343,7 @@ connect_server(connector *session)
 	if (setsockopt(sd, SOL_SOCKET, SO_KEEPALIVE, &option, sizeof(int)))
 		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_KEEPALIVE");
 
-	option = BUFFER_UNIT_LARGE;
+	option = BUFFER_1M;
 
 	if (setsockopt(sd, SOL_SOCKET, SO_SNDBUF, &option, sizeof(int)))
 		err(EXIT_FAILURE, "setup_ssl: setsockopt SO_SNDBUF");
@@ -1388,7 +1403,7 @@ setup_ssl(connector *session)
 static void
 process_command(connector *session, char *command)
 {
-	char     read_buffer[BUFFER_UNIT_SMALL], *temp = NULL;
+	char     read_buffer[BUFFER_4K], *temp = NULL;
 	char    *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
 	long     chunk_size = -1, response_code = 0;
 	ssize_t  marker_offset = 0, data_start_offset = 0;
@@ -1443,12 +1458,12 @@ process_command(connector *session, char *command)
 			bytes_read = SSL_read(
 				session->ssl,
 				read_buffer,
-				BUFFER_UNIT_SMALL);
+				BUFFER_4K);
 		else
 			bytes_read = read(
 				session->socket_descriptor,
 				read_buffer,
-				BUFFER_UNIT_SMALL);
+				BUFFER_4K);
 
 		if (bytes_read == 0)
 			break;
@@ -1463,12 +1478,15 @@ process_command(connector *session, char *command)
 		 * data_start if the buffer moves.
 		 */
 
-		if ((unsigned long)(total_bytes_read + bytes_read + 1) > session->response_blocks * BUFFER_UNIT_LARGE) {
+		unsigned long temp_total = total_bytes_read + bytes_read + 1;
+
+		if (temp_total > session->response_blocks * BUFFER_1M) {
 			marker_offset     = marker_start - session->response;
 			data_start_offset = data_start   - session->response;
 
-			session->response = (char *)realloc(session->response,
-				++session->response_blocks * BUFFER_UNIT_LARGE);
+			session->response = (char *)realloc(
+				session->response,
+				++session->response_blocks * BUFFER_1M);
 
 			if (session->response == NULL)
 				err(EXIT_FAILURE, "process_command: realloc");
@@ -1501,7 +1519,7 @@ process_command(connector *session, char *command)
 			char            buf[80], htotalb[7], persec[8];
 			static ssize_t  last_total;
 			static double   sum;
-			double          secs, throughput;
+			double          secs, speed;
 
 			if (clock_gettime(CLOCK_MONOTONIC_FAST, &now) == -1)
 				err(EXIT_FAILURE,
@@ -1511,7 +1529,8 @@ process_command(connector *session, char *command)
 				then = now, secs = 1, sum = 1;
 			else {
 				secs = (double)(now.tv_sec - then.tv_sec) +
-					(double)(now.tv_nsec - then.tv_nsec) * 1e-9;
+					(double)(now.tv_nsec - then.tv_nsec)
+						* 1e-9;
 
 				if (1 > secs)
 					break;
@@ -1519,7 +1538,7 @@ process_command(connector *session, char *command)
 					sum += secs;
 			}
 
-			throughput = ((double)(total_bytes_read - last_total) / secs);
+			speed = (double)(total_bytes_read - last_total) / secs;
 
 			humanize_number(htotalb, sizeof(htotalb),
 				total_bytes_read,
@@ -1528,7 +1547,7 @@ process_command(connector *session, char *command)
 				HN_DECIMAL | HN_DIVISOR_1000);
 
 			humanize_number(persec, sizeof(persec),
-				(int64_t)throughput,
+				(int64_t)speed,
 				"B",
 				HN_AUTOSCALE,
 				HN_DECIMAL | HN_DIVISOR_1000);
@@ -1541,38 +1560,52 @@ process_command(connector *session, char *command)
 				persec);
 
 			if (isatty(STDERR_FILENO))
-				outlen = fprintf(stderr, "%-*s\r", outlen, buf) - 1;
+				outlen = fprintf(stderr, "%-*s\r",
+					outlen,
+					buf) - 1;
 
 			last_total = total_bytes_read;
-			then = now;
+			then       = now;
 			break;
 		}
 
 		/* Find the boundary between the header and the data. */
 
 		if (chunk_size == -1) {
-			if ((marker_start = strnstr(session->response, "\r\n\r\n", (size_t)total_bytes_read)) == NULL) {
+			marker_start = strnstr(session->response,
+				"\r\n\r\n",
+				(size_t)total_bytes_read);
+
+			if (marker_start == NULL) {
 				continue;
 			} else {
-				bytes_expected = marker_start - session->response + 4;
+				bytes_expected = marker_start
+					- session->response
+					+ 4;
 				marker_start += 2;
 				data_start = marker_start;
 
 				/* Check the response code. */
 
-				if (strstr(session->response, "HTTP/1.") == session->response) {
+				if (strstr(session->response, "HTTP/1.") ==
+					session->response) {
 					response_code = strtol(
-						strchr(session->response, ' ') + 1,
+						strchr(session->response, ' ')
+						+ 1,
 						(char **)NULL, 10);
 
 					if (response_code == 200)
 						ok = true;
 
-					if ((session->proxy_host) && (response_code >= 200) && (response_code < 300))
+					if ((session->proxy_host)
+						&& (response_code >= 200)
+						&& (response_code < 300))
 						ok = true;
 				}
 
-				temp = strstr(session->response, "Content-Length: ");
+				temp = strstr(
+					session->response,
+					"Content-Length: ");
 
 				if (temp != NULL) {
 					bytes_expected += (ssize_t)strtol(
@@ -1590,18 +1623,24 @@ process_command(connector *session, char *command)
 		if ((strstr(command, "CONNECT ") == command) && (ok))
 			break;
 
-		if ((!chunked_transfer) && (total_bytes_read < bytes_expected))
+		if ((!chunked_transfer)
+			&& (total_bytes_read < bytes_expected))
 			continue;
 
-		while ((chunked_transfer) && (total_bytes_read + chunk_size > bytes_expected)) {
+		while ((chunked_transfer)
+			&& (total_bytes_read + chunk_size > bytes_expected)) {
 			/* Make sure the whole chunk marker has been read. */
 
-			check_bytes = (ssize_t)(total_bytes_read - (marker_start + 2 - session->response));
+			check_bytes = (ssize_t)(total_bytes_read
+				- (marker_start + 2 - session->response));
 
 			if (check_bytes < 0)
 				break;
 
-			marker_end = strnstr(marker_start + 2, "\r\n", (size_t)check_bytes);
+			marker_end = strnstr(
+				marker_start + 2,
+				"\r\n",
+				(size_t)check_bytes);
 
 			if (marker_end == NULL)
 				break;
@@ -1609,12 +1648,16 @@ process_command(connector *session, char *command)
 			/* Remove the chunk length marker. */
 
 			chunk_size    = strtol(marker_start, (char **)NULL, 16);
-			bytes_to_move = (ssize_t)(total_bytes_read - (marker_end + 2 - session->response) + 1);
+			bytes_to_move = (ssize_t)(total_bytes_read
+				- (marker_end + 2 - session->response) + 1);
 
 			if (bytes_to_move < 0)
 				break;
 
-			memmove(marker_start, marker_end + 2, (size_t)bytes_to_move);
+			memmove(marker_start,
+				marker_end + 2,
+				(size_t)bytes_to_move);
+
 			total_bytes_read -= (marker_end + 2 - marker_start);
 
 			if (chunk_size == 0)
@@ -1635,7 +1678,9 @@ process_command(connector *session, char *command)
 
 	/* Remove the header. */
 
-	session->response_size = (uint32_t)(total_bytes_read - (data_start - session->response));
+	session->response_size = (uint32_t)(total_bytes_read
+		- (data_start - session->response));
+
 	memmove(session->response, data_start, session->response_size);
 	session->response[session->response_size] = '\0';
 }
@@ -1655,10 +1700,10 @@ send_command(connector *session, char *want)
 
 	want_size = strlen(want);
 
-	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
+	if ((command = (char *)malloc(BUFFER_4K + want_size)) == NULL)
 		err(EXIT_FAILURE, "send_command: malloc");
 
-	snprintf(command, BUFFER_UNIT_SMALL + want_size,
+	snprintf(command, BUFFER_4K + want_size,
 		"POST %s/git-upload-pack HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
 		"User-Agent: gitup/%s\r\n"
@@ -1694,10 +1739,10 @@ build_clone_command(connector *session)
 {
 	char *command = NULL;
 
-	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
+	if ((command = (char *)malloc(BUFFER_4K)) == NULL)
 		err(EXIT_FAILURE, "build_clone_command: malloc");
 
-	snprintf(command, BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_4K,
 		"0011command=fetch0001"
 		"000fno-progress"
 		"000dofs-delta"
@@ -1724,13 +1769,13 @@ build_commit_command(connector *session)
 	char *command = NULL, temp[64];
 	bool  have = false;
 
-	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
+	if ((command = (char *)malloc(BUFFER_4K)) == NULL)
 		err(EXIT_FAILURE, "build_commit_command: malloc");
 
 	if (session->have)
 		have = true;
 
-	if ((session->keep_pack_file) && (!path_exists(session->pack_history_file)))
+	if (session->keep_pack_file && !path_exists(session->pack_history_file))
 		have = false;
 
 	if (!path_exists(session->remote_history_file))
@@ -1741,7 +1786,7 @@ build_commit_command(connector *session)
 	else
 		snprintf(temp, sizeof(temp), "0032have %s\n", session->have);
 
-	snprintf(command, BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_4K,
 		"0011command=fetch0001"
 		"000dthin-pack"
 		"000fno-progress"
@@ -1769,10 +1814,10 @@ build_pull_command(connector *session)
 {
 	char *command = NULL;
 
-	if ((command = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
+	if ((command = (char *)malloc(BUFFER_4K)) == NULL)
 		err(EXIT_FAILURE, "build_pull_command: malloc");
 
-	snprintf(command, BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_4K,
 		"0011command=fetch0001"
 		"000dthin-pack"
 		"000fno-progress"
@@ -1803,14 +1848,17 @@ static char *
 build_repair_command(connector *session)
 {
 	struct file_node *find = NULL, *found = NULL;
-	char             *command = NULL, *want = NULL, line[BUFFER_UNIT_SMALL];
+	char             *command = NULL, *want = NULL, line[BUFFER_4K];
 	const char       *message[2] = { "is missing.", "has been modified." };
 	uint32_t          want_size = 0;
 
 	RB_FOREACH(find, Tree_Remote_Path, &Remote_Path) {
 		found = RB_FIND(Tree_Local_Path, &Local_Path, find);
 
-		if ((found == NULL) || ((strncmp(found->hash, find->hash, 40) != 0) && (!ignore_file(session, find->path, IGNORE_FORCE_READ)))) {
+		if (found == NULL ||
+			(strncmp(found->hash, find->hash, 40) != 0 &&
+			!ignore_file(session, find->path, IGNORE_FORCE_READ))) {
+
 			if (session->verbosity)
 				fprintf(stderr,
 					" ! %s %s\n",
@@ -1833,10 +1881,10 @@ build_repair_command(connector *session)
 			"build_repair_command: There are too many files to "
 			"repair -- please re-clone the repository");
 
-	if ((command = (char *)malloc(BUFFER_UNIT_SMALL + want_size)) == NULL)
+	if ((command = (char *)malloc(BUFFER_4K + want_size)) == NULL)
 		err(EXIT_FAILURE, "build_repair_command: malloc");
 
-	snprintf(command, BUFFER_UNIT_SMALL + want_size,
+	snprintf(command, BUFFER_4K + want_size,
 		"0011command=fetch0001"
 		"000dthin-pack"
 		"000fno-progress"
@@ -1859,18 +1907,18 @@ build_repair_command(connector *session)
 static void
 get_commit_details(connector *session)
 {
-	char       command[BUFFER_UNIT_SMALL], ref[BUFFER_UNIT_SMALL], want[41];
-	char       peeled[BUFFER_UNIT_SMALL];
-	char      *position = NULL;
-	time_t     current;
-	struct tm  now;
-	int        tries = 2, year = 0, quarter = 0;
-	unsigned long   length = 0;
-	bool       detached = (session->want != NULL ? true : false);
+	char           command[BUFFER_4K], ref[BUFFER_4K], want[41];
+	char           peeled[BUFFER_4K];
+	char          *position = NULL;
+	time_t         current;
+	struct tm      now;
+	int            tries = 2, year = 0, quarter = 0;
+	unsigned long  length = 0;
+	bool           detached = (session->want != NULL ? true : false);
 
 	/* Send the initial info/refs command. */
 
-	snprintf(command, BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_4K,
 		"GET %s/info/refs?service=git-upload-pack HTTP/1.1\r\n"
 		"Host: %s:%d\r\n"
 		"User-Agent: gitup/%s\r\n"
@@ -1888,12 +1936,18 @@ get_commit_details(connector *session)
 
 	/* Make sure the server supports the version 2 protocol. */
 
-	if (strnstr(session->response, "version 2", session->response_size) == NULL)
+	position = strnstr(session->response,
+		"version 2",
+		session->response_size);
+
+	if (position == NULL)
 		errc(EXIT_FAILURE, EPROTONOSUPPORT,
 			"%s does not support the version 2 wire protocol",
 			session->host);
 
-	if ((strnstr(session->response, "filter", session->response_size) == NULL) && (session->commit_history)) {
+	position = strnstr(session->response, "filter", session->response_size);
+
+	if (position == NULL && session->commit_history) {
 /*
 		fprintf(stderr,
 			"! %s does not support the filter feature and the "
@@ -1905,7 +1959,7 @@ get_commit_details(connector *session)
 
 	/* Fetch the list of refs. */
 
-	snprintf(command, BUFFER_UNIT_SMALL,
+	snprintf(command, BUFFER_4K,
 		"0014command=ls-refs\n"
 		"0016object-format=sha1"
 		"0001"
@@ -1928,20 +1982,29 @@ get_commit_details(connector *session)
 	while ((tries-- > 0) && (want[0] == '\0') && (detached == false)) {
 		if (strncmp(session->branch, "quarterly", 9) == 0) {
 			/*
-			 * If the current calendar quarter doesn't exist, try
+			 * If the current calendar quarter does not exist, try
 			 * the previous one.
 			 */
 
 			current = time(NULL);
 			now     = *localtime(&current);
-			year    = 1900 + now.tm_year + ((tries == 0) && (now.tm_mon < 3) ? -1 : 0);
-			quarter = ((now.tm_mon / 3) + (tries == 0 ? 3 : 0)) % 4 + 1;
+			year    = 1900 + now.tm_year
+				+ ((tries == 0) && (now.tm_mon < 3) ? -1 : 0);
+			quarter = ((now.tm_mon / 3)
+				+ (tries == 0 ? 3 : 0)) % 4 + 1;
 
-			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/%04dQ%d", year, quarter);
+			snprintf(ref, BUFFER_4K,
+				" refs/heads/%04dQ%d",
+				year,
+				quarter);
 		} else if (session->tag != NULL) {
-			snprintf(ref, BUFFER_UNIT_SMALL, " refs/tags/%s", session->tag);
+			snprintf(ref, BUFFER_4K,
+				" refs/tags/%s",
+				session->tag);
 		} else {
-			snprintf(ref, BUFFER_UNIT_SMALL, " refs/heads/%s", session->branch);
+			snprintf(ref, BUFFER_4K,
+				" refs/heads/%s",
+				session->branch);
 		}
 
 		/*
@@ -1957,7 +2020,7 @@ get_commit_details(connector *session)
 			memcpy(want, position - 40, 40);
 		else if (tries == 0)
 			errc(EXIT_FAILURE, EINVAL,
-				"get_commit_details:%s doesn't exist in %s",
+				"get_commit_details:%s does not exist in %s",
 				ref,
 				session->repository_path);
 	}
@@ -2116,7 +2179,10 @@ fetch_pack(connector *session, char *command)
 			session->response);
 
 	pack_start -= 5;
-	session->response_size -= (uint64_t)(pack_start - session->response + 11);
+
+	session->response_size -= (uint64_t)(pack_start
+		- session->response + 11);
+
 	memmove(session->response, session->response + 8, 4);
 
 	/* Remove the chunk size markers from the pack data. */
@@ -2124,7 +2190,9 @@ fetch_pack(connector *session, char *command)
 	source = pack_start - session->response;
 
 	while (chunk_size > 0) {
-		chunk_size = strtol(session->response + source, (char **)NULL, 16);
+		chunk_size = strtol(session->response + source,
+			(char **)NULL,
+			16);
 
 		if (chunk_size == 0)
 			break;
@@ -2168,7 +2236,9 @@ fetch_pack(connector *session, char *command)
  */
 
 static void
-store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_size, uint32_t offset_pack, uint32_t index_delta, char *ref_delta_hash)
+store_object(connector *session, uint8_t type, char *buffer,
+             uint32_t buffer_size, uint32_t offset_pack, uint32_t index_delta,
+             char *ref_delta_hash)
 {
 	struct object_node *object = NULL, find;
 	char               *hash = NULL, *temp = NULL, parent[41];
@@ -2178,21 +2248,28 @@ store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_siz
 
 	hash = calculate_object_hash(buffer, buffer_size, type);
 
-	/* Check to make sure the object doesn't already exist. */
+	/* Check to make sure the object does not already exist. */
 
 	find.hash = hash;
 	object    = RB_FIND(Tree_Objects, &Objects, &find);
 
-	if ((object != NULL) && (session->repair == false)) {
+	if (object != NULL && !session->repair) {
 		free(hash);
 	} else {
 		/* Extend the array if needed, create a new node and add it. */
 
-		if (session->objects % BUFFER_UNIT_SMALL == 0)
-			if ((session->object = (struct object_node **)realloc(session->object, (session->objects + BUFFER_UNIT_SMALL) * sizeof(struct object_node *))) == NULL)
-				err(EXIT_FAILURE, "store_object: realloc");
+		if (session->objects % BUFFER_4K == 0) {
+			session->object = (struct object_node **)realloc(
+				session->object,
+				(session->objects + BUFFER_4K)
+					* sizeof(struct object_node *));
 
-		object = (struct object_node *)malloc(sizeof(struct object_node));
+			if (session->object == NULL)
+				err(EXIT_FAILURE, "store_object: realloc");
+		}
+
+		object = (struct object_node *)malloc(
+			sizeof(struct object_node));
 
 		if (object == NULL)
 			err(EXIT_FAILURE, "store_object: malloc");
@@ -2202,12 +2279,14 @@ store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_siz
 		object->hash           = hash;
 		object->offset_pack    = offset_pack;
 		object->index_delta    = index_delta;
-		object->ref_delta_hash = (ref_delta_hash ? legible_hash(ref_delta_hash) : NULL);
 		object->parent         = NULL;
 		object->parents        = 0;
 		object->buffer         = buffer;
 		object->buffer_size    = buffer_size;
 		object->offset_cache   = -1;
+		object->ref_delta_hash = (ref_delta_hash
+			? legible_hash(ref_delta_hash)
+			: NULL);
 
 		if (session->verbosity > 2)
 			fprintf(stdout,
@@ -2225,7 +2304,9 @@ store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_siz
 		if (type == 1) {
 			temp = buffer;
 
-			while ((temp + 47 - buffer < (long)buffer_size) && ((temp = strstr(temp, "parent ")) != NULL)) {
+			while ((temp + 47 - buffer < (long)buffer_size)
+				&& ((temp = strstr(temp, "parent ")) != NULL)) {
+
 				ok    = true;
 				temp += 47;
 
@@ -2245,19 +2326,27 @@ store_object(connector *session, uint8_t type, char *buffer, uint32_t buffer_siz
 
 				/* Store the parent commit. */
 
-				object->parent = (char **)realloc(object->parent, (object->parents + 1) * sizeof(char *));
+				object->parent = (char **)realloc(
+					object->parent,
+					(object->parents + 1) * sizeof(char *));
 
 				if (object->parent == NULL)
-					err(EXIT_FAILURE, "store_object: realloc");
+					err(EXIT_FAILURE,
+						"store_object: realloc");
 
-				object->parent[object->parents++] = strdup(parent);
+				object->parent[object->parents++] = strdup(
+					parent);
 			}
 		}
 /*
 			char path[1024];
 			int fd;
 
-			snprintf(path, sizeof(path), "./temp/b%04d-%d-%s.out", object->index, object->type, object->hash);
+			snprintf(path, sizeof(path),
+				"./temp/b%04d-%d-%s.out",
+				object->index,
+				object->type,
+				object->hash);
 
 			fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
 			chmod(path, 0644);
@@ -2326,12 +2415,13 @@ unpack_objects(connector *session)
 	/* Unpack the objects. */
 
 	while ((position < session->response_size) && (total_objects-- > 0)) {
-		object_type    = (uint8_t)session->response[position] >> 4 & 0x07;
 		offset_pack    = position;
 		index_delta    = 0;
 		size           = 0;
 		stream_bytes   = 0;
 		ref_delta_hash = NULL;
+		object_type    = (uint8_t)session->response[position] >> 4
+			& 0x07;
 
 		/* Extract the file size. */
 
@@ -2349,11 +2439,14 @@ unpack_objects(connector *session)
 			lookup_offset = 0;
 			index_delta   = session->objects;
 
-			do lookup_offset = (lookup_offset << 7) + (session->response[position] & 0x7F) + 1;
+			do lookup_offset = (lookup_offset << 7)
+				+ (session->response[position] & 0x7F) + 1;
 			while (session->response[position++] & 0x80);
 
 			while (--index_delta > 0)
-				if (offset_pack - lookup_offset + 1 == session->object[index_delta]->offset_pack)
+				if (offset_pack - lookup_offset + 1 ==
+					session->object[index_delta]->
+						offset_pack)
 					break;
 
 			if (index_delta == 0)
@@ -2368,7 +2461,10 @@ unpack_objects(connector *session)
 			if ((ref_delta_hash = (char *)malloc(20)) == NULL)
 				err(EXIT_FAILURE, "unpack_objects: malloc");
 
-			memcpy(ref_delta_hash, session->response + position, 20);
+			memcpy(ref_delta_hash,
+				session->response + position,
+				20);
+
 			position += 20;
 		}
 
@@ -2399,7 +2495,8 @@ unpack_objects(connector *session)
 
 			if (stream_code == Z_DATA_ERROR)
 				errc(EXIT_FAILURE, EILSEQ,
-					"unpack_objects: zlib data stream failure");
+					"unpack_objects: "
+					"zlib data stream failure");
 
 			buffer = (char *)realloc(
 				buffer,
@@ -2456,7 +2553,9 @@ unpack_delta_integer(char *data, uint32_t *position, uint8_t bits)
 
 		do {
 			if (bits & (1 << mask))
-				result += (uint32_t)((uint8_t)data[*position + --temp] << (mask * 8));
+				result += (uint32_t)(
+					(uint8_t)data[*position + --temp]
+					<< (mask * 8));
 		}
 		while (mask-- > 0);
 
@@ -2499,7 +2598,7 @@ apply_deltas(connector *session)
 	int       x = 0, o = 0, delta_count = -1;
 	char     *start, *merge_buffer = NULL, *layer_buffer = NULL;
 	uint8_t   length_bits = 0, offset_bits = 0;
-	uint32_t  deltas[BUFFER_UNIT_SMALL], instruction = 0;
+	uint32_t  deltas[BUFFER_4K], instruction = 0;
 	uint32_t  offset = 0, position = 0, length = 0, layer_buffer_size = 0;
 	uint32_t  new_file_size = 0, new_position = 0;
 	uint64_t  merge_buffer_size = 0;
@@ -2565,7 +2664,9 @@ apply_deltas(connector *session)
 
 			/* Make sure the layer buffer is large enough. */
 
-			if (new_file_size > layer_buffer_size || layer_buffer_size == 0) {
+			if (new_file_size > layer_buffer_size
+				|| layer_buffer_size == 0) {
+
 				layer_buffer_size = new_file_size;
 
 				layer_buffer = (char *)realloc(
@@ -2705,14 +2806,15 @@ extract_tree_item(struct file_node *file, char **position)
  */
 
 static void
-process_tree(connector *session, int remote_descriptor, char *hash, char *base_path)
+process_tree(connector *session, int remote_descriptor, char *hash,
+             char *base_path)
 {
 	struct object_node  object, *found_object = NULL, *tree = NULL;
 	struct file_node    file, *found_file = NULL;
 	struct file_node   *new_node = NULL, *remote_file = NULL;
 	struct stat         check;
-	char                full_path[BUFFER_UNIT_SMALL], *buffer = NULL;
-	char                line[BUFFER_UNIT_SMALL], *position = NULL;
+	char                full_path[BUFFER_4K], *buffer = NULL;
+	char                line[BUFFER_4K], *position = NULL;
 	uint32_t            buffer_size = 0;
 	uint32_t            new_is_dir, old_is_dir, new_is_link, old_is_link;
 	mode_t              temp_mode;
@@ -2739,7 +2841,7 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 
 	/* Add the base path to the output. */
 
-	if ((file.path = (char *)malloc(BUFFER_UNIT_SMALL)) == NULL)
+	if ((file.path = (char *)malloc(BUFFER_4K)) == NULL)
 		err(EXIT_FAILURE, "process_tree: malloc");
 
 	if ((file.hash = (char *)malloc(41)) == NULL)
@@ -2795,7 +2897,7 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 		found_object = RB_FIND(Tree_Objects, &Objects, &object);
 		found_file   = RB_FIND(Tree_Local_Path, &Local_Path, &file);
 
-		/* If the local file hasn't changed, skip it. */
+		/* If the local file has not changed, skip it. */
 
 		if (found_file != NULL) {
 			found_file->keep = true;
@@ -2864,7 +2966,7 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 
 		/* Check for permission and file type changes. */
 
-		if ((!session->clone) && (lstat(full_path, &check) == 0)) {
+		if (!session->clone && lstat(full_path, &check) == 0) {
 			temp_mode = file.mode;
 
 			if (temp_mode == 040000)
@@ -2884,20 +2986,20 @@ process_tree(connector *session, int remote_descriptor, char *hash, char *base_p
 				} else if (!old_is_dir && new_is_dir) {
 					unlink(full_path);
 
-					if ((session->verbosity)
-						&& (session->display_depth > 0))
+					if (session->verbosity
+						&& session->display_depth > 0)
 						printf(" - %s\n", full_path);
 				} else if (old_is_dir && !new_is_dir) {
 					prune_tree(session, full_path);
 
-					if ((session->verbosity)
-						&& (session->display_depth > 0))
+					if (session->verbosity
+						&& session->display_depth > 0)
 						printf(" - %s\n", full_path);
 				} else {
 					chmod(full_path, temp_mode);
 
-					if ((session->verbosity)
-						&& (session->display_depth > 0))
+					if (session->verbosity
+						&& session->display_depth > 0)
 						printf(" * %s (%o -> %o)\n",
 							full_path,
 							check.st_mode,
@@ -2950,7 +3052,9 @@ save_repairs(connector *session)
 		/* Save the object. */
 
 		if (S_ISDIR(found_file->mode)) {
-			if ((mkdir(found_file->path, 0755) == -1) && (errno != EEXIST))
+			if (mkdir(found_file->path, 0755) == -1
+				&& errno != EEXIST)
+
 				err(EXIT_FAILURE,
 					"save_repairs: cannot create %s",
 					found_file->path);
@@ -3021,12 +3125,10 @@ static void
 save_commit_history(connector *session)
 {
 	struct object_node *found_object = NULL;
-	char path[BUFFER_UNIT_SMALL];
+	char path[BUFFER_4K];
 	int  fd, x = 0;
 
-	snprintf(path, BUFFER_UNIT_SMALL,
-		"%s.new",
-		session->remote_history_file);
+	snprintf(path, BUFFER_4K, "%s.new", session->remote_history_file);
 
 	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
 
@@ -3067,7 +3169,7 @@ save_objects(connector *session)
 {
 	struct object_node *found_object = NULL, find_object;
 	struct file_node   *found_file = NULL;
-	char tree[41], path[BUFFER_UNIT_SMALL];
+	char tree[41], path[BUFFER_4K];
 	int  fd;
 
 	/* Save the commit history. */
@@ -3076,9 +3178,7 @@ save_objects(connector *session)
 
 	/* Open the remote data file. */
 
-	snprintf(path, BUFFER_UNIT_SMALL,
-		"%s.new",
-		session->remote_data_file);
+	snprintf(path, BUFFER_4K, "%s.new", session->remote_data_file);
 
 	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
 
@@ -3247,7 +3347,7 @@ add_ignore(connector *session, const char *string)
 		REG_EXTENDED | REG_NOSUB);
 
 	if (ret_temp) {
-		warnx("! warning: can't compile %s, ignoring\n", string);
+		warnx("! warning: cannot compile %s, ignoring\n", string);
 	} else {
 		session->ignore = (ignore_node **)realloc(
 			session->ignore,
@@ -3282,7 +3382,7 @@ load_config_section(connector *session, const ucl_object_t *section)
 	const ucl_object_t *pair = NULL, *ignore = NULL;
 	ucl_object_iter_t   its = NULL, iti = NULL;
 	const char         *key = NULL, *string = NULL;
-	char                temp[BUFFER_UNIT_SMALL];
+	char                temp[BUFFER_4K];
 	long                integer;
 	size_t              length = 0;
 	bool                boolean, target, path, ignores;
@@ -3440,14 +3540,15 @@ load_config_section(connector *session, const ucl_object_t *section)
  */
 
 static int
-load_config(connector *session, const char *configuration_file, char **argv, int argc)
+load_config(connector *session, const char *configuration_file, char **argv,
+            int argc)
 {
 	struct ucl_parser  *parser = NULL;
 	const ucl_object_t *section = NULL;
 	ucl_object_t       *object = NULL;
 	ucl_object_iter_t   it = NULL;
 	const char         *target = NULL;
-	char               *sections = NULL, temp[BUFFER_UNIT_SMALL];
+	char               *sections = NULL, temp[BUFFER_4K];
 	uint32_t            sections_size = 0;
 	uint8_t             argument_index = 0, x = 0;
 	struct stat         check_file;
@@ -3578,8 +3679,8 @@ static void
 load_gitignore(connector *session)
 {
 	struct stat  file;
-	char         path[BUFFER_UNIT_SMALL], *buffer = NULL;
-	char         source[BUFFER_UNIT_SMALL], target[BUFFER_UNIT_SMALL];
+	char         path[BUFFER_4K], *buffer = NULL;
+	char         source[BUFFER_4K], target[BUFFER_4K];
 	char        *line_start = NULL, *line_end = NULL, *trim = NULL;
 	char        *cursor = NULL, c;
 	bool         in_bracket = false, separator_exists = false;
@@ -3587,9 +3688,7 @@ load_gitignore(connector *session)
 	uint32_t     buffer_size = 0, source_offset = 0, target_offset = 0;
 	size_t       source_length = 0;
 
-	snprintf(path, BUFFER_UNIT_SMALL,
-		"%s/.gitignore",
-		session->path_target);
+	snprintf(path, BUFFER_4K, "%s/.gitignore", session->path_target);
 
 	if (stat(path, &file) == -1)
 		return;
@@ -3609,8 +3708,8 @@ load_gitignore(connector *session)
 		in_bracket       = false;
 		separator_exists = false;
 
-		bzero(source, BUFFER_UNIT_SMALL);
-		bzero(target, BUFFER_UNIT_SMALL);
+		bzero(source, BUFFER_4K);
+		bzero(target, BUFFER_4K);
 
 		/* Skip comments and blank lines. */
 
@@ -3646,7 +3745,7 @@ load_gitignore(connector *session)
 
 		source_length = strlen(line_start);
 
-		if (source_length + 1 > BUFFER_UNIT_SMALL)
+		if (source_length + 1 > BUFFER_4K)
 			errc(EXIT_FAILURE, EOVERFLOW,
 				"load_gitignore: "
 				"Malformed .gitignore line \"%s\"",
@@ -3654,7 +3753,7 @@ load_gitignore(connector *session)
 
 		while (cursor < line_end - 1)
 			if (*cursor++ == '/') {
-				snprintf(source, BUFFER_UNIT_SMALL,
+				snprintf(source, BUFFER_4K,
 					"%s/%s",
 					session->path_target,
 					line_start
@@ -3666,7 +3765,7 @@ load_gitignore(connector *session)
 			}
 
 		if (!separator_exists)
-			snprintf(source, BUFFER_UNIT_SMALL, "%s", line_start);
+			snprintf(source, BUFFER_4K, "%s", line_start);
 
 		/* Prepend a '/' for entries that are just filenames. */
 
@@ -3706,7 +3805,7 @@ load_gitignore(connector *session)
 				target[target_offset++] = c;
 			}
 
-			if (target_offset > BUFFER_UNIT_SMALL - 8)
+			if (target_offset > BUFFER_4K - 8)
 				errc(EXIT_FAILURE, EOVERFLOW,
 					"load_gitignore: "
 					"Malformed .gitignore line \"%s\"",
@@ -3810,16 +3909,24 @@ usage(const char *configuration_file)
 		"  Options:\n"
 		"    -C  Override the default configuration file.\n"
 		"    -c  Force gitup to clone the repository.\n"
-		"    -d  Limit the display of changes to the specified number of\n"
-		"          directory levels deep (0 = display the entire path).\n"
+		"    -d  Limit the display of changes to the specified number "
+		"of\n"
+		"          directory levels deep (0 = display the entire path)."
+		"\n"
 		"    -h  Override the 'have' checksum.\n"
-		"    -k  Save a copy of the pack data to the current working directory.\n"
-		"    -l  Low memory mode -- stores temporary object data to disk.\n"
-		"    -r  Repair all missing/modified files in the local repository.\n"
+		"    -k  Save a copy of the pack data to the current working "
+		"directory.\n"
+		"    -l  Low memory mode -- stores temporary object data to "
+		"disk.\n"
+		"    -r  Repair all missing/modified files in the local "
+		"repository.\n"
 		"    -t  Fetch the commit referenced by the specified tag.\n"
-		"    -u  Path to load a copy of the pack data, skipping the download.\n"
-		"    -v  How verbose the output should be (0 = no output, 1 = the default\n"
-		"          normal output, 2 = also show debugging information).\n"
+		"    -u  Path to load a copy of the pack data, skipping the "
+		"download.\n"
+		"    -v  How verbose the output should be (0 = no output, 1 = "
+		"the default\n"
+		"          normal output, 2 = also show debugging information)."
+		"\n"
 		"    -V  Display gitup's version number and exit.\n"
 		"    -w  Override the 'want' checksum.\n"
 		"\n", configuration_file);
@@ -3842,12 +3949,12 @@ main(int argc, char **argv)
 
 	char     *command = NULL, *display_path = NULL, *temp = NULL, hash[20];
 	char     *configuration_file = NULL, *remote_data_file_hash = NULL;
-	char      base64_credentials[BUFFER_UNIT_SMALL];
-	char      credentials[BUFFER_UNIT_SMALL];
-	char      section[BUFFER_UNIT_SMALL];
-	char      gitup_revision[BUFFER_UNIT_SMALL];
-	char      gitup_revision_path[BUFFER_UNIT_SMALL];
-	char      cache_path[BUFFER_UNIT_SMALL], git_check[BUFFER_UNIT_SMALL];
+	char      base64_credentials[BUFFER_4K];
+	char      credentials[BUFFER_4K];
+	char      section[BUFFER_4K];
+	char      gitup_revision[BUFFER_4K];
+	char      gitup_revision_path[BUFFER_4K];
+	char      cache_path[BUFFER_4K], git_check[BUFFER_4K];
 	int       option = 0;
 	size_t    length = 0;
 	int       x = 0, base64_credentials_length = 0, skip_optind = 0;
@@ -3941,7 +4048,9 @@ main(int argc, char **argv)
 			}
 		}
 
-	/* Load the configuration file to learn what section is being requested. */
+	/*
+	 * Load the configuration file to learn what section is being requested.
+	 */
 
 	skip_optind = load_config(&session, configuration_file, argv, argc);
 
@@ -3950,7 +4059,8 @@ main(int argc, char **argv)
 
 	/* Process the command line parameters. */
 
-	while ((option = getopt(argc, argv, "C:cd:h:I:klrp:S:t:u:v:w:")) != -1) {
+	while ((option = getopt(argc, argv,
+		"C:cd:h:I:klrp:S:t:u:v:w:")) != -1) {
 		switch (option) {
 			case 'C':
 				if (session.verbosity)
@@ -3962,7 +4072,10 @@ main(int argc, char **argv)
 				session.clone = true;
 				break;
 			case 'd':
-				session.display_depth = (uint8_t)strtol(optarg, (char **)NULL, 10);
+				session.display_depth = (uint8_t)strtol(
+					optarg,
+					(char **)NULL,
+					10);
 				break;
 			case 'h':
 				session.have = strdup(optarg);
@@ -3994,7 +4107,10 @@ main(int argc, char **argv)
 				extract_command_line_want(&session, optarg);
 				break;
 			case 'v':
-				session.verbosity = (uint8_t)strtol(optarg, (char **)NULL, 10);
+				session.verbosity = (uint8_t)strtol(
+					optarg,
+					(char **)NULL,
+					10);
 				break;
 			case 'w':
 				session.want = strdup(optarg);
@@ -4080,7 +4196,7 @@ main(int argc, char **argv)
 
 	/* If a tag and a want are specified, warn and exit. */
 
-	if ((session.tag != NULL) && (session.want != NULL))
+	if (session.tag && session.want)
 		errc(EXIT_FAILURE, EINVAL,
 			"A tag and a want cannot both be requested");
 
@@ -4125,9 +4241,15 @@ main(int argc, char **argv)
 	temp   = strdup(session.remote_data_file);
 	length = strlen(session.section);
 
-	for (o = 0; o < length - 1; o++)
-		if ((!isalpha((uint8_t)session.section[o])) && (!isdigit((uint8_t)session.section[o]))) {
-			if ((session.section = (char *)realloc(session.section, length + 2)) == NULL)
+	for (o = 0; o < length - 1; o++) {
+		uint8_t c = (uint8_t)session.section[o];
+
+		if (!isalpha(c) && !isdigit(c)) {
+			session.section = (char *)realloc(
+				session.section,
+				length + 2);
+
+			if (session.section == NULL)
 				err(EXIT_FAILURE, "main: realloc");
 
 			memcpy(section, session.section + o + 1, length - o);
@@ -4140,13 +4262,18 @@ main(int argc, char **argv)
 			o += 2;
 			encoded = true;
 		}
+	}
 
 	if (encoded == true) {
 		/* Store the updated remote data path. */
 
 		length += strlen(session.path_work) + 1;
 
-		if ((session.remote_data_file = (char *)realloc(session.remote_data_file, length + 1)) == NULL)
+		session.remote_data_file = (char *)realloc(
+			session.remote_data_file,
+			length + 1);
+
+		if (session.remote_data_file == NULL)
 			err(EXIT_FAILURE, "main: realloc");
 
 		snprintf(session.remote_data_file, length + 1,
@@ -4179,7 +4306,7 @@ main(int argc, char **argv)
 	/* Setup the temporary object cache file. */
 
 	if (session.low_memory) {
-		snprintf(cache_path, BUFFER_UNIT_SMALL,
+		snprintf(cache_path, BUFFER_4K,
 			"%s.cache",
 			session.remote_data_file);
 
@@ -4212,9 +4339,7 @@ main(int argc, char **argv)
 	/* If path_target and remote_data exist, load the known repo data. */
 
 	if (path_target_exists) {
-		snprintf(git_check, BUFFER_UNIT_SMALL,
-			"%s/.git",
-			session.path_target);
+		snprintf(git_check, BUFFER_4K, "%s/.git", session.path_target);
 
 		if (path_exists(git_check))
 			errc(EXIT_FAILURE, EEXIST,
@@ -4321,10 +4446,12 @@ main(int argc, char **argv)
 
 	/* Execute the fetch, unpack, apply deltas and save. */
 
-	if ((!session.use_pack_file) || ((session.use_pack_file) && (!pack_data_exists)))
+	if (!session.use_pack_file
+		|| (session.use_pack_file && !pack_data_exists))
 		get_commit_details(&session);
 
-	if ((session.have) && (session.want) && (strncmp(session.have, session.want, 40) == 0))
+	if (session.have && session.want
+		&& (strncmp(session.have, session.want, 40) == 0))
 		current_repository = true;
 
 	/* Fetch the commit history. */
@@ -4338,7 +4465,7 @@ main(int argc, char **argv)
 
 	/* When pulling, first ensure the local tree is pristine. */
 
-	if ((session.repair) || (!session.clone)) {
+	if (session.repair || !session.clone) {
 		command = build_repair_command(&session);
 
 		if (command == NULL) {
@@ -4357,7 +4484,7 @@ main(int argc, char **argv)
 
 	/* Process the clone or pull. */
 
-	if ((!current_repository) && (!session.repair)) {
+	if (!current_repository && !session.repair) {
 		load_pack(&session, session.pack_data_file, false);
 
 		if (session.verbosity)
@@ -4371,12 +4498,12 @@ main(int argc, char **argv)
 
 	/* Save .gituprevision. */
 
-	if ((session.want) || (session.tag)) {
-		snprintf(gitup_revision_path, BUFFER_UNIT_SMALL,
+	if (session.want || session.tag) {
+		snprintf(gitup_revision_path, BUFFER_4K,
 			"%s/.gituprevision",
 			session.path_target);
 
-		snprintf(gitup_revision, BUFFER_UNIT_SMALL,
+		snprintf(gitup_revision, BUFFER_4K,
 			"%s:%.9s\n",
 			(session.tag ? session.tag : session.branch),
 			session.want);
@@ -4398,9 +4525,11 @@ main(int argc, char **argv)
 		RB_REMOVE(Tree_Local_Hash, &Local_Hash, file);
 
 	RB_FOREACH_SAFE(file, Tree_Local_Path, &Local_Path, next_file) {
-		if ((file->keep == false) && ((current_repository == false) || (session.repair == true))) {
-			if (ignore_file(&session, file->path, IGNORE_SKIP_DELETE))
-				continue;
+		if (!file->keep && (!current_repository || session.repair)) {
+			if (ignore_file(&session,
+				file->path,
+				IGNORE_SKIP_DELETE))
+					continue;
 
 			pruned = true;
 
@@ -4409,21 +4538,27 @@ main(int argc, char **argv)
 					session.display_depth,
 					&just_added);
 
-				if ((session.verbosity) && (session.display_depth > 0) && (just_added) && (strlen(display_path) == strlen(file->path)))
-					printf(" - %s\n", display_path);
+				if (session.verbosity
+					&& session.display_depth > 0
+					&& just_added
+					&& strlen(display_path)
+						== strlen(file->path))
+						printf(" - %s\n", display_path);
 
 				save_verbosity = session.verbosity;
 				session.verbosity = 0;
 				pruned = prune_tree(&session, file->path);
 				session.verbosity = save_verbosity;
 				free(display_path);
-			} else if ((remove(file->path)) && (errno != ENOENT)) {
+			} else if (remove(file->path) && errno != ENOENT) {
 				fprintf(stderr,
 					" ! cannot remove %s\n",
 					file->path);
 			}
 
-			if (pruned && session.verbosity && session.display_depth == 0)
+			if (pruned
+				&& session.verbosity
+				&& session.display_depth == 0)
 				printf(" - %s\n", file->path);
 
 		}
@@ -4460,7 +4595,7 @@ main(int argc, char **argv)
 		object_node_free(session.object[o]);
 	}
 
-	if ((session.verbosity) && (session.updating))
+	if (session.verbosity && session.updating)
 		fprintf(stderr,
 			"#\n# Please review the following file(s) for "
 			"important changes.\n%s#\n",
