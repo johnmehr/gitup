@@ -1386,6 +1386,7 @@ setup_ssl(connector *session)
 		err(EXIT_FAILURE, "setup_ssl: SSL_new");
 
 	SSL_set_fd(session->ssl, session->socket_descriptor);
+	SSL_set_tlsext_host_name(session->ssl, session->host);
 
 	while ((error = SSL_connect(session->ssl)) == -1)
 		fprintf(stderr,
