@@ -54,7 +54,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "0.99"
+#define GITUP_VERSION     "1.0"
 #define BUFFER_4K          4096
 #define BUFFER_1M          1048576
 #define IGNORE_FORCE_READ  1
