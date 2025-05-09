@@ -4203,6 +4203,10 @@ main(int argc, char **argv)
 
 	/* Create the work path and build the remote data and history paths. */
 
+	snprintf(gitup_revision_path, BUFFER_4K,
+		"%s/.gituprevision",
+		session.path_target);
+
 	make_path(session.path_work, 0755);
 
 	length = strlen(session.path_work) + strlen(session.section) + 22;
@@ -4353,25 +4357,25 @@ main(int argc, char **argv)
 
 		if (remote_data_exists)
 			load_remote_data(&session);
+		else
+			errc(EXIT_FAILURE, ENOENT,
+				"%s exists but the remote data storage file %s "
+				"does not exist.  If the initial clone of this "
+				"repository did not use the \"%s\" section, "
+				"try replacing \"%s\" with the section "
+				"originally used and run gitup again.  If that "
+				"fails, remove \"%s\" and re-clone the "
+				"repository.",
+				gitup_revision_path,
+				session.remote_data_file,
+				session.section,
+				session.section,
+				session.path_target);
 
-		if (session.clone) {
-			if (path_target_exists)
-				errc(EXIT_FAILURE, EEXIST,
-					"The target directory %s contains "
-					"files. Cloning over an existing "
-					"repository will leave old files "
-					"behind, potentially causing problems. "
-					"Please remove the contents of %s and "
-					"rerun gitup.",
-					session.path_target,
-					session.path_target);
-		} else {
-			if (session.verbosity)
-				fprintf(stderr,
-					"# Scanning local repository...\n");
+		if (session.verbosity)
+			fprintf(stderr, "# Scanning local repository...\n");
 
-			scan_local_repository(&session, session.path_target);
-		}
+		scan_local_repository(&session, session.path_target);
 	} else {
 		session.clone = true;
 	}
@@ -4500,10 +4504,6 @@ main(int argc, char **argv)
 	/* Save .gituprevision. */
 
 	if (session.want || session.tag) {
-		snprintf(gitup_revision_path, BUFFER_4K,
-			"%s/.gituprevision",
-			session.path_target);
-
 		snprintf(gitup_revision, BUFFER_4K,
 			"%s:%.9s\n",
 			(session.tag ? session.tag : session.branch),
