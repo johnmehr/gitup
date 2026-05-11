@@ -54,7 +54,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#define GITUP_VERSION     "1.0"
+#define GITUP_VERSION     "1.01"
 #define BUFFER_4K          4096
 #define BUFFER_1M          1048576
 #define IGNORE_FORCE_READ  1
@@ -1404,7 +1404,7 @@ setup_ssl(connector *session)
 static void
 process_command(connector *session, char *command)
 {
-	char     read_buffer[BUFFER_4K], *temp = NULL;
+	char     read_buffer[BUFFER_4K], *temp = NULL, *status_start = NULL;
 	char    *marker_start = NULL, *marker_end = NULL, *data_start = NULL;
 	long     chunk_size = -1, response_code = 0;
 	ssize_t  marker_offset = 0, data_start_offset = 0;
@@ -1413,7 +1413,6 @@ process_command(connector *session, char *command)
 	ssize_t  bytes_to_move = 0, bytes_expected = 0, check_bytes = 0;
 	int      error = 0, outlen = 0;
 	bool     ok = false, chunked_transfer = true;
-
 
 	bytes_to_send = (ssize_t)strlen(command);
 
@@ -1573,6 +1572,29 @@ process_command(connector *session, char *command)
 		/* Find the boundary between the header and the data. */
 
 		if (chunk_size == -1) {
+			/* Check the response code. */
+
+			status_start = strnstr(session->response,
+				"HTTP/1.",
+				16);
+
+			if (status_start) {
+				response_code = strtol(
+					strchr(status_start, ' ')
+					+ 1,
+					(char **)NULL, 10);
+
+				if (response_code == 200)
+					ok = true;
+
+				if ((session->proxy_host)
+					&& (response_code >= 200)
+					&& (response_code < 300))
+					ok = true;
+			}
+
+			/* Find the data chunk marker. */
+
 			marker_start = strnstr(session->response,
 				"\r\n\r\n",
 				(size_t)total_bytes_read);
@@ -1585,24 +1607,6 @@ process_command(connector *session, char *command)
 					+ 4;
 				marker_start += 2;
 				data_start = marker_start;
-
-				/* Check the response code. */
-
-				if (strstr(session->response, "HTTP/1.") ==
-					session->response) {
-					response_code = strtol(
-						strchr(session->response, ' ')
-						+ 1,
-						(char **)NULL, 10);
-
-					if (response_code == 200)
-						ok = true;
-
-					if ((session->proxy_host)
-						&& (response_code >= 200)
-						&& (response_code < 300))
-						ok = true;
-				}
 
 				temp = strstr(
 					session->response,
